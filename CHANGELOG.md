@@ -4,11 +4,6 @@ Current build: `20261029-loopback-backpressure` (29 October 2026)
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
-## Known issues
-
-- A joining player can appear far from the host.
-- Collision terrain can fail to load while driving; players can fall through.
-
 ## Menus
 
 - Graphics settings have Shadow quality and Performance preset options.
@@ -24,7 +19,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 ## Multiplayer
 
 - Joining checks that the host's map and build match.
-- Loopback test clients use the host’s map and starting position.
+- Loopback test clients use the hostâ€™s map and starting position.
 - Loopback network bursts no longer disconnect solely because the receive queue fills.
 - Joining players wait for collision ground before being released.
 - Joining players use clearance checks around props, cars, walls and other players.

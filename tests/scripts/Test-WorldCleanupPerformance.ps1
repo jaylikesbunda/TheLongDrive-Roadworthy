@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory=$true)][string]$OriginalAssembly,
     [Parameter(Mandatory=$true)][string]$CandidateAssembly,
     [Parameter(Mandatory=$true)][string]$ManagedDirectory,
-    [string]$CecilPath=(Join-Path $PSScriptRoot '.tools\patcher\Mono.Cecil.dll'),
+    [string]$CecilPath=(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.tools\patcher\Mono.Cecil.dll'),
     [string]$BuildDirectory=(Join-Path $env:TEMP 'tld-world-cleanup-performance'),
     [int]$Chunks=5000,
     [int]$Needed=2000,
@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Path $BuildDirectory -Force | Out-Null
 $csc=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $fixture=Join-Path $BuildDirectory 'WorldCleanupProductionTests.exe'
 Copy-Item -LiteralPath $CecilPath -Destination (Join-Path $BuildDirectory 'Mono.Cecil.dll') -Force
-& $csc '/nologo' '/optimize+' ("/out:"+$fixture) ("/reference:"+$CecilPath) (Join-Path $PSScriptRoot 'tests\WorldCleanupProductionTests.cs')
+& $csc '/nologo' '/optimize+' ("/out:"+$fixture) ("/reference:"+$CecilPath) (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\WorldCleanupProductionTests.cs')
 if($LASTEXITCODE -ne 0){throw 'Could not compile production cleanup IL fixture.'}
 
 # Test executables launched directly from Documents can inherit a low-integrity

@@ -30,7 +30,7 @@ APP_ICON = ROOT / "packaging" / "app.ico"
 def source_entries() -> dict[str, bytes]:
     """Payload: the repository's patch sources and scripts, at their repo paths."""
     patterns = ["*.ps1", "README.md", "CHANGELOG.md", "runtime/*.cs", "tools/*.cs", "tools/*.ps1",
-                "tests/*.cs", "packaging/singleplayer/*.cs"]
+                "tests/*.cs", "tests/scripts/*.ps1", "packaging/singleplayer/*.cs"]
     entries = {}
     for pattern in patterns:
         for path in sorted(ROOT.glob(pattern)):

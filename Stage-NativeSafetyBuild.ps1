@@ -58,7 +58,7 @@ $latestStability=[IO.Path]::GetFullPath((Get-Content -LiteralPath $latestStabili
 Require ($latestStability.Equals([IO.Path]::GetFullPath($stability),[StringComparison]::OrdinalIgnoreCase)) 'RunDirectory is not the latest completed candidate Test-Stability run.'
 
 # Recompute the v3 runtime/patch source signature from the candidate's own list.
-$signatureLine=Get-Content -LiteralPath (Join-Path $sourceRoot 'Test-Stability.ps1') | Where-Object {$_.StartsWith('$signatureInputs=')}
+$signatureLine=Get-Content -LiteralPath (Join-Path $sourceRoot 'tests\scripts\Test-Stability.ps1') | Where-Object {$_.StartsWith('$signatureInputs=')}
 Require ($signatureLine.Count -eq 1) 'Could not resolve the candidate signatureInputs list.'
 $signatureInputs=[regex]::Matches($signatureLine,"'([^']+)'") | ForEach-Object {$_.Groups[1].Value}
 $sourceSignature=ComputeSignature $signatureInputs $sourceRoot
@@ -71,6 +71,7 @@ Require ($identityText -match ('Sources="'+[regex]::Escape($sourceSignature)+'"'
 # signature so the staged receipts identify exactly what was validated.
 $validationInputs=@(
     @(Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'tests') -File | Sort-Object Name | ForEach-Object {'tests\'+$_.Name})+
+    @(Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'tests\scripts') -Filter '*.ps1' -File | Sort-Object Name | ForEach-Object {'tests\scripts\'+$_.Name})+
     @(Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'tools') -File | Sort-Object Name | ForEach-Object {'tools\'+$_.Name})+
     @(Get-ChildItem -LiteralPath $sourceRoot -Filter '*.ps1' -File | Sort-Object Name | ForEach-Object {$_.Name})+
     @(Get-ChildItem -LiteralPath $packagingRoot -Filter '*.cs' -File | Sort-Object Name | ForEach-Object {'packaging\singleplayer\'+$_.Name})

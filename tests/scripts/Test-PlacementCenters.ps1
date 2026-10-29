@@ -46,7 +46,7 @@ $sources=@(
     ('/reference:'+(Join-Path $managed 'Assembly-CSharp.dll')),
     ('/reference:'+(Join-Path $managed 'UnityEngine.CoreModule.dll')),
     ('/reference:'+(Join-Path $managed 'netstandard.dll')),
-    (Join-Path $PSScriptRoot 'tests\PlacementCenterParityTests.cs')
+    (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PlacementCenterParityTests.cs')
 )
 Run $csc $sources
 Run $exe @()

@@ -3,9 +3,9 @@ param(
     [string]$GameDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'tools\Resolve-GameDirectory.ps1')
+. (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tools\Resolve-GameDirectory.ps1')
 $GameDirectory=Resolve-GameDirectory $GameDirectory
-$root = $PSScriptRoot
+$root = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent)
 $managed = Join-Path $GameDirectory 'TheLongDrive_Data\Managed'
 $original = Join-Path $managed 'Assembly-CSharp.dll'
 $expectedOriginal = 'CF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000'

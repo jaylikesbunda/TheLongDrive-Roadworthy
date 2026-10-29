@@ -63,7 +63,7 @@ Require ($stageInfo.v3Sha256 -eq $manifest.patchedSha256 -and $stageInfo.runtime
 Require ($manifest.originalSha256 -eq 'CF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000') 'Stage does not identify the trusted pristine original.'
 
 # Recompute the exact candidate signatures used by the gate and staging helper.
-$signatureLine=Get-Content -LiteralPath (Join-Path $sourceRoot 'Test-Stability.ps1') | Where-Object {$_.StartsWith('$signatureInputs=')}
+$signatureLine=Get-Content -LiteralPath (Join-Path $sourceRoot 'tests\scripts\Test-Stability.ps1') | Where-Object {$_.StartsWith('$signatureInputs=')}
 Require ($signatureLine.Count -eq 1) 'Could not resolve the candidate source signature list.'
 $signatureInputs=[regex]::Matches($signatureLine,"'([^']+)'") | ForEach-Object {$_.Groups[1].Value}
 $sourceSignature=ComputeSignature $signatureInputs $sourceRoot

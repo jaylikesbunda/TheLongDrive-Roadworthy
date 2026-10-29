@@ -48,7 +48,7 @@ try{[IO.Compression.ZipFileExtensions]::ExtractToFile($zip.GetEntry('lib/net40/M
 Require ((Hash $cecil) -eq $cecilHash) 'Mono.Cecil assembly hash mismatch.'
 
 # Same source list and handshake signature as Test-Stability.ps1.
-$signatureLine=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Test-Stability.ps1') | Where-Object {$_.StartsWith('$signatureInputs=')}
+$signatureLine=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'tests\scripts\Test-Stability.ps1') | Where-Object {$_.StartsWith('$signatureInputs=')}
 Require (@($signatureLine).Count -eq 1) 'Could not read $signatureInputs from Test-Stability.ps1.'
 $signatureInputs=[regex]::Matches($signatureLine,"'([^']+)'") | ForEach-Object {$_.Groups[1].Value}
 $signatureText=($signatureInputs | ForEach-Object {$_+':'+(Hash (Join-Path $PSScriptRoot $_))}) -join "`n"

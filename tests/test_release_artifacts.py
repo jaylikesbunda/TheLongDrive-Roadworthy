@@ -26,7 +26,7 @@ EXPECTED_RELEASE_FILES = sorted([
 SOURCE_REQUIRED = [
     "packaging/singleplayer/PatchV4.cs",
     "Build-Patch.ps1",
-    "Test-Stability.ps1",
+    "tests/scripts/Test-Stability.ps1",
     "Manage-Stability.ps1",
     "tools/Resolve-GameDirectory.ps1",
     ".tools/cecil.zip",

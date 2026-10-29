@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory=$true)][string]$BuildDirectory
 )
 $ErrorActionPreference='Stop'
-$src=$PSScriptRoot
+$src=(Split-Path (Split-Path $PSScriptRoot -Parent) -Parent)
 $csc=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $cecil=Join-Path $src '.tools\patcher\Mono.Cecil.dll'
 if(!(Test-Path -LiteralPath $OriginalAssembly) -or !(Test-Path -LiteralPath $CandidateAssembly) -or !(Test-Path -LiteralPath $Runtime)) { throw 'Original, candidate, or runtime assembly is missing.' }

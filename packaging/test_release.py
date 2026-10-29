@@ -21,7 +21,7 @@ PY_NAME = "TheLongDrive-Roadworthy.py"
 EXPECTED_RELEASE_FILES = sorted(["CHANGELOG.txt", EXE_NAME, PY_NAME, "README.txt",
                                  "Restore Original.cmd", "SHA256SUMS.txt"])
 ORIGINAL_SHA256 = "CF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000"
-SIGNATURE_SOURCES = [name.strip().strip("'") for name in (ROOT / "Test-Stability.ps1").read_text(
+SIGNATURE_SOURCES = [name.strip().strip("'") for name in (ROOT / "tests" / "scripts" / "Test-Stability.ps1").read_text(
     encoding="utf-8-sig").split("$signatureInputs=@(", 1)[1].split(")", 1)[0].split(",")]
 
 

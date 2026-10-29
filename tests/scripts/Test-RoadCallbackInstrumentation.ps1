@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$BaselineAssembly,
     [Parameter(Mandatory=$true)][string]$CandidateAssembly,
-    [string]$CecilPath=(Join-Path $PSScriptRoot '.tools\patcher\Mono.Cecil.dll'),
+    [string]$CecilPath=(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.tools\patcher\Mono.Cecil.dll'),
     [string]$BuildDirectory=(Join-Path $env:TEMP 'tld-road-callback-instrumentation')
 )
 $ErrorActionPreference='Stop'
@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Path $BuildDirectory -Force | Out-Null
 $csc=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $fixture=Join-Path $BuildDirectory 'RoadCallbackInstrumentationTests.exe'
 Copy-Item -LiteralPath $CecilPath -Destination (Join-Path $BuildDirectory 'Mono.Cecil.dll') -Force
-& $csc '/nologo' '/optimize+' ("/out:"+$fixture) ("/reference:"+$CecilPath) (Join-Path $PSScriptRoot 'tests\RoadCallbackInstrumentationTests.cs')
+& $csc '/nologo' '/optimize+' ("/out:"+$fixture) ("/reference:"+$CecilPath) (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\RoadCallbackInstrumentationTests.cs')
 if($LASTEXITCODE -ne 0){throw 'Could not compile road callback instrumentation verifier fixture.'}
 $output=& $fixture $BaselineAssembly $CandidateAssembly 2>&1
 if($LASTEXITCODE -ne 0){throw ('Road callback instrumentation verifier failed: '+($output -join "`n"))}

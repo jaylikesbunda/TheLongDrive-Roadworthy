@@ -10,7 +10,7 @@ param(
     [int]$ExpectedControlMethods=6
 )
 $ErrorActionPreference='Stop'
-$cecil=Join-Path $PSScriptRoot '.tools\patcher\Mono.Cecil.dll'
+$cecil=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.tools\patcher\Mono.Cecil.dll'
 $mono=Join-Path $GameDirectory 'MonoBleedingEdge\EmbedRuntime\mono-2.0-bdwgc.dll'
 foreach($path in @($OriginalAssembly,$CandidateAssembly,$Runtime,$cecil,$mono)){
     if(!(Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing JIT probe input: '+$path)}
@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Force -Path $BuildDirectory | Out-Null
 Copy-Item -LiteralPath $cecil -Destination (Join-Path $BuildDirectory 'Mono.Cecil.dll') -Force
 $exe=Join-Path $BuildDirectory 'MonoRuntimeJitProbe.exe'
 $csc=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-& $csc /nologo /platform:x64 /optimize+ ('/reference:'+$cecil) ('/out:'+$exe) (Join-Path $PSScriptRoot 'tests\MonoRuntimeJitProbe.cs')
+& $csc /nologo /platform:x64 /optimize+ ('/reference:'+$cecil) ('/out:'+$exe) (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\MonoRuntimeJitProbe.cs')
 if($LASTEXITCODE -ne 0){throw 'Could not compile the shipped Mono JIT probe.'}
 function Probe([string]$assembly,[string]$role,[bool]$reject){
     $dir=Join-Path $BuildDirectory $role
