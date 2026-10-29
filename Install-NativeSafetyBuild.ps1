@@ -70,6 +70,7 @@ $sourceSignature=ComputeSignature $signatureInputs $sourceRoot
 Require ($sourceSignature -eq $stageInfo.sourceSignature) 'Candidate runtime/patch sources changed after staging.'
 $validationInputs=@(
     @(Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'tests') -File | Sort-Object Name | ForEach-Object {'tests\'+$_.Name})+
+    @(Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'tests\scripts') -Filter '*.ps1' -File | Sort-Object Name | ForEach-Object {'tests\scripts\'+$_.Name})+
     @(Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'tools') -File | Sort-Object Name | ForEach-Object {'tools\'+$_.Name})+
     @(Get-ChildItem -LiteralPath $sourceRoot -Filter '*.ps1' -File | Sort-Object Name | ForEach-Object {$_.Name})+
     @(Get-ChildItem -LiteralPath $packagingRoot -Filter '*.cs' -File | Sort-Object Name | ForEach-Object {'packaging\singleplayer\'+$_.Name})

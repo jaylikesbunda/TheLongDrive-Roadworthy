@@ -54,16 +54,14 @@ namespace TldMp
             p0+=Vector3.up*.15f;if(p1.y<p0.y)p1=p0;
             return true;
         }
-        static bool IsSpawnGround(Collider c)
-        {
-            return c.GetComponentInParent<newTerrainTileScript>()!=null || c.GetComponentInParent<roadscript>()!=null;
-        }
-        // True when nothing solid except ground overlaps the player at "at".
+        // The capsule is lifted off the floor, so even terrain or roads that
+        // overlap it indicate unsafe penetration into the standing body.
+        // True only when no solid collider overlaps the standing space.
         static bool SpawnPointClear(fpscontroller player,Vector3 at,out string blocker)
         {
             blocker="none";
             Vector3 p0,p1;float radius;
-            if(!SpawnCapsule(player,at,out p0,out p1,out radius))return true;
+            if(!SpawnCapsule(player,at,out p0,out p1,out radius)){blocker="player collider unavailable";return false;}
             int count=Physics.OverlapCapsuleNonAlloc(p0,p1,radius,spawnOverlapHits,~0,QueryTriggerInteraction.Ignore);
             Collider[] hits=spawnOverlapHits;
             if(count==hits.Length){hits=Physics.OverlapCapsule(p0,p1,radius,~0,QueryTriggerInteraction.Ignore);count=hits.Length;}
@@ -73,26 +71,10 @@ namespace TldMp
                 Collider c=hits[i];hits[i]=null;
                 if(c==null)continue;
                 bool isSelf=c.transform.IsChildOf(self);
-                if(!SpawnClearancePolicy.Blocks(c.isTrigger,isSelf,!isSelf && IsSpawnGround(c),c.enabled))continue;
+                if(!SpawnClearancePolicy.Blocks(c.isTrigger,isSelf,false,c.enabled))continue;
                 if(clear){clear=false;blocker=c.name+(c.attachedRigidbody!=null?"(body)":"");}
             }
             return clear;
-        }
-        // While the hold is still waiting for ground, the held body is kinematic
-        // and weightless, so it only has to stop overlapping things (a car parked
-        // or driven over the spawn). Nearest clear spot at the same height; the
-        // ground search and clearance check still run before the hold releases.
-        static bool FindClearAnchor(fpscontroller player,Vector3 at,out Vector3 free)
-        {
-            free=at;
-            if(spawnOffsets==null)spawnOffsets=SpawnClearancePolicy.Offsets(SpawnClearancePolicy.RingStep,SpawnClearancePolicy.MaxRadius);
-            for(int n=0;n<spawnOffsets.Count;n++)
-            {
-                Vector3 candidate=new Vector3(at.x+(float)spawnOffsets[n][0],at.y,at.z+(float)spawnOffsets[n][1]);
-                string blocker;
-                if(SpawnPointClear(player,candidate,out blocker)){free=candidate;return true;}
-            }
-            return false;
         }
         // Nearest clear standing spot on rings around "at", or false.
         static bool FindFreeSpawn(fpscontroller player,Vector3 at,out Vector3 free)
@@ -100,10 +82,12 @@ namespace TldMp
             free=at;
             if(spawnOffsets==null)spawnOffsets=SpawnClearancePolicy.Offsets(SpawnClearancePolicy.RingStep,SpawnClearancePolicy.MaxRadius);
             float footY=at.y+spawnFootOffset;Transform self=player.transform;float rayLength=1.5f+(float)SpawnClearancePolicy.MaxHeightChange+1f;
-            for(int n=0;n<spawnOffsets.Count;n++)
+            for(int n=-1;n<spawnOffsets.Count;n++)
             {
-                // Start just above the feet so ceilings and roofs are not taken as ground.
-                Vector3 origin=new Vector3(at.x+(float)spawnOffsets[n][0],footY+1.5f,at.z+(float)spawnOffsets[n][1]);
+                // Check directly under the held player first, then nearby rings.
+                // Starting above the feet also detects a floor slightly above them.
+                float dx=n<0?0f:(float)spawnOffsets[n][0], dz=n<0?0f:(float)spawnOffsets[n][1];
+                Vector3 origin=new Vector3(at.x+dx,footY+1.5f,at.z+dz);
                 int count=Physics.RaycastNonAlloc(origin,Vector3.down,spawnSupportHits,rayLength,~0,QueryTriggerInteraction.Ignore);
                 RaycastHit[] hits=spawnSupportHits;
                 if(count==hits.Length){hits=Physics.RaycastAll(origin,Vector3.down,rayLength,~0,QueryTriggerInteraction.Ignore);count=hits.Length;}

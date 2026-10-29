@@ -203,9 +203,10 @@ namespace TldMp
         // not compiled here). Disabled, so these tests keep exercising the
         // support/live hold exactly as before; the clearance policy has its own
         // tests in SpawnClearanceTests.cs.
-        static bool SpawnClearanceEnabled { get { return false; } }
-        static bool SpawnPointClear(fpscontroller player,UnityEngine.Vector3 at,out string blocker) { blocker="none";return true; }
-        static bool FindFreeSpawn(fpscontroller player,UnityEngine.Vector3 at,out UnityEngine.Vector3 free) { free=at;return false; }
+        static bool testClearanceEnabled,testGroundFound,testBlocked; static UnityEngine.Vector3 testGround;
+        static bool SpawnClearanceEnabled { get { return testClearanceEnabled; } }
+        static bool SpawnPointClear(fpscontroller player,UnityEngine.Vector3 at,out string blocker) { blocker=testBlocked?"wall":"none";return !testBlocked; }
+        static bool FindFreeSpawn(fpscontroller player,UnityEngine.Vector3 at,out UnityEngine.Vector3 free) { free=testGroundFound?testGround:at;return testGroundFound; }
         static bool FindClearAnchor(fpscontroller player,UnityEngine.Vector3 at,out UnityEngine.Vector3 free) { free=at;return false; }
     }
 }
@@ -234,6 +235,8 @@ internal static class NativeSafetyAdapterTests
     static void ResetHarness()
     {
         Invoke("ResetNativeSafety");
+        SetField("testClearanceEnabled",false);SetField("testGroundFound",false);SetField("testBlocked",false);
+        UnityEngine.Time.realtimeSinceStartup=1;
         StableGameBridge.Connected=true;
         StableGameBridge.node=new StableNode { IsHost=false,Ready=false };
         mainscript.s=new mainscript();
@@ -385,6 +388,40 @@ internal static class NativeSafetyAdapterTests
     }
     static void TickSpawn(bool beforePhysics)
     { Invoke("TickNativeSpawnSafety",beforePhysics); }
+
+    static void TestEmbeddedSpawnRecovery()
+    {
+        ResetHarness();
+        Rigidbody body;var player=BeginSpawnFixture(out body);
+        SetField("testClearanceEnabled",true);SetField("testGroundFound",true);
+        SetField("testGround",new Vector3(1,3,3));
+        SetSpawnSupport(false);TickSpawn(false);
+        Check(player.transform.position.y==2,"no ground correction before world is live");
+        StableGameBridge.node.Ready=true;TickSpawn(false);
+        Check(player.transform.position.y==3 && body.isKinematic && !body.useGravity,
+            "embedded spawn moves to clear ground while retaining the hold");
+        SetSpawnSupport(true);TickSpawn(false);
+        Check(GetField<NativeSpawnSafety>("spawnSafety").Active,"ground correction does not release immediately");
+        UnityEngine.Time.fixedTime+=.02f;UnityEngine.Time.realtimeSinceStartup+=1.1f;TickSpawn(false);
+        UnityEngine.Time.fixedTime+=.02f;TickSpawn(false);
+        Check(!GetField<NativeSpawnSafety>("spawnSafety").Active && !body.isKinematic && body.useGravity,
+            "corrected spawn releases only after collision support and physics opportunity");
+    }
+
+    static void TestNoUnsafeSpawnFallback()
+    {
+        ResetHarness();Rigidbody body;BeginSpawnFixture(out body);
+        SetField("testClearanceEnabled",true);StableGameBridge.node.Ready=true;
+        SetSpawnSupport(true);TickSpawn(false);
+        UnityEngine.Time.realtimeSinceStartup+=30;UnityEngine.Time.fixedTime+=30;TickSpawn(false);
+        Check(GetField<NativeSpawnSafety>("spawnSafety").Active && body.isKinematic,
+            "no grounded clear candidate never releases even after a long wait");
+        SetField("testGroundFound",true);SetField("testGround",new Vector3(1,3,3));
+        UnityEngine.Time.realtimeSinceStartup+=1;TickSpawn(false);
+        SetField("testBlocked",true);TickSpawn(false);
+        Check(GetField<NativeSpawnSafety>("spawnSafety").Active && body.isKinematic,
+            "candidate blocked after selection stays held");
+    }
 
     static void TestSpawnSupportAndRelease()
     {
@@ -560,6 +597,8 @@ internal static class NativeSafetyAdapterTests
         TestSeatRepairAndExit();
         TestSpawnRetargetAndResetRestoresFlags();
         TestSpawnSupportAndRelease();
+        TestEmbeddedSpawnRecovery();
+        TestNoUnsafeSpawnFallback();
         TestSlowFramesDoNotPrematurelyCancelNativeRetries();
     }
 

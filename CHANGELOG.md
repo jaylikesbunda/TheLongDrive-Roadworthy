@@ -1,6 +1,6 @@
 # Changelog
 
-Current build: `20261029-loopback-backpressure` (29 October 2026)
+Current build: `20261029-single-safe-spawn` (29 October 2026)
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
@@ -22,7 +22,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Joining checks that the host's map and build match.
 - Loopback test clients use the host’s map and starting position.
 - Joining players wait for collision ground before being released.
-- Joining players use clearance checks around props, cars, walls and other players.
+- Joining players wait for a clear position on solid ground.
 - Large world transfers no longer delay movement updates.
 - Reconnecting no longer duplicates Steam event handlers.
 - A player leaving no longer freezes other players.

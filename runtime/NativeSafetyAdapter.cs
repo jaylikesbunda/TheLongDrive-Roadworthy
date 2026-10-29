@@ -14,12 +14,12 @@ namespace TldMp
         static fpscontroller spawnPlayer;
         static Rigidbody spawnBody;
         static Vector3d spawnGlobal;
-        static float spawnFootOffset,spawnSupportFixedTime;
+        static float spawnFootOffset,spawnSupportFixedTime,spawnGroundSearchAt,spawnCandidateSince;
+        static bool spawnCandidateValid;
         static bool spawnFinished,spawnSupportWasPresent;
         static ulong safetyWorld;
         static int seatCaptureFrame;
         static readonly RaycastHit[] spawnSupportHits=new RaycastHit[64];
-        static readonly SpawnClearanceTracker spawnClearance=new SpawnClearanceTracker();
 
         static void BeginNativeSafetySession(ulong identity)
         {
@@ -60,8 +60,7 @@ namespace TldMp
                 if(c!=null && c.enabled && !c.isTrigger)
                     spawnFootOffset=Math.Min(spawnFootOffset,c.bounds.min.y-player.transform.position.y);
             spawnFootOffset=Math.Max(-3f,spawnFootOffset);
-            spawnSupportWasPresent=false;spawnSupportFixedTime=Time.fixedTime;
-            spawnClearance.Reset();
+            spawnSupportWasPresent=false;spawnSupportFixedTime=Time.fixedTime;spawnGroundSearchAt=0;spawnCandidateValid=false;
             spawnSafety.Begin(spawnBody.isKinematic,spawnBody.useGravity);
             JoinDiagnostic("spawn hold started at="+player.transform.position);
         }
@@ -76,7 +75,7 @@ namespace TldMp
             {
                 spawnGlobal=mainscript.GlobalFromUnityPos(player.transform.position);
                 spawnSupportWasPresent=false;spawnSupportFixedTime=Time.fixedTime;
-                spawnClearance.Reset();
+                spawnCandidateValid=false;spawnGroundSearchAt=0;
                 JoinDiagnostic("spawn hold retargeted after native teleport at="+player.transform.position);
             }
         }
@@ -151,50 +150,39 @@ namespace TldMp
             }
             // Preserve the captured flags before Evaluate retires the policy.
             bool oldKinematic=spawnSafety.CapturedIsKinematic,oldGravity=spawnSafety.CapturedUseGravity;
-            if(!support || !node.Ready)
+            if(SpawnClearanceEnabled)
             {
-                DiagLimited("native-spawn-wait","spawn hold waiting support="+support+" live="+node.Ready+" anchor="+position,5);
-                // A vehicle can already occupy the spawn while the ground is still
-                // loading. Waiting there lets the held body (and its remote copy on
-                // the host) push that vehicle for seconds, so step out of it now.
-                // The full clearance check below still runs before release.
-                string waitingBlocker;
-                if(SpawnClearanceEnabled && !SpawnPointClear(player,position,out waitingBlocker))
+                // A candidate must have walkable static ground and room for the
+                // standing capsule. Never release at a blocked or unsupported point.
+                if(!node.Ready){HoldSpawnBody(position);return;}
+                if(!spawnCandidateValid)
                 {
-                    Vector3 early;
-                    if(FindClearAnchor(player,position,out early))
+                    if(Time.realtimeSinceStartup<spawnGroundSearchAt){HoldSpawnBody(position);return;}
+                    spawnGroundSearchAt=Time.realtimeSinceStartup+.5f;
+                    Vector3 candidate;
+                    if(!FindFreeSpawn(player,position,out candidate))
                     {
-                        spawnGlobal=mainscript.GlobalFromUnityPos(early);
-                        spawnSupportWasPresent=false;spawnSupportFixedTime=Time.fixedTime;
-                        JoinDiagnostic("spawn hold moved while waiting: blocked by "+waitingBlocker+" at="+position+" moved to="+early+" distance="+(early-position).magnitude.ToString("F1"));
-                        HoldSpawnBody(early);return;
+                        DiagLimited("native-spawn-wait","spawn hold waiting for a clear grounded position at="+position,5);
+                        HoldSpawnBody(position);return;
                     }
+                    spawnGlobal=mainscript.GlobalFromUnityPos(candidate);
+                    spawnCandidateValid=true;spawnCandidateSince=Time.realtimeSinceStartup;
+                    spawnSupportWasPresent=false;spawnSupportFixedTime=Time.fixedTime;
+                    JoinDiagnostic("spawn hold selected clear ground at="+candidate);
+                    HoldSpawnBody(candidate);return;
                 }
-            }
-            else if(SpawnClearanceEnabled && !spawnClearance.GaveUp)
-            {
-                // Ground and world are ready: do not let go inside a prop, car or wall.
                 string blocker;
-                bool clear=SpawnPointClear(player,position,out blocker);
-                SpawnClearanceAction clearance=spawnClearance.Evaluate(clear,Time.realtimeSinceStartup);
-                if(clearance==SpawnClearanceAction.Search)
+                if(!support || !SpawnPointClear(player,position,out blocker))
                 {
-                    Vector3 free;
-                    if(FindFreeSpawn(player,position,out free))
-                    {
-                        spawnGlobal=mainscript.GlobalFromUnityPos(free);
-                        spawnSupportWasPresent=false;spawnSupportFixedTime=Time.fixedTime;
-                        spawnClearance.Moved();
-                        JoinDiagnostic("spawn hold moved to a clear spot: blocked by "+blocker+" at="+position+" moved to="+free+" distance="+(free-position).magnitude.ToString("F1"));
-                        HoldSpawnBody(free);return;
-                    }
-                    DiagLimited("native-spawn-blocked","spawn hold blocked by "+blocker+" at="+position+"; no clear spot within "+SpawnClearancePolicy.MaxRadius+" m yet",2);
+                    spawnCandidateValid=false;spawnSupportWasPresent=false;
+                    spawnSafety.Evaluate(true,false,true,false,false,false,false);
+                    HoldSpawnBody(position);return;
                 }
-                if(clearance==SpawnClearanceAction.GiveUp)
-                    JoinDiagnostic("spawn clearance gave up after "+SpawnClearancePolicy.GiveUpSeconds+" s blocked by "+blocker+"; releasing at the native spot");
-                else if(clearance!=SpawnClearanceAction.Release)
+                if(Time.realtimeSinceStartup-spawnCandidateSince<1f)
                 {HoldSpawnBody(position);return;}
             }
+            else if(!support || !node.Ready)
+                DiagLimited("native-spawn-wait","spawn hold waiting support="+support+" live="+node.Ready+" anchor="+position,5);
             NativeSpawnSafetyAction action=spawnSafety.Evaluate(true,false,!player.died,player.Bsitting,support,opportunity,node.Ready);
             if(action==NativeSpawnSafetyAction.Release || action==NativeSpawnSafetyAction.Restore)
             {
