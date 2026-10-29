@@ -1,15 +1,15 @@
-# The Long Drive: Roadworthy
+<img width="3840" height="1868" alt="thelongdrive-roadworthy" src="https://github.com/user-attachments/assets/4fe0204a-8c2b-46d4-88a0-f50422778538" />
 
 A multiplayer and performance patch for **The Long Drive**.
 
 **v0.1.0 experimental** | Windows | Game build `2024.11.26b_test`
 
-## At a glance
+## What does this patch do?
 
-- Smoother multiplayer movement, vehicles and item syncing.
+- Smoother multiplayer movement and better vehicle and item syncing.
 - Faster world streaming and fewer performance spikes.
 - Graphics presets and shadow controls.
-- Fixes for terrain, saves and gameplay.
+- Lots of fixes to terrain, saves, multiplayer and gameplay.
 
 <details>
 <summary>Full list of changes from the base game</summary>
