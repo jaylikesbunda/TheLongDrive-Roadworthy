@@ -1,0 +1,5 @@
+.local-analysis/
+.tools/
+release/
+__pycache__/
+*.pyc

@@ -1,0 +1,90 @@
+using System;
+using TMPro;
+using UnityEngine;
+
+namespace TldMp
+{
+    // Runtime entry points called from the patched game assembly. Both are tiny on
+    // purpose: the v4 patch pins the single call in TldStable.Configure, and the
+    // version label swap pins the call in mainscript.Update / menuhandler.FStart.
+    public static partial class StableGameBridge
+    {
+        static string lastPresetLog;
+        static string lastPresetError;
+
+        // Called instead of TextMeshProUGUI.set_text for the top-right label.
+        // Application.version itself is never changed.
+        public static void SetVersionLabel(TMP_Text label, string text)
+        {
+            if (label == null) return;
+            label.text = PatchInfo.Display;
+        }
+
+        // Called from TldStable.Configure after scene load and before every return
+        // of settingsscript.RefreshInMain. Any failure falls back to the Balanced
+        // values the IL used to write directly.
+        public static void ApplyGraphicsPreset()
+        {
+            try
+            {
+                PatchOptions.Load();
+                GraphicsPreset preset = PatchOptions.Preset;
+                PresetValues values = PatchOptions.Values(preset);
+                if (preset == GraphicsPreset.Vanilla)
+                {
+                    RenderSwitches.SetMirrorOptimizations(false);
+                    LogPreset("vanilla");
+                    return;
+                }
+                QualitySettings.antiAliasing = values.AntiAliasing;
+                QualitySettings.pixelLightCount = values.PixelLightCount;
+                QualitySettings.shadowDistance = values.ShadowDistance;
+                QualitySettings.shadowCascades = values.ShadowCascades;
+                QualitySettings.realtimeReflectionProbes = values.RealtimeReflectionProbes;
+                RenderSwitches.SetMirrorOptimizations(values.MirrorOptimizations);
+                if (preset == GraphicsPreset.Custom) ApplyShadow(PatchOptions.ShadowValuesFor(PatchOptions.Shadow));
+                LogPreset(PatchOptions.PresetName(preset) + "/" + PatchOptions.ShadowName(PatchOptions.Shadow));
+            }
+            catch (Exception error)
+            {
+                ApplyBalanced();
+                string message = error.GetType().Name + ": " + error.Message;
+                if (lastPresetError != message)
+                {
+                    lastPresetError = message;
+                    Debug.LogWarning("[TLD MP options] preset failed, using Balanced: " + message);
+                }
+            }
+        }
+
+        static void ApplyShadow(ShadowValues values)
+        {
+            QualitySettings.shadows = (ShadowQuality)values.Shadows;
+            QualitySettings.shadowDistance = values.ShadowDistance;
+            QualitySettings.shadowCascades = values.ShadowCascades;
+            QualitySettings.shadowResolution = (ShadowResolution)values.ShadowResolution;
+        }
+
+        static void ApplyBalanced()
+        {
+            try
+            {
+                QualitySettings.antiAliasing = 2;
+                QualitySettings.pixelLightCount = 4;
+                QualitySettings.shadowDistance = 80f;
+                QualitySettings.shadowCascades = 2;
+                QualitySettings.realtimeReflectionProbes = false;
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        static void LogPreset(string text)
+        {
+            if (lastPresetLog == text) return;
+            lastPresetLog = text;
+            Debug.Log("[TLD MP options] " + text + " file=" + (PatchOptions.DefaultPath() == null ? "?" : PatchOptions.DefaultPath()));
+        }
+    }
+}

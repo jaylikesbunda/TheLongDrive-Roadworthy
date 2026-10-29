@@ -1,0 +1,69 @@
+name: release
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build requirements
+        run: python -m pip install -r packaging/requirements.txt
+
+      - name: Unit tests (game-dependent tests skip without a game install)
+        run: python -m unittest discover -s tests -v
+
+      - name: Build release EXE and ZIP
+        run: python packaging/build_release.py
+
+      - name: Release artifact tests
+        run: python -m unittest discover -s tests -p "test_release_artifacts.py" -v
+
+      - name: Upload release folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: TheLongDrive-Roadworthy
+          path: release/TheLongDrive-Roadworthy/
+
+      - name: Upload release ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Roadworthy-release-zip
+          path: release/TheLongDrive-Roadworthy-v*.zip
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches package version
+        shell: pwsh
+        run: |
+          $version = python -c "import ast,pathlib; p=ast.parse(pathlib.Path('packaging/build_release.py').read_text()); print(next(n.value.value for n in p.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='VERSION' for t in n.targets)))"
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag $env:GITHUB_REF_NAME does not match package version v$version" }
+      - uses: actions/download-artifact@v4
+        with:
+          name: Roadworthy-release-zip
+          path: dist
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create $env:GITHUB_REF_NAME "dist/TheLongDrive-Roadworthy-$env:GITHUB_REF_NAME.zip" --verify-tag --title "Roadworthy $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md --prerelease
+          if ($LASTEXITCODE -ne 0) { throw "GitHub release creation failed" }
