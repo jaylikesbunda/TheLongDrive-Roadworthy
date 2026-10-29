@@ -1,10 +1,15 @@
 # The Long Drive: Roadworthy
 
-Roadworthy is a multiplayer and performance patch for **The Long Drive**. It adds
-smoother multiplayer, more reliable vehicle and item syncing, faster world
-streaming, graphics options, and fixes for terrain, saves and gameplay.
+A multiplayer and performance patch for **The Long Drive**.
 
-Status: **v0.1.0, experimental.** Supported game build: `2024.11.26b_test` only.
+**v0.1.0 experimental** | Windows | Game build `2024.11.26b_test`
+
+## At a glance
+
+- Smoother multiplayer movement, vehicles and item syncing.
+- Faster world streaming and fewer performance spikes.
+- Graphics presets and shadow controls.
+- Fixes for terrain, saves and gameplay.
 
 <details>
 <summary>Full list of changes from the base game</summary>
@@ -113,7 +118,7 @@ Status: **v0.1.0, experimental.** Supported game build: `2024.11.26b_test` only.
    against your own `Assembly-CSharp.dll`, and verifies it before swapping it in.
 4. The host and every joining player must run the same build.
 
-Saves are not modified.
+The installer does not modify your saves.
 
 ## Restore
 
