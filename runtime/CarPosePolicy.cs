@@ -120,12 +120,17 @@ namespace TldMp
         internal static bool NeedsBurst(tosaveitemscript item)
         {
             if (ReferenceEquals(item, null) || item.car == null) return false;
-            return WantsBurst(item.ThisOneInChargeCar(), Moving(item), RemotePlayers());
+            return WantsBurst(item.ThisOneInChargeCar(), Moving(item), item.CarWhatDoing()==tosaveitemscript.carWhatDoing.pushgripping, RemotePlayers());
         }
 
         internal static bool WantsBurst(bool inCharge, bool moving, int remotePlayers)
         {
-            return inCharge && moving && remotePlayers > 0;
+            return WantsBurst(inCharge, moving, false, remotePlayers);
+        }
+
+        internal static bool WantsBurst(bool inCharge, bool moving, bool pushing, int remotePlayers)
+        {
+            return inCharge && (moving || pushing) && remotePlayers > 0;
         }
 
         // Pure decision helper, kept free of Unity objects so it can be tested

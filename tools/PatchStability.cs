@@ -950,6 +950,8 @@ public static class PatchStability
                     OptimizeMirrorOnScreen();
                     OptimizeRoadBake();
                     OptimizeCarPoseStart();
+                    Entry(Method("washtriggerscript","GotDirty",0),"CarBloodDirty",-1);
+                    Entry(Method("washtriggerscript","GotClean",0),"CarBloodClean",-1);
                     OptimizePlayerLeave();
                     OptimizeItemAsk();
                     OptimizeAutoStore();
@@ -982,7 +984,11 @@ public static class PatchStability
                     // the begin hooks still increment the behaviours{} counts.
                     Observe(Method("mainscript","MirrorsUpdate",3),"NativeBehaviorMirrorsBegin","NativeBehaviorMirrorsEnd",2,new int[0],new int[0]);
                     Observe(Method("reflectionMainScript","MoveReflectionCam",2),"NativeBehaviorReflectionBegin","NativeBehaviorReflectionEnd",1,new int[0],new int[0]);
-                    Observe(Method("tosaveitemscript","MultiUpd",0),"NativeBehaviorMultiBegin","NativeBehaviorMultiEnd",3,new int[0],new int[0]);
+                    var multiUpd=Method("tosaveitemscript","MultiUpd",0);
+                    var moreUpdCalls=multiUpd.Body.Instructions.Where(i=>(i.OpCode==OpCodes.Call || i.OpCode==OpCodes.Callvirt) && i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="tosaveitemscript" && ((MethodReference)i.Operand).Name=="MoreUpd" && ((MethodReference)i.Operand).Parameters.Count==0).ToArray();
+                    if(moreUpdCalls.Length!=1)throw new Exception("Expected one native MoreUpd call");
+                    moreUpdCalls[0].OpCode=OpCodes.Call;moreUpdCalls[0].Operand=Hook("CarPoseMoreUpd");
+                    Observe(multiUpd,"NativeBehaviorMultiBegin","NativeBehaviorMultiEnd",3,new int[0],new int[0]);
                     Observe(Method("carscript","Update",0),"NativeBehaviorCarBegin","NativeBehaviorCarEnd",3,new int[0],new int[0]);
                     Observe(Method("audioBasedOnInteriorsensscript","Update",0),"NativeBehaviorAudioBegin","NativeBehaviorAudioEnd",2,new int[0],new int[0]);
                     Observe(Method("sensorScript","Update",0),"NativeBehaviorSensorBegin","NativeBehaviorSensorEnd",1,new int[0],new int[0]);
@@ -1049,7 +1055,7 @@ public static class PatchStability
                     }
                     // Native profiler seam observers add no gameplay control or state.
                     // Noises.Noise remains the only changed method without a bridge call.
-                    if(hooked!=98 || sites!=203)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    if(hooked!=100 || sites!=206)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
                     game.Write(args[2]);Console.WriteLine("Built native-restore assembly: "+args[2]+" ("+hooked+" hooked methods, "+sites+" bridge call sites)");
                 }
             }

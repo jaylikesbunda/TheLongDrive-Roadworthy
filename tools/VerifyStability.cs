@@ -758,6 +758,8 @@ public static class VerifyStability
                     {"NoiseS3D.Noise/3","M:"},
                     {"roadGenScript.UpdChunksToRemove/0","K:RoadChunkKeep:RD"},
                     {"tosaveitemscript.MorePosUpd/0","CB:CarPoseNeedsBurst:CarPoseBurst"},
+                    {"washtriggerscript.GotDirty/0","E:CarBloodDirty:-1"},
+                    {"washtriggerscript.GotClean/0","E:CarBloodClean:-1"},
                     {"playerSyncClass.DropStuff/0","IC:1:"},
                     {"syncScript.UpdItemParent/2","IC:3:GetPlayerWithScript"},
                     {"syncScript.RecAskItemData/2","RM:"},
@@ -777,7 +779,7 @@ public static class VerifyStability
                     {"mainscript.MirrorsUpdate/3","OM:NativeBehaviorMirrorsBegin:NativeBehaviorMirrorsEnd:2:-:-"},
                     {"roadscript.BakeCollider/0","RX:RoadBaked:1:-1"},
                     {"reflectionMainScript.MoveReflectionCam/2","O:NativeBehaviorReflectionBegin:NativeBehaviorReflectionEnd:1:-:-"},
-                    {"tosaveitemscript.MultiUpd/0","O:NativeBehaviorMultiBegin:NativeBehaviorMultiEnd:3:-:-"},
+                    {"tosaveitemscript.MultiUpd/0","OV:NativeBehaviorMultiBegin:NativeBehaviorMultiEnd:3:-:-:CarPoseMoreUpd:tosaveitemscript:MoreUpd:0:System.Boolean:tosaveitemscript"},
                     {"carscript.Update/0","OV:NativeBehaviorCarBegin:NativeBehaviorCarEnd:3:-:-:CarVelocitySet:UnityEngine.Rigidbody:set_velocity:1:System.Void:UnityEngine.Rigidbody:UnityEngine.Vector3"},
                     {"tankcapscript.Update/0","E:TankPourTick:-1"},
                     {"pickupable.OnDestroy/0","E:WornItemDestroyed:-1"},
@@ -965,7 +967,7 @@ public static class VerifyStability
                         if(mode=="OV")
                         {
                             // Observer pair plus one call swap: name, native type, native name, native param count, return, bridge params.
-                            if(bits.Length!=13)throw new Exception("Bad observer+call-swap rule: "+key);
+                            if(bits.Length!=12 && bits.Length!=13)throw new Exception("Bad observer+call-swap rule: "+key);
                             int expectedReturns=Int32.Parse(bits[3]);
                             StripEntry(am,bm,bridge,bits[1],ParseLoads(bits[4]));
                             StripReturns(am,bm,bridge,bits[2],expectedReturns,ParseLoads(bits[5]));
@@ -1237,7 +1239,7 @@ public static class VerifyStability
                 // Bus-ground diagnostics add two entry observers (AddPoi, poiScript.FStart): two methods, two sites.
                 // The terrain-align fix swaps two Transform.localPosition reads in poiGenScript.alignClass's constructor: one method, two sites.
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
-                if(bridgeUsers.Count!=98 || hookSites!=203)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                if(bridgeUsers.Count!=100 || hookSites!=206)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }

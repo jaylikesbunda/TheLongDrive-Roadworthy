@@ -34,7 +34,7 @@ namespace TldMp
     // Session, handshake, liveness, world-manifest transfer and join journal.
     // There is no ownership/lease/epoch authority here: native gameplay bytes are
     // relayed as opaque transport payloads and native handlers decide everything.
-    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17 }
+    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18 }
 
     public sealed class StableMessage
     {
@@ -52,7 +52,7 @@ namespace TldMp
             {
                 if(r.ReadByte()!=254 || r.ReadUInt32()!=0x33444C54 || r.ReadByte()!=3) return null;
                 var m=new StableMessage { Op=(StableOp)r.ReadByte(),Lobby=r.ReadUInt64(),Session=r.ReadUInt64(),Origin=r.ReadUInt64(),Epoch=r.ReadUInt64(),Sequence=r.ReadUInt64(),WorldRevision=r.ReadUInt64(),Key=r.ReadString() };
-                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.Heartbeat) return null;
+                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.CarBlood) return null;
                 m.Data=r.ReadBytes(n);return m;
             }} catch(Exception e) { if(e is IOException || e is ArgumentException || e is OverflowException) return null;throw; }
         }
@@ -95,6 +95,7 @@ namespace TldMp
         public Action<ulong,byte[]> Deliver;
         public Action<byte[]> ApplySnapshot;
         public Action<ulong> SnapshotRequested;
+        public Action<uint,bool> CarBloodReceived;
         public Action<string> Notice;
         public Action<uint> WatermarkChanged;
         public Action<ulong> PeerLeft;
@@ -199,6 +200,27 @@ namespace TldMp
             }
             EmitNative(Host,bytes,reliable);return true;
         }
+        // Reliable car blood state, journaled alongside native messages while a
+        // peer is receiving a world snapshot. No duplicate crash/damage event.
+        public bool PublishCarBlood(uint id,bool dirty)
+        {return PublishCarBlood(id,dirty,0);}
+        // except keeps a host relay from echoing the update back to the peer that
+        // sent it; that peer already applied the state locally.
+        public bool PublishCarBlood(uint id,bool dirty,ulong except)
+        {
+            if(id==0 || Error!=null || !Compatible || (!IsHost && !Ready))return false;
+            byte[] data=new byte[5];Buffer.BlockCopy(BitConverter.GetBytes(id),0,data,0,4);data[4]=(byte)(dirty?1:0);
+            var message=Message(StableOp.CarBlood,"",data);
+            if(IsHost)
+            {
+                byte[] encoded=message.Encode();
+                foreach(var pair in Peers)if(pair.Key!=except)SendNativeTo(pair.Key,pair.Value,encoded,true);
+            }
+            else Emit(Host,message,true);
+            return true;
+        }
+        static bool ValidCarBlood(StableMessage m)
+        {return m.Key=="" && m.Data.Length==5 && BitConverter.ToUInt32(m.Data,0)!=0 && m.Data[4]<=1;}
         public bool PublishNativeTo(ulong peer,byte[] bytes)
         {
             if(!IsHost || bytes==null || bytes.Length==0 || bytes.Length>58000 || Error!=null)return false;
@@ -320,6 +342,13 @@ namespace TldMp
                 }
                 StablePeer p;if(!Peers.TryGetValue(sender,out p) || p.Session!=m.Session || m.Origin!=sender)return;p.Seen=now;
                 if(m.Op==StableOp.Heartbeat)return;
+                if(m.Op==StableOp.CarBlood)
+                {
+                    if(!p.Ready || !ValidCarBlood(m))return;
+                    uint id=BitConverter.ToUInt32(m.Data,0);bool dirty=m.Data[4]!=0;
+                    if(CarBloodReceived!=null)CarBloodReceived(id,dirty);
+                    PublishCarBlood(id,dirty,sender);return;
+                }
                 if(m.Op==StableOp.MapRequest)
                 {
                     // Join prerequisites arrive as a burst of road/POI keys. Queue
@@ -369,6 +398,11 @@ namespace TldMp
             }
             if(!Compatible || m.Session!=HostSession)return;lastHost=now;
             if(m.Op==StableOp.Heartbeat)return;
+            if(m.Op==StableOp.CarBlood)
+            {
+                if(ValidCarBlood(m) && CarBloodReceived!=null)CarBloodReceived(BitConverter.ToUInt32(m.Data,0),m.Data[4]!=0);
+                return;
+            }
             if(m.Op==StableOp.MapPart){ReceiveMap(m);return;}
             if(m.Op==StableOp.Data){AcceptBootstrap(m);return;}
             if(m.Op==StableOp.Begin)

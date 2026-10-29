@@ -1,6 +1,6 @@
 # Changelog
 
-Current build: `20261029-single-safe-spawn` (29 October 2026)
+Current build: `20261029-car-push-blood` (29 October 2026)
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
@@ -36,6 +36,8 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Other players move more smoothly.
 - Passengers no longer drift out of seats.
 - Wheels and attached parts no longer drift away from moving cars.
+- A car pushed by another player moves smoothly instead of jumping.
+- Blood on a crashed car shows for other players.
 - Car smoothing can be turned on or off in Settings > Misc.
 - Passengers receive car position updates up to 60 times a second instead of about 5.
 - Other players' movement updates 30 times a second instead of about 3.

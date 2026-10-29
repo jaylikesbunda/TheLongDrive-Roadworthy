@@ -129,7 +129,7 @@ namespace TldMp
         static void Reset()
         {
             ResetNativeSafety();
-            maps.Clear();lastPlayers.Clear();lastItems.Clear();diagnosticNext.Clear();loopbackBootstrapSent.Clear();loopbackBootstrapReceived=false;loopbackPreviousMap=null;
+            maps.Clear();lastPlayers.Clear();lastItems.Clear();pendingCarBlood.Clear();diagnosticNext.Clear();loopbackBootstrapSent.Clear();loopbackBootstrapReceived=false;loopbackPreviousMap=null;
             if(steamTransport!=null){steamTransport.Dispose();steamTransport=null;}transportLobby=transportHost=0;nextSdrRetry=0;deliveryPeerCursor=0;delivery.Clear();hostWorldEvidence=false;
             outbox.Clear();bulkOutbox.Clear();node=null;StableMap.Configure(null);nextPulse=0;lastError=null;
             selection.Clear();
@@ -171,7 +171,7 @@ namespace TldMp
             node.Trace=JoinDiagnostic;
             node.DeferMapWork=true;
             node.WatermarkChanged=delegate(uint high){if(savedatascript.s!=null && savedatascript.s.data!=null)savedatascript.s.data.lastID=Math.Max(savedatascript.s.data.lastID,high);};
-            node.PeerLeft=RemovePlayer;
+            node.PeerLeft=RemovePlayer;node.CarBloodReceived=ApplyCarBlood;
             StableMap.Configure(node);
             if(loopbackMode && !node.IsHost)
             {
@@ -773,6 +773,7 @@ namespace TldMp
         public static void SafeSlice(randomSlice slice,bool darabForce,bool darabAlsoVagas,Vector3 terrainNormal,Vector3 lossyScale){try{slice.SSSLiceee(darabForce,darabAlsoVagas,terrainNormal,lossyScale);}catch(Exception error){SliceGuard.Failed(error);}}
         public static bool MirrorVisible(Renderer renderer,Camera camera){return MirrorOnScreen.Visible(renderer,camera);}
         public static bool CarPoseNeedsBurst(tosaveitemscript item){return CarPosePolicy.NeedsBurst(item);}
+        public static bool CarPoseMoreUpd(tosaveitemscript item){return item.MoreUpd() || CarPosePolicy.NeedsBurst(item);}
         // Runs instead of MorePosUpd while a remote player rides in this moving car.
         // The native burst covers one sync interval and then waits for the item
         // sweep to reach the car again, which left ~1 s holes in the passenger's
@@ -920,7 +921,7 @@ namespace TldMp
         static void TimedSendWorld(ulong peer)
         {long start=PhaseTimings.Begin();try{SendWorld(peer);}finally{PhaseTimings.End(PhaseTimings.SnapshotSend,start,"capture+encode+validate");}}
         static void TimedApplyWorld(byte[] bytes)
-        {long start=PhaseTimings.Begin();try{ApplyWorld(bytes);}finally{PhaseTimings.End(PhaseTimings.SnapshotApply,start,bytes==null?null:"bytes="+bytes.Length);}}
+        {long start=PhaseTimings.Begin();try{pendingCarBlood.Clear();ApplyWorld(bytes);}finally{PhaseTimings.End(PhaseTimings.SnapshotApply,start,bytes==null?null:"bytes="+bytes.Length);}}
         static void SendWorld(ulong peer)
         {
             JoinDiagnostic("SendWorld entry target="+peer+" "+MapDiagnostic());
@@ -1055,7 +1056,7 @@ namespace TldMp
         internal static void Pulse()
         {
             pulseDrainTicks=pulseTickTicks=0;
-            Ensure();CargoDiagnostics.Tick();GroundDiagnostics.TickBusPlacement();if(DiagnosticMode)GroundDiagnostics.Tick();if(node==null)return;ReplayPendingItems();
+            Ensure();CargoDiagnostics.Tick();TickCarBlood();GroundDiagnostics.TickBusPlacement();if(DiagnosticMode)GroundDiagnostics.Tick();if(node==null)return;ReplayPendingItems();
             long drainStart=Stopwatch.GetTimestamp();
             SettleLiveUsables();DrainDeliveryQueues();outbox.Flush(Now);bulkOutbox.Flush(Now);
             pulseDrainTicks=Stopwatch.GetTimestamp()-drainStart;
@@ -1203,6 +1204,40 @@ namespace TldMp
         public static void NativeTerrainCheckEnd(){FrameDiagnostics.NativeTerrainCheckEnd();}
         public static void NativeThumbleweedBegin(){FrameDiagnostics.NativeThumbleweedBegin();}
         public static void NativeThumbleweedEnd(){FrameDiagnostics.NativeThumbleweedEnd();}
+        static readonly Dictionary<uint,bool> pendingCarBlood=new Dictionary<uint,bool>();
+        static bool applyingCarBlood;static float nextCarBloodRetry;
+        public static void CarBloodDirty(washtriggerscript wash){CarBloodChanged(wash,true);}
+        public static void CarBloodClean(washtriggerscript wash){CarBloodChanged(wash,false);}
+        static void CarBloodChanged(washtriggerscript wash,bool dirty)
+        {
+            if(applyingCarBlood || !Connected || node==null || !node.Ready || wash==null)return;
+            var car=wash.GetComponentInParent<carscript>();
+            if(car==null || car.blood!=wash || car.tosave==null || car.tosave.idInSave==0)return;
+            node.PublishCarBlood(car.tosave.idInSave,dirty);
+        }
+        static bool TryApplyCarBlood(uint id,bool dirty)
+        {
+            tosaveitemscript item;
+            if(!Find(id,out item) || item==null || item.car==null || item.car.blood==null)return false;
+            var blood=item.car.blood;
+            if(blood.ON==dirty)return true;
+            applyingCarBlood=true;
+            try{if(dirty)blood.GotDirty();else blood.GotClean();}
+            finally{applyingCarBlood=false;}
+            return true;
+        }
+        static void ApplyCarBlood(uint id,bool dirty)
+        {
+            if(TryApplyCarBlood(id,dirty)){pendingCarBlood.Remove(id);return;}
+            if(pendingCarBlood.Count<1024 || pendingCarBlood.ContainsKey(id))pendingCarBlood[id]=dirty;
+        }
+        static void TickCarBlood()
+        {
+            if(pendingCarBlood.Count==0 || Time.unscaledTime<nextCarBloodRetry)return;
+            nextCarBloodRetry=Time.unscaledTime+.5f;
+            foreach(var pair in new List<KeyValuePair<uint,bool>>(pendingCarBlood))
+                if(TryApplyCarBlood(pair.Key,pair.Value))pendingCarBlood.Remove(pair.Key);
+        }
         public static void NativePoiNativeAddBegin(){FrameDiagnostics.NativePoiNativeAddBegin();}
         public static void NativePoiNativeAddEnd(){FrameDiagnostics.NativePoiNativeAddEnd();}
         public static void NativePoiInstantiateBegin(){FrameDiagnostics.NativePoiInstantiateBegin();}

@@ -46,6 +46,8 @@ A multiplayer and performance patch for **The Long Drive**.
 - Other players move more smoothly.
 - Passengers no longer drift out of seats.
 - Wheels and attached parts no longer drift away from moving cars.
+- A car pushed by another player moves smoothly instead of jumping.
+- Blood on a crashed car shows for other players.
 - Car smoothing can be turned on or off in Settings > Misc.
 - Passengers receive car position updates up to 60 times a second instead of about 5.
 - Other players' movement updates 30 times a second instead of about 3.

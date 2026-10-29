@@ -42,6 +42,9 @@ internal static class CarPosePolicyTests
         Check(!CarPosePolicy.WantsBurst(true, true, 0), "streamed with nobody to see it");
         Check(!CarPosePolicy.WantsBurst(true, false, 1), "parked car streamed");
         Check(!CarPosePolicy.WantsBurst(false, true, 1), "streamed a car another machine controls");
+        Check(CarPosePolicy.WantsBurst(true, false, true, 1), "a pushed car streams even at low speed");
+        Check(!CarPosePolicy.WantsBurst(false, false, true, 1), "a pushed car owned elsewhere is not streamed");
+        Check(!CarPosePolicy.WantsBurst(true, false, true, 0), "a pushed car without observers is not streamed");
         Console.WriteLine("PASS: " + checks + " car pose policy assertions; extra count for moving locally controlled cars while another player is connected, capped, native count otherwise.");
         return 0;
     }

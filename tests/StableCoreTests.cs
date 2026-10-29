@@ -63,11 +63,44 @@ public static class StableCoreTests
             var replayHello=new StableMessage {Op=StableOp.Hello,Lobby=999,Session=123,Origin=20,Data=System.Text.Encoding.UTF8.GetBytes("same-build")};
             var encoded=replayHello.Encode();for(int i=0;i<encoded.Length;i++){var b=new byte[i];Buffer.BlockCopy(encoded,0,b,0,i);Check(StableMessage.Decode(b)==null,"truncated envelope rejected");}
             Check(StableMessage.Decode(new byte[60001])==null,"oversized envelope rejected");
-            MapTransfers();MapRequestBackpressure();DeferredMapWork();NativeRelay();Liveness();CargoPosePolicyChecks();
+            MapTransfers();MapRequestBackpressure();DeferredMapWork();NativeRelay();Liveness();CargoPosePolicyChecks();CarBloodRelay();
             Console.WriteLine("PASS: "+checks+" reduced-core checks with THREE independent peer state machines: handshake, ID blocks, snapshot/journal/hash barrier, native journal ordering, map transfers, deferred map work, liveness and compatibility.");
             return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
     }
+    static void CarBloodRelay()
+    {
+        var lab=new Lab();lab.Connect();
+        var received=new Dictionary<ulong,List<string>>();
+        foreach(var pair in lab.Nodes)
+        {
+            ulong id=pair.Key;received[id]=new List<string>();
+            pair.Value.CarBloodReceived=delegate(uint car,bool dirty){received[id].Add(car+":"+dirty);};
+        }
+        Check(lab.Nodes[20].PublishCarBlood(42,true),"ready client publishes blood state");lab.Pump();
+        Check(received[10].Count==1 && received[10][0]=="42:True","host applies client blood");
+        Check(received[30].Count==1 && received[30][0]=="42:True","host relays blood to other client");
+        Check(received[20].Count==0,"publishing client does not receive its own echo");
+        Check(lab.Nodes[10].PublishCarBlood(42,false),"host publishes clean state");lab.Pump();
+        Check(received[20][received[20].Count-1]=="42:False" && received[30][received[30].Count-1]=="42:False","clean state reaches clients");
+        lab.Tick(2);
+        var order=new List<string>();
+        lab.Nodes[20].ApplySnapshot=delegate(byte[] bytes){order.Add("snapshot");};
+        lab.Nodes[20].CarBloodReceived=delegate(uint id,bool dirty){order.Add("blood:"+id+":"+dirty);};
+        lab.Nodes[20].RequestSnapshot();
+        Check(lab.Queue.Count==1,"resnapshot request queued");
+        var request=lab.Queue[0];lab.Queue.RemoveAt(0);lab.Nodes[10].Receive(request.From,request.Bytes,lab.Now);
+        Check(lab.Nodes[10].Peers[20].Syncing,"resnapshot is in progress");
+        lab.Nodes[10].PublishCarBlood(42,true);
+        Check(lab.Nodes[10].Peers[20].Journal.Count>0,"blood update is journaled during world transfer");
+        lab.Pump();
+        Check(order.Count==2 && order[0]=="snapshot" && order[1]=="blood:42:True","blood state follows snapshot during join");
+        Check(!lab.Nodes[20].PublishCarBlood(0,true),"invalid item ID is refused");
+        var bad=new StableMessage {Op=StableOp.CarBlood,Lobby=999,Session=lab.Nodes[20].Session,Origin=20,Data=new byte[]{42,0,0,0,2}};
+        int count=received[10].Count;lab.Nodes[10].Receive(20,bad.Encode(),lab.Now);lab.Pump();
+        Check(received[10].Count==count,"invalid blood state is ignored");
+    }
+
     static void NativeRelay()
     {
         var lab=new Lab();lab.Connect();var host=lab.Nodes[10];var client=lab.Nodes[20];
