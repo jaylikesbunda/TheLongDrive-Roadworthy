@@ -13,7 +13,7 @@ public static class NativeSpawnSafetyTests
     static void WaitsForSupportThenPhysicsThenLive()
     {
         var safety = new NativeSpawnSafety();
-        safety.Begin(false, true);
+        safety.Begin(false, true, true);
         Check(safety.Evaluate(true, false, true, false, false, true, true) == NativeSpawnSafetyAction.Hold,
             "a physics step and Live cannot release before support at the intended spawn");
         Check(!safety.HasSpawnSupport && !safety.HasPhysicsOpportunity,
@@ -39,11 +39,13 @@ public static class NativeSpawnSafetyTests
     static void AbortRestoresCapturedFlags()
     {
         var safety = new NativeSpawnSafety();
-        safety.Begin(true, false);
+        safety.Begin(true, false, true);
         Check(safety.Evaluate(true, false, true, false, false, false, false) == NativeSpawnSafetyAction.Hold,
             "pending join requests the hold");
         Check(safety.CapturedIsKinematic && !safety.CapturedUseGravity,
             "pre-hold Rigidbody flags are retained for abort/reset restoration");
+        Check(safety.CapturedDetectCollisions,
+            "pre-hold contact state is retained so the release restores it");
         Check(safety.Evaluate(false, false, true, false, false, false, false) == NativeSpawnSafetyAction.Restore,
             "join cancellation restores the pre-hold flags");
         Check(!safety.Active, "cancel ends the hold");
@@ -53,11 +55,11 @@ public static class NativeSpawnSafetyTests
     static void NativeTransitionsRemainInControl()
     {
         var safety = new NativeSpawnSafety();
-        safety.Begin(false, true);
+        safety.Begin(false, true, true);
         Check(safety.Evaluate(true, false, true, true, false, false, false) == NativeSpawnSafetyAction.Restore,
             "entering a seat ends the temporary hold and restores flags");
 
-        safety.Begin(false, true);
+        safety.Begin(false, true, true);
         Check(safety.Evaluate(true, false, false, false, false, false, false) == NativeSpawnSafetyAction.Restore,
             "native death ends the temporary hold and restores flags");
 
@@ -68,21 +70,21 @@ public static class NativeSpawnSafetyTests
     static void BodyReplacementAndReconnectResetCapture()
     {
         var safety = new NativeSpawnSafety();
-        safety.Begin(false, true);
+        safety.Begin(false, true, true);
         Check(safety.Evaluate(true, false, true, false, false, false, false) == NativeSpawnSafetyAction.Hold,
             "first body enters the hold");
         bool rejectedReplacement = false;
-        try { safety.Begin(true, false); }
+        try { safety.Begin(true, false, true); }
         catch (InvalidOperationException) { rejectedReplacement = true; }
         Check(rejectedReplacement, "replacement cannot overwrite flags captured for the old body");
         Check(safety.Abort() == NativeSpawnSafetyAction.Restore,
             "body replacement first restores the old body's captured flags");
 
-        safety.Begin(true, false);
+        safety.Begin(true, false, false);
         Check(safety.Evaluate(false, false, true, false, false, false, false) == NativeSpawnSafetyAction.Restore,
             "reconnect cancellation restores the new body's own captured flags");
-        Check(safety.CapturedIsKinematic && !safety.CapturedUseGravity,
-            "new connection captured its replacement body's flags independently");
+        Check(safety.CapturedIsKinematic && !safety.CapturedUseGravity && !safety.CapturedDetectCollisions,
+            "new connection captured its replacement body's flags independently, including disabled contacts");
     }
 
     public static void Main()

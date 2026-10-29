@@ -875,6 +875,10 @@ public static class PatchStability
                 {
                     module=game.MainModule;bridge=runtime.MainModule.Types.Single(t=>t.FullName=="TldMp.StableGameBridge");
                     string hood="GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript";
+                    var lobbyWrite=Method(hood,"OnCreatedLobby",1).Body.Instructions.Where(i=>i.OpCode==OpCodes.Call && i.Operand is MethodReference && ((MethodReference)i.Operand).Name=="SetLobbyData").ToArray();
+                    var lobbyRead=Method("SteamP2PMenuHandlerScript","UpdLobbies",1).Body.Instructions.Where(i=>i.OpCode==OpCodes.Call && i.Operand is MethodReference && ((MethodReference)i.Operand).Name=="GetLobbyData").ToArray();
+                    if(lobbyWrite.Length!=3 || lobbyRead.Length!=3 || lobbyWrite[2].Previous.OpCode!=OpCodes.Call || lobbyRead[2].Previous.OpCode!=OpCodes.Ldstr || (string)lobbyRead[2].Previous.Operand!="version")throw new Exception("Lobby version call sites changed.");
+                    lobbyWrite[2].Operand=Hook("SetLobbyVersion");lobbyRead[2].Operand=Hook("GetLobbyVersion");
                     // Test transport identity: stock values whenever loopback is inactive.
                     Replace(Method(hood,"OwnID",0),"LoopbackOwnID");
                     Replace(Method("SteamP2PMenuHandlerScript","GetSpawnType",0),"LoopbackSpawnType");
@@ -1055,7 +1059,7 @@ public static class PatchStability
                     }
                     // Native profiler seam observers add no gameplay control or state.
                     // Noises.Noise remains the only changed method without a bridge call.
-                    if(hooked!=100 || sites!=206)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    if(hooked!=102 || sites!=208)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
                     game.Write(args[2]);Console.WriteLine("Built native-restore assembly: "+args[2]+" ("+hooked+" hooked methods, "+sites+" bridge call sites)");
                 }
             }

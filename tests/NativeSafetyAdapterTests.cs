@@ -89,7 +89,7 @@ namespace UnityEngine
     public class Collider : Component { public bool enabled=true, isTrigger; public Bounds bounds; }
     public class Rigidbody : Component
     {
-        public bool isKinematic, useGravity;
+        public bool isKinematic, useGravity, detectCollisions=true;
         public Vector3 velocity, angularVelocity, position;
     }
     public struct RaycastHit { public Collider collider; public Vector3 normal, point; }
@@ -560,6 +560,34 @@ internal static class NativeSafetyAdapterTests
             "seat exit diagnostics report the native input reason");
     }
 
+    static void TestSpawnHoldSuppressesContacts()
+    {
+        ResetHarness();
+        Rigidbody body;BeginSpawnFixture(out body);
+        // The native teleport can drop the capsule inside a car. The hook runs in
+        // the same call stack, so contacts must already be off before the next
+        // FixedUpdate can shove the car while the search picks a spot.
+        Check(!body.detectCollisions,
+            "spawn teleport hook disables contacts on the held body before any physics step");
+
+        StableGameBridge.node.Ready=true;
+        SetSpawnSupport(true);
+        TickSpawn(false);
+        Check(!body.detectCollisions && body.isKinematic,
+            "a held spawn still generates no contacts while waiting for a clear spot");
+
+        UnityEngine.Time.fixedTime+=.02f;
+        TickSpawn(false);
+        Check(!GetField<NativeSpawnSafety>("spawnSafety").Active && body.detectCollisions,
+            "release restores the captured contact state exactly once");
+
+        ResetHarness();
+        BeginSpawnFixture(out body);
+        Invoke("ResetNativeSafety");
+        Check(body.detectCollisions,
+            "session reset restores contacts on a body that was still held");
+    }
+
     static void TestSpawnRetargetAndResetRestoresFlags()
     {
         ResetHarness();
@@ -583,7 +611,7 @@ internal static class NativeSafetyAdapterTests
         Check(body.isKinematic && !body.useGravity && player.transform.position==new Vector3(20,5,-7),
             "pre-physics hold uses the retargeted spawn anchor");
         Invoke("ResetNativeSafety");
-        Check(!body.isKinematic && body.useGravity,"session reset restores the captured native Rigidbody flags");
+        Check(!body.isKinematic && body.useGravity && body.detectCollisions,"session reset restores the captured native Rigidbody flags");
         Check(!GetField<NativeSpawnSafety>("spawnSafety").Active,"session reset retires the spawn hold");
     }
 
@@ -595,6 +623,7 @@ internal static class NativeSafetyAdapterTests
         TestNativeLocalPoseRetrySemantics();
         TestSessionResetCancelsRetry();
         TestSeatRepairAndExit();
+        TestSpawnHoldSuppressesContacts();
         TestSpawnRetargetAndResetRestoresFlags();
         TestSpawnSupportAndRelease();
         TestEmbeddedSpawnRecovery();

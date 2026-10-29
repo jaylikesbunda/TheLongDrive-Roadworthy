@@ -722,6 +722,8 @@ public static class VerifyStability
                 var expected=new Dictionary<string,string>{
                     {"SteamP2PNetworkingUnderTheHoodScript.OwnID/0","R:LoopbackOwnID:"},
                     {"SteamP2PMenuHandlerScript.GetSpawnType/0","R:LoopbackSpawnType:"},
+                    {"SteamP2PMenuHandlerScript.UpdLobbies/1","SW:GetLobbyVersion:Steamworks.SteamMatchmaking:GetLobbyData:2:System.String:Steamworks.CSteamID:System.String"},
+                    {"SteamP2PNetworkingUnderTheHoodScript.OnCreatedLobby/1","SW:SetLobbyVersion:Steamworks.SteamMatchmaking:SetLobbyData:3:System.Boolean:Steamworks.CSteamID:System.String:System.String"},
                     {"syncScript.GetPhysicsLock/0","R:LoopbackPhysicsLock:"},
                     {"fpscontroller.Teleport/2","A:AfterNativeSpawnTeleport:-1"},
                     {"fpscontroller.GetIn/1","A:AfterNativeSeatEntry:-1,0"},
@@ -1239,7 +1241,7 @@ public static class VerifyStability
                 // Bus-ground diagnostics add two entry observers (AddPoi, poiScript.FStart): two methods, two sites.
                 // The terrain-align fix swaps two Transform.localPosition reads in poiGenScript.alignClass's constructor: one method, two sites.
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
-                if(bridgeUsers.Count!=100 || hookSites!=206)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                if(bridgeUsers.Count!=102 || hookSites!=208)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }

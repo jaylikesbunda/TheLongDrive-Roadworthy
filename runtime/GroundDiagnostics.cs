@@ -19,7 +19,6 @@ namespace TldMp
     {
         const int BusStopId = 5;
         const int MaxBusLines = 400;
-        const int MaxLodLines = 240;
         const int MaxPending = 24;
         const int MaxPoiLines = 300;
         const int MaxPlacedChecks = 400;
@@ -33,7 +32,7 @@ namespace TldMp
         const int MaxTilesScanned = 4096;
         const float RayHeight = 1000f;
         const float RayLength = 2000f;
-        const float LodInterval = 2f;
+        const float LodInterval = 5f;
         static readonly float[] FollowUps = new float[] { 3f, 10f };
         static readonly float[] LodDistances = new float[] { 0f, 40f, 80f, 120f, 200f, 300f, 450f, 700f };
         static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
@@ -48,7 +47,7 @@ namespace TldMp
         }
 
         static readonly List<Pending> pending = new List<Pending>();
-        static int busLines, poiLines, lodLines, placedChecks, poiNearLines;
+        static int busLines, poiLines, placedChecks, poiNearLines;
         static Vector3d poiNearAt;
         static bool poiNearSeen;
         static float nextLod, nextPoiNear;
@@ -430,7 +429,6 @@ namespace TldMp
 
         static void SampleLod()
         {
-            if (lodLines >= MaxLodLines) return;
             var map = Map();
             var player = mainscript.s == null ? null : mainscript.s.player;
             if (map == null || !map.started || player == null || map.terrainGen == null) return;
@@ -462,11 +460,29 @@ namespace TldMp
                     }
                     hs.Append("}");
                 }
-                Emit(hs.ToString(), ref lodLines, MaxLodLines);
+                Debug.Log(hs.ToString());
             }
             var s = new StringBuilder(256);
             s.Append("[TLD MP terrain-lod] frame=").Append(Time.frameCount).Append(" at=").Append(V(mainscript.GlobalFromUnityPos(body.position)));
             s.Append(" speed=").Append(F(player.Car != null && player.Car.GetComponent<Rigidbody>() != null ? player.Car.GetComponent<Rigidbody>().velocity.magnitude : 0f));
+            s.Append(" t=").Append(F(Time.realtimeSinceStartup)).Append(" origin=").Append(V(mainscript.s.visszarakva));
+            if (player.Car != null)
+            {
+                var rb = player.Car.GetComponent<Rigidbody>();
+                s.Append(" car=").Append(player.Car.name);
+                if (rb != null) s.Append(" velocity=").Append(V(new Vector3d(rb.velocity.x, rb.velocity.y, rb.velocity.z)))
+                    .Append(" kinematic=").Append(rb.isKinematic).Append(" collisions=").Append(rb.detectCollisions)
+                    .Append(" mode=").Append(rb.collisionDetectionMode);
+            }
+            Vector3d key;
+            var center = mainscript.GlobalFromUnityPos(body.position);
+            var tileAtCar = TileAt(near, center, out key);
+            s.Append(" centerTile=").Append(tileAtCar != null).Append(" key=").Append(V(key));
+            if (tileAtCar != null)
+                s.Append(" tileAt=").Append(V(mainscript.GlobalFromUnityPos(tileAtCar.transform.position)))
+                    .Append(" collider=").Append(tileAtCar.mc != null && tileAtCar.mc.enabled && tileAtCar.mc.sharedMesh != null)
+                    .Append(" active=").Append(tileAtCar.gameObject.activeInHierarchy);
+            s.Append(" centerMesh=").Append(Num(MeshY(near, center)));
             var settings = map.terrainGenSettings != null && map.terrainGenSettings.Count > 0 ? map.terrainGenSettings[0] : null;
             for (int d = 0; d < LodDistances.Length; d++)
             {
@@ -482,7 +498,9 @@ namespace TldMp
                     if (i == 0 && !double.IsNaN(fy) && !double.IsNaN(ny)) s.Append("(d").Append(F(fy - ny)).Append(")");
                 }
             }
-            Emit(s.ToString(), ref lodLines, MaxLodLines);
+            // Keep a rate-limited record for the entire drive. A lifetime cap
+            // used to silence this before later streaming/recenter failures.
+            Debug.Log(s.ToString());
         }
     }
 }

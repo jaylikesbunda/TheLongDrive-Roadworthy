@@ -22,6 +22,7 @@ namespace TldMp
         const string ShadowRowName = "TldShadowQuality";
 
         bool installed, failed;
+        settingsscript installedSettings;
         int activeFrames;
         dropdownsetting presetRow, shadowRow;
         togglesetting smoothRow;
@@ -29,8 +30,18 @@ namespace TldMp
 
         void Update()
         {
-            if (installed || failed) return;
             var settings = settingsscript.s;
+            // This driver survives scene loads; the native settings prefab does
+            // not. Install once per prefab, including returns to the main menu.
+            if (!ReferenceEquals(installedSettings, settings))
+            {
+                installedSettings = settings;
+                installed = failed = false;
+                activeFrames = 0;
+                presetRow = shadowRow = null;
+                smoothRow = null;
+            }
+            if (installed || failed) return;
             if (settings == null || settings.gameObject == null || !settings.gameObject.activeInHierarchy)
             {
                 activeFrames = 0;

@@ -18,7 +18,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 NAME = "TheLongDrive-Roadworthy"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 RELEASE = ROOT / "release" / NAME
 ARCHIVE = ROOT / "release" / f"{NAME}-v{VERSION}.zip"
 CECIL = ROOT / ".tools" / "cecil.zip"

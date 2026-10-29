@@ -21,18 +21,21 @@ namespace TldMp
         bool physicsOpportunitySeen;
         bool capturedIsKinematic;
         bool capturedUseGravity;
+        bool capturedDetectCollisions;
 
         public bool Active { get { return active; } }
         public bool CapturedIsKinematic { get { return capturedIsKinematic; } }
         public bool CapturedUseGravity { get { return capturedUseGravity; } }
+        public bool CapturedDetectCollisions { get { return capturedDetectCollisions; } }
         public bool HasSpawnSupport { get { return supportSeen; } }
         public bool HasPhysicsOpportunity { get { return physicsOpportunitySeen; } }
 
-        public void Begin(bool isKinematic, bool useGravity)
+        public void Begin(bool isKinematic, bool useGravity, bool detectCollisions)
         {
             if (active) throw new InvalidOperationException("Abort the current spawn hold before replacing its player body.");
             capturedIsKinematic = isKinematic;
             capturedUseGravity = useGravity;
+            capturedDetectCollisions = detectCollisions;
             supportSeen = false;
             physicsOpportunitySeen = false;
             active = true;

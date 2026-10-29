@@ -43,6 +43,7 @@ namespace TldMp
             if(spawnBody==null || !spawnSafety.Active)return;
             spawnBody.isKinematic=spawnSafety.CapturedIsKinematic;
             spawnBody.useGravity=spawnSafety.CapturedUseGravity;
+            spawnBody.detectCollisions=spawnSafety.CapturedDetectCollisions;
         }
         static bool ShouldProtectSpawn()
         {
@@ -61,7 +62,12 @@ namespace TldMp
                     spawnFootOffset=Math.Min(spawnFootOffset,c.bounds.min.y-player.transform.position.y);
             spawnFootOffset=Math.Max(-3f,spawnFootOffset);
             spawnSupportWasPresent=false;spawnSupportFixedTime=Time.fixedTime;spawnGroundSearchAt=0;spawnCandidateValid=false;
-            spawnSafety.Begin(spawnBody.isKinematic,spawnBody.useGravity);
+            spawnSafety.Begin(spawnBody.isKinematic,spawnBody.useGravity,spawnBody.detectCollisions);
+            // The native teleport may have put the capsule inside a car or prop.
+            // A kinematic body still pushes dynamic bodies, so the hold must stop
+            // generating contacts before the next physics step; otherwise the car
+            // is shoved while the clearance search is still deciding where to go.
+            spawnBody.detectCollisions=false;
             JoinDiagnostic("spawn hold started at="+player.transform.position);
         }
         // Both native Teleport overloads pass through the two-argument method.
@@ -149,7 +155,7 @@ namespace TldMp
                 HoldSpawnBody(position);return;
             }
             // Preserve the captured flags before Evaluate retires the policy.
-            bool oldKinematic=spawnSafety.CapturedIsKinematic,oldGravity=spawnSafety.CapturedUseGravity;
+            bool oldKinematic=spawnSafety.CapturedIsKinematic,oldGravity=spawnSafety.CapturedUseGravity,oldDetect=spawnSafety.CapturedDetectCollisions;
             if(SpawnClearanceEnabled)
             {
                 // A candidate must have walkable static ground and room for the
@@ -186,7 +192,7 @@ namespace TldMp
             NativeSpawnSafetyAction action=spawnSafety.Evaluate(true,false,!player.died,player.Bsitting,support,opportunity,node.Ready);
             if(action==NativeSpawnSafetyAction.Release || action==NativeSpawnSafetyAction.Restore)
             {
-                spawnBody.isKinematic=oldKinematic;spawnBody.useGravity=oldGravity;
+                spawnBody.isKinematic=oldKinematic;spawnBody.useGravity=oldGravity;spawnBody.detectCollisions=oldDetect;
                 spawnFinished=true;spawnBody=null;spawnPlayer=null;
                 JoinDiagnostic("spawn hold released after live collision support");return;
             }
@@ -197,6 +203,9 @@ namespace TldMp
             if(spawnBody==null || spawnPlayer==null)return;
             if(!spawnBody.isKinematic){spawnBody.velocity=Vector3.zero;spawnBody.angularVelocity=Vector3.zero;}
             spawnBody.isKinematic=true;spawnBody.useGravity=false;
+            // Native load code can re-enable contacts on the captured body; the
+            // held capsule must never touch the world it is being moved out of.
+            if(spawnBody.detectCollisions)spawnBody.detectCollisions=false;
             spawnPlayer.transform.position=position;spawnBody.position=position;
         }
 

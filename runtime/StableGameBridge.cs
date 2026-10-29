@@ -1173,8 +1173,20 @@ namespace TldMp
         public static void NativeBehaviorWheelGraphicsEnd(){FrameDiagnostics.NativeBehaviorWheelGraphicsEnd();}
         public static void NativeBehaviorSyncBegin(){PrunePlayers();FrameDiagnostics.NativeBehaviorSyncBegin();}
         public static void NativeBehaviorSyncEnd(){FrameDiagnostics.NativeBehaviorSyncEnd();PrunePlayers();}
-        public static void NativeVisszaRakasBegin(){FrameDiagnostics.NativeVisszaRakasBegin();}
-        public static void NativeVisszaRakasEnd(){FrameDiagnostics.NativeVisszaRakasEnd();}
+        static Vector3d recenterOrigin;
+        public static void NativeVisszaRakasBegin(){FrameDiagnostics.NativeVisszaRakasBegin();if(mainscript.s!=null)recenterOrigin=mainscript.s.visszarakva;}
+        public static void NativeVisszaRakasEnd()
+        {
+            FrameDiagnostics.NativeVisszaRakasEnd();
+            var main=mainscript.s;
+            if(main==null || main.visszarakva==recenterOrigin)return;
+            var map=menuhandler.s==null?null:menuhandler.s.currentMainMap;
+            if(map==null || map.genArounds==null)return;
+            // The native streaming loop refreshes these cached Unity positions
+            // on its next Update. Other coroutines can run first after a shift.
+            foreach(var around in map.genArounds)
+                if(around!=null && around.t!=null)around.upos=around.t.position;
+        }
         public static void NativeWheelGraphicsBegin(){FrameDiagnostics.NativeWheelGraphicsBegin();}
         public static void NativeWheelGraphicsEnd(){FrameDiagnostics.NativeWheelGraphicsEnd();}
         public static void NativeWheelSizeBegin(){FrameDiagnostics.NativeWheelSizeBegin();}

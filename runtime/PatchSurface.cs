@@ -1,6 +1,7 @@
 using System;
 using TMPro;
 using UnityEngine;
+using Steamworks;
 
 namespace TldMp
 {
@@ -18,6 +19,19 @@ namespace TldMp
         {
             if (label == null) return;
             label.text = PatchInfo.Display;
+        }
+
+        public static bool SetLobbyVersion(CSteamID lobby, string key, string version)
+        {
+            bool result = SteamMatchmaking.SetLobbyData(lobby, key, version);
+            if (result) SteamMatchmaking.SetLobbyData(lobby, "roadworthy_version", PatchInfo.Display.Trim());
+            return result;
+        }
+
+        public static string GetLobbyVersion(CSteamID lobby, string key)
+        {
+            string roadworthy = SteamMatchmaking.GetLobbyData(lobby, "roadworthy_version");
+            return string.IsNullOrEmpty(roadworthy) ? SteamMatchmaking.GetLobbyData(lobby, key) : roadworthy;
         }
 
         // Called from TldStable.Configure after scene load and before every return
