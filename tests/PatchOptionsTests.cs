@@ -28,6 +28,7 @@ internal static class PatchOptionsTests
         Check(balanced.Applies && balanced.AntiAliasing == 2 && balanced.PixelLightCount == 4 &&
             Math.Abs(balanced.ShadowDistance - 80f) < 0.01f && balanced.ShadowCascades == 2 &&
             !balanced.RealtimeReflectionProbes, "Balanced keeps today's values");
+        Check(!balanced.ShadowBudget, "Balanced leaves the quality level's shadow budget alone");
     }
 
     static void Tables()
@@ -36,7 +37,9 @@ internal static class PatchOptionsTests
         PresetValues performance = PatchOptions.Values(GraphicsPreset.Performance);
         Check(performance.AntiAliasing == 0 && performance.PixelLightCount == 2 && performance.ShadowCascades == 1 &&
             Math.Abs(performance.ShadowDistance - 50f) < 0.01f && performance.MirrorOptimizations, "Performance values match the contract");
+        Check(performance.ShadowBudget, "only Performance replaces the quality level's shadow budget");
         Check(PatchOptions.Values(GraphicsPreset.Custom).Applies, "Custom applies a preset base");
+        Check(!PatchOptions.Values(GraphicsPreset.Custom).ShadowBudget, "Custom keeps the quality level's shadow budget");
         Check(PatchOptions.DefaultShadow(GraphicsPreset.Performance) == ShadowLevel.Low, "Performance defaults to Low shadows");
         Check(PatchOptions.DefaultShadow(GraphicsPreset.Balanced) == ShadowLevel.Medium, "Balanced defaults to Medium shadows");
         Check(PatchOptions.DefaultShadow(GraphicsPreset.Vanilla) == ShadowLevel.Off, "Vanilla defaults to Off shadows");

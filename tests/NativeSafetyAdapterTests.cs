@@ -117,7 +117,7 @@ public struct Vector3d
     public Vector3d(double x,double y,double z) { this.x=x;this.y=y;this.z=z; }
 }
 
-public enum msgType : byte { itemPosGlobal=16, velocity=19, attachable=42, itemPosPlayer=18, removeItem=36 }
+public enum msgType : byte { playerPos=10, itemPosGlobal=16, velocity=19, attachable=42, itemPosPlayer=18, removeItem=36 }
 
 public sealed class inputscript { public bool useDown; }
 public sealed class seatscript : Component { public Transform sitPos; }
@@ -617,6 +617,14 @@ internal static class NativeSafetyAdapterTests
 
     static void Run()
     {
+        ResetHarness();
+        Check((bool)Invoke("SuppressJoiningPlayerPosition",new byte[]{(byte)msgType.playerPos}),"joining client suppresses temporary player position");
+        Check(!(bool)Invoke("SuppressJoiningPlayerPosition",new byte[]{(byte)msgType.velocity}),"other native packets are unaffected");
+        StableGameBridge.node.IsHost=true;
+        Check(!(bool)Invoke("SuppressJoiningPlayerPosition",new byte[]{(byte)msgType.playerPos}),"host position is unaffected");
+        StableGameBridge.node.IsHost=false;SetField("spawnFinished",true);
+        Check(!(bool)Invoke("SuppressJoiningPlayerPosition",new byte[]{(byte)msgType.playerPos}),"released client position is sent");
+        Invoke("ResetNativeSafety");
         TestWorldPosePackets();
         TestWrapperInvalidationAndSeparation();
         TestOutgoingTopologyInvalidation();

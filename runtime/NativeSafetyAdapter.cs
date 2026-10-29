@@ -51,6 +51,13 @@ namespace TldMp
                 mainscript.s!=null && mainscript.s.player!=null && menuhandler.s!=null &&
                 menuhandler.s.currentMainMap!=null && !spawnFinished;
         }
+        // Do not expose the temporary join position to another machine. Its
+        // remote player can collide even while this local body has contacts off.
+        static bool SuppressJoiningPlayerPosition(byte[] bytes)
+        {
+            return bytes!=null && bytes.Length>0 && bytes[0]==(byte)msgType.playerPos &&
+                Connected && node!=null && !node.IsHost && !spawnFinished;
+        }
         static void StartSpawnHold(fpscontroller player)
         {
             if(player==null || player.RB==null || player.Bsitting || player.died)return;

@@ -32,6 +32,9 @@ namespace TldMp
         internal int ShadowCascades;
         internal bool RealtimeReflectionProbes;
         internal bool MirrorOptimizations;
+        // Only this preset replaces the quality level's shadow budget. Every
+        // other preset leaves the level's lights, distance and cascades alone.
+        internal bool ShadowBudget;
         internal ShadowLevel DefaultShadow;
     }
 
@@ -73,7 +76,7 @@ namespace TldMp
             {
                 Name = "Performance", Applies = true, AntiAliasing = 0, PixelLightCount = 2,
                 ShadowDistance = 50f, ShadowCascades = 1, RealtimeReflectionProbes = false,
-                MirrorOptimizations = true, DefaultShadow = ShadowLevel.Low
+                MirrorOptimizations = true, ShadowBudget = true, DefaultShadow = ShadowLevel.Low
             },
             new PresetValues
             {

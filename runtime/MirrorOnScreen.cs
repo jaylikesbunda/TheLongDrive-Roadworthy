@@ -15,7 +15,9 @@ namespace TldMp
     {
         internal const float BoundsMargin = 0.1f;
         internal static long Skipped, Passed;
-        static readonly Plane[] planes = new Plane[6];
+        sealed class Frustum { internal Camera Camera; internal int Frame; internal Matrix4x4 View, Projection; internal readonly Plane[] Planes = new Plane[6]; }
+        static readonly Frustum[] frusta = { new Frustum(), new Frustum(), new Frustum() };
+        static int nextFrustum;
         static int featureState;
 
         internal static bool FeatureEnabled
@@ -67,8 +69,14 @@ namespace TldMp
         static bool Inside(Camera camera, Bounds bounds)
         {
             if (camera == null) return false;
-            GeometryUtility.CalculateFrustumPlanes(camera, planes);
-            return GeometryUtility.TestPlanesAABB(planes, bounds);
+            Matrix4x4 view = camera.worldToCameraMatrix, projection = camera.projectionMatrix;
+            Frustum entry = null;
+            for (int i = 0; i < frusta.Length; i++)
+                if (frusta[i].Camera == camera) { entry = frusta[i]; break; }
+            if (entry == null) { entry = frusta[nextFrustum]; nextFrustum = (nextFrustum + 1) % frusta.Length; entry.Camera = camera; entry.Frame = -1; }
+            if (entry.Frame != Time.frameCount || !entry.View.Equals(view) || !entry.Projection.Equals(projection))
+            { GeometryUtility.CalculateFrustumPlanes(camera, entry.Planes); entry.View = view; entry.Projection = projection; entry.Frame = Time.frameCount; }
+            return GeometryUtility.TestPlanesAABB(entry.Planes, bounds);
         }
     }
 }

@@ -35,13 +35,15 @@ A multiplayer and performance patch for **The Long Drive**.
 - Test clients running on the same PC use the host's map and starting position.
 - A joining player is not released until the ground under them has loaded.
 - A joining player is moved to a clear spot on solid ground instead of dropping inside a car, prop or wall.
-- If the spawn point overlaps a car, the car is no longer pushed while the player is moved to clear ground.
+- Joining players wait for a clear spawn before their position is sent to other players.
+- Missing cars can be requested when their driving state arrives early.
 - Sending the world to a joining player no longer holds up everyone else's movement.
 - Reconnecting no longer makes the game handle the same Steam event several times.
 - When a player leaves, the remaining players no longer freeze.
 - Joining is faster, and the car and cargo stay above the ground while the world loads.
 - Abandoned cars and other world items show all their parts for joining players.
 - Game-file checks start earlier, so the first join stalls less.
+- Multiplayer startup can continue while game files are checked.
 
 ### Multiplayer players and vehicles
 
@@ -86,6 +88,7 @@ A multiplayer and performance patch for **The Long Drive**.
 - Roads update faster while you drive.
 - Roads cost less to draw.
 - Mirrors that are off screen no longer render.
+- Mirror visibility is checked once per camera per frame instead of again for every mirror.
 - Road chunks at the map edge are no longer rebuilt every frame.
 - Large worlds stutter less when items sync, props spawn and leftover objects are cleaned up.
 - Lower memory use for road and terrain generation.
@@ -111,7 +114,8 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Graphics settings
 
-- New graphics preset: 2x MSAA, four pixel lights, 80 m shadows with two cascades, realtime reflection probes off.
+- Graphics preset: 2x MSAA with realtime reflection probes off.
+- The Performance preset also lowers shadow distance, cascades and pixel lights; every other preset leaves the game's own shadow settings alone.
 - Realtime reflection probes stay off after loading a save.
 
 ### Single-player and multiplayer wildlife

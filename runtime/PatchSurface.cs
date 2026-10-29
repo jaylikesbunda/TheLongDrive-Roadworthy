@@ -46,14 +46,13 @@ namespace TldMp
                 PresetValues values = PatchOptions.Values(preset);
                 if (preset == GraphicsPreset.Vanilla)
                 {
+                    ApplyShadowBudget(null);
                     RenderSwitches.SetMirrorOptimizations(false);
                     LogPreset("vanilla");
                     return;
                 }
                 QualitySettings.antiAliasing = values.AntiAliasing;
-                QualitySettings.pixelLightCount = values.PixelLightCount;
-                QualitySettings.shadowDistance = values.ShadowDistance;
-                QualitySettings.shadowCascades = values.ShadowCascades;
+                ApplyShadowBudget(values);
                 QualitySettings.realtimeReflectionProbes = values.RealtimeReflectionProbes;
                 RenderSwitches.SetMirrorOptimizations(values.MirrorOptimizations);
                 if (preset == GraphicsPreset.Custom) ApplyShadow(PatchOptions.ShadowValuesFor(PatchOptions.Shadow));
@@ -71,6 +70,38 @@ namespace TldMp
             }
         }
 
+        // The quality level owns the shadow budget: pixel lights, shadow distance
+        // and cascades. Only the Performance preset replaces them. Every other
+        // preset (and Vanilla) puts back exactly the values Unity had for the
+        // active level, so a preset change can never leave the level overridden
+        // and a quality-level change is picked up as the new baseline.
+        static int shadowBudgetLevel = Int32.MinValue;
+        static int shadowBudgetLights, shadowBudgetCascades;
+        static float shadowBudgetDistance;
+        static void ApplyShadowBudget(PresetValues values)
+        {
+            int level = QualitySettings.GetQualityLevel();
+            if (level != shadowBudgetLevel)
+            {
+                shadowBudgetLevel = level;
+                shadowBudgetLights = QualitySettings.pixelLightCount;
+                shadowBudgetDistance = QualitySettings.shadowDistance;
+                shadowBudgetCascades = QualitySettings.shadowCascades;
+            }
+            if (values != null && values.ShadowBudget)
+            {
+                QualitySettings.pixelLightCount = values.PixelLightCount;
+                QualitySettings.shadowDistance = values.ShadowDistance;
+                QualitySettings.shadowCascades = values.ShadowCascades;
+            }
+            else
+            {
+                QualitySettings.pixelLightCount = shadowBudgetLights;
+                QualitySettings.shadowDistance = shadowBudgetDistance;
+                QualitySettings.shadowCascades = shadowBudgetCascades;
+            }
+        }
+
         static void ApplyShadow(ShadowValues values)
         {
             QualitySettings.shadows = (ShadowQuality)values.Shadows;
@@ -84,9 +115,6 @@ namespace TldMp
             try
             {
                 QualitySettings.antiAliasing = 2;
-                QualitySettings.pixelLightCount = 4;
-                QualitySettings.shadowDistance = 80f;
-                QualitySettings.shadowCascades = 2;
                 QualitySettings.realtimeReflectionProbes = false;
             }
             catch (Exception)

@@ -95,8 +95,8 @@ public static class ContentFingerprintBridgeTests
             Check(Calls(newKey,"TldMp.StableGameBridge","FinishFingerprintJob")&&Calls(newKey,"TldMp.StableNode","AllocateID")&&
                 !newKey.Body.Instructions.Any(i=>i.Operand is MethodReference && ((MethodReference)i.Operand).Name.Contains("GetNewKey")),
                 "Compatibility-critical ID creation uses only the host-reserved node allocator");
-            Check(Calls(wait,"TldMp.ContentFingerprint/Job","WaitForResult")&&Calls(ensure,"TldMp.StableGameBridge","FinishFingerprintJob"),
-                "A compatibility barrier finishes the already-running job before world/session startup");
+            Check(Calls(wait,"TldMp.ContentFingerprint/Job","WaitForResult")&&!Calls(ensure,"TldMp.StableGameBridge","FinishFingerprintJob")&&Calls(ensure,"TldMp.StableGameBridge","EnsureFingerprint"),
+                "Session startup polls the fingerprint while ID allocation retains its blocking barrier");
 
             var job=helper.NestedTypes.Single(t=>t.Name=="Job");var run=job.Methods.Single(m=>m.Name=="Run");
             Check(Calls(run,"TldMp.ContentFingerprint","Compute"),"Worker job does not execute the canonical digest function");

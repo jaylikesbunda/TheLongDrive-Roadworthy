@@ -12,7 +12,14 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ### Multiplayer joining
 
-- Joining players no longer push a car while being moved out of it.
+- Joining players wait for a clear spawn before their position is sent to other players.
+- Missing cars can be requested when their driving state arrives early.
+
+### Performance
+
+- Multiplayer startup can continue while game files are checked.
+- Reuses mirror visibility calculations when the camera has not moved.
+- The graphics preset only changes the game's shadow settings when Performance is selected.
 
 ### World streaming
 

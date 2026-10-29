@@ -155,11 +155,9 @@ namespace TldMp
                 if(!loopbackMode || node.Error==null)return;
                 Reset();
             }
-            if(!EnsureFingerprint())
-            {
-                if(fingerprintJob==null)return;
-                FinishFingerprintJob();
-            }
+            // Startup can poll while hashing continues off-thread. ID allocation
+            // keeps its explicit barrier in NewKey, so it never uses a partial hash.
+            if(!EnsureFingerprint())return;
             Reset();
             if(!loopbackMode && !EnsureSteamTransport(lobby,host))return;
             ulong session;do{session=BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(),0);}while(session==0);
@@ -456,6 +454,7 @@ namespace TldMp
             if(!Connected || bytes==null || bytes.Length==0)return;Ensure();
             var hood=networkingScript.s.hood;
             if(capturing){captured.Add((byte[])bytes.Clone());return;}
+            if(SuppressJoiningPlayerPosition(bytes))return;
             // Suppress only the echo of a message currently being applied from
             // the world snapshot. Native repair/ask replies are still allowed.
             if(dispatching && !RepairRequest(bytes[0]))return;
@@ -479,6 +478,7 @@ namespace TldMp
         {
             if(!Connected || bytes==null || bytes.Length==0)return;Ensure();
             if(capturing){captured.Add((byte[])bytes.Clone());return;}
+            if(SuppressJoiningPlayerPosition(bytes))return;
             if(dispatching && !RepairRequest(bytes[0]))return;
             ObserveNativeSafetyOutgoing(bytes);
             if(node==null)return;
@@ -509,9 +509,9 @@ namespace TldMp
             }
             if(type==37)
             {
-                tosaveitemscript item;if(!Find(BitConverter.ToUInt32(bytes,1),out item) || item.car==null)return false;
                 if(Math.Abs(BitConverter.ToSingle(bytes,5))>1.01f)return false;
                 for(int i=9;i<=17;i+=4){float x=BitConverter.ToSingle(bytes,i);if(x<0 || x>1.01f)return false;}
+                tosaveitemscript item;if(Find(BitConverter.ToUInt32(bytes,1),out item) && item.car==null)return false;
             }
             if(type==41)
             {
@@ -557,6 +557,9 @@ namespace TldMp
             if(dispatching)return true;
             if(!Connected)return false;
             Ensure();
+            // While the fingerprint is still being computed there is no
+            // authenticated session; never pass native traffic to the game.
+            if(node==null)return false;
             if(!ValidateData(bytes))
             {
                 Debug.LogWarning("[TLD MP v3] Rejected structurally invalid native packet type "+(bytes.Length>0?bytes[0].ToString():"?")+" length="+bytes.Length+
