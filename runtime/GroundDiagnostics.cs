@@ -147,6 +147,7 @@ namespace TldMp
         static readonly HashSet<poiScript> busPlacementComplete = new HashSet<poiScript>();
         static readonly Dictionary<poiScript, float> busPlacementStarted = new Dictionary<poiScript, float>();
         static float nextBusPlacement;
+        static string busPlacementReason = "road data unavailable";
         // The roadside search must finish before the stop's detached props spawn,
         // or they stay behind on the road. It runs every frame, so a few seconds
         // is plenty of attempts; this deadline only guarantees props appear.
@@ -187,7 +188,7 @@ namespace TldMp
             busPlacementComplete.Add(script);
             busPlacementPending.Remove(script);
             busPlacementStarted.Remove(script);
-            Debug.Log("[TLD MP bus-placement] props released after " + F(Time.unscaledTime - started) + "s");
+            Debug.Log("[TLD MP bus-placement] props released after " + F(Time.unscaledTime - started) + "s; reason=" + busPlacementReason);
             return true;
         }
 
@@ -204,7 +205,7 @@ namespace TldMp
             if(!roadsideReady)destination=global;
             bool tile, collider;
             double ground = ColliderY(gen, destination, out tile, out collider);
-            if (double.IsNaN(ground) || double.IsInfinity(ground)) return false;
+            if (double.IsNaN(ground) || double.IsInfinity(ground)) { busPlacementReason="terrain unavailable at stop"; return false; }
             var stop = marker.parent;
             var position = stop.position;
             position += new Vector3((float)(destination.x-global.x),(float)(ground-global.y),(float)(destination.z-global.z));
@@ -213,7 +214,7 @@ namespace TldMp
             busPlacementComplete.Add(script);
             busPlacementPending.Remove(script);
             busPlacementStarted.Remove(script);
-            Debug.Log("[TLD MP bus-placement] placed marker=" + F(global.y) + " ground=" + F(ground));
+            Debug.Log("[TLD MP bus-placement] placed marker=" + F(global.y) + " ground=" + F(ground) + " moved=" + F(Math.Sqrt(Math.Pow(destination.x-global.x,2)+Math.Pow(destination.z-global.z,2))) + "m");
             return true;
         }
 
@@ -221,118 +222,128 @@ namespace TldMp
         // stay unchanged, and placement completes before detached spawners run.
         static bool StartingStopDestination(poiScript house,Transform marker,terrainGenScript gen,Vector3d original,out Vector3d result)
         {
-            result=original;var stop=marker.parent;
-            Bounds bounds=new Bounds(stop.position,Vector3.zero);bool found=false;
+            result=original; var stop=marker.parent;
+            Bounds bounds=new Bounds(stop.position,Vector3.zero); bool found=false;
             foreach(var renderer in stop.GetComponentsInChildren<MeshRenderer>(true))
-            {if(!found){bounds=renderer.bounds;found=true;}else bounds.Encapsulate(renderer.bounds);}
-            // The stop's own props are spawned later at anchor transforms that are
-            // not renderers yet, so the rendered bounds alone can clear the road
-            // while those props land on it. Include every spawn anchor too.
+            {
+                if(renderer==null)continue;
+                if(!found){bounds=renderer.bounds;found=true;}else bounds.Encapsulate(renderer.bounds);
+            }
+            // These positions are used before the detached objects exist. The
+            // margin is conservative, but is not a measurement of unknown prefabs.
             foreach(var spawner in stop.GetComponentsInChildren<newRandomStuffSpawnScript>(true))
             {
                 if(spawner==null || spawner.items==null)continue;
-                for(int i=0;i<spawner.items.Length;i++)
+                foreach(var item in spawner.items)
                 {
-                    var item=spawner.items[i];
                     if(item==null || item.places==null)continue;
-                    for(int j=0;j<item.places.Length;j++)
+                    foreach(var place in item.places)
                     {
-                        var anchor=item.places[j];
-                        if(anchor==null || anchor.T==null)continue;
-                        var box=new Bounds(anchor.T.position,Vector3.one*0.5f);
+                        if(place==null || place.T==null)continue;
+                        var box=new Bounds(place.T.position,Vector3.one*4f);
                         if(!found){bounds=box;found=true;}else bounds.Encapsulate(box);
                     }
                 }
             }
-            if(!found)return false;
-            double radius=Math.Sqrt(Math.Pow(Math.Abs(bounds.center.x-marker.position.x)+bounds.extents.x,2)+Math.Pow(Math.Abs(bounds.center.z-marker.position.z)+bounds.extents.z,2));
-            if(double.IsNaN(radius) || radius>25 || radius<.1)return false;
-            var roads=mapSettingScript.RoadsNear(original);Vector3d nearest;
+            if(!found){busPlacementReason="missing stop footprint";return false;}
+            var roads=mapSettingScript.RoadsNear(original); Vector3d nearest;
+            if(roads==null || roads.Count==0){busPlacementReason="roads unavailable";return false;}
             var road=roadGenScript.NearestPointOnRoadBone(original,roads,out nearest);
-            if(road==null || !road.generated)return false;
+            if(road==null || !road.generated){busPlacementReason="road not generated";return false;}
             Vector3 outward=new Vector3((float)(original.x-nearest.x),0,(float)(original.z-nearest.z));
-            if(outward.sqrMagnitude<.01f){outward=house.transform.position-marker.position;outward.y=0;outward=-outward;}
+            if(outward.sqrMagnitude<.01f){outward=marker.position-house.transform.position;outward.y=0;}
             if(outward.sqrMagnitude<.01f)outward=house.transform.right;
             outward.Normalize();
-            // Reject the house's own solid footprint, excluding its bus stop.
             Bounds home=new Bounds();bool hasHome=false;
             foreach(var renderer in house.GetComponentsInChildren<MeshRenderer>(true))
             {
-                if(renderer.transform.IsChildOf(stop))continue;
+                if(renderer==null || renderer.transform.IsChildOf(stop))continue;
                 if(!hasHome){home=renderer.bounds;hasHome=true;}else home.Encapsulate(renderer.bounds);
             }
             var widths=new Dictionary<roadGenScript.roadElementClass,double>();
-            for(int step=0;step<=80;step++)
+            double move=0;
+            // Move directly by the required clearance. Repeat only when another
+            // road or a bend constrains the new position; never cross a road.
+            for(int pass=0;pass<16;pass++)
             {
-                Vector3d candidate=original+new Vector3d(outward.x*step,0,outward.z*step);
+                var candidate=original+new Vector3d(outward.x*move,0,outward.z*move);
                 var nearby=mapSettingScript.RoadsNear(candidate);
-                if(nearby==null || nearby.Count==0)continue;
-                bool clear=true;
+                if(nearby==null || nearby.Count==0){busPlacementReason="roads unavailable at destination";return false;}
+                double advance=0;
                 foreach(var line in nearby)
                 {
-                    if(line==null || !line.generated){clear=false;break;}
-                    bool bones=false;
+                    if(line==null || !line.generated){busPlacementReason="road not generated";return false;}
                     foreach(var element in line.roadElements)
                     {
-                        if(element==null)continue;
-                        // Distant road elements do not constrain this bounded search.
+                        if(element==null || element.bonePos==null || element.bonePos.Count<2)continue;
                         bool near=false;
-                        foreach(var bone in element.bonePos)if(Math.Abs(bone.x-original.x)<150 && Math.Abs(bone.z-original.z)<150){near=true;break;}
+                        foreach(var bone in element.bonePos)if(Math.Abs(bone.x-candidate.x)<150 && Math.Abs(bone.z-candidate.z)<150){near=true;break;}
                         if(!near)continue;
-                        double roadHalfWidth;
-                        if(!widths.TryGetValue(element,out roadHalfWidth))
+                        double width;
+                        if(!widths.TryGetValue(element,out width))
                         {
                             var model=element.obj==null?null:element.obj.GetComponent<roadscript>();
-                            if(model==null || model.bakedMesh==null || model.skinnedMeshRenderer==null){clear=false;break;}
-                            roadHalfWidth=0;
+                            if(model==null || model.bakedMesh==null || model.skinnedMeshRenderer==null){busPlacementReason="road mesh unavailable";return false;}
+                            width=0;
                             foreach(var vertex in model.bakedMesh.vertices)
                             {
-                                var worldVertex=mainscript.GlobalFromUnityPos(model.skinnedMeshRenderer.transform.TransformPoint(vertex));
-                                double nearestSq=double.MaxValue;
+                                var p=mainscript.GlobalFromUnityPos(model.skinnedMeshRenderer.transform.TransformPoint(vertex));
+                                double best=double.MaxValue;
                                 for(int k=1;k<element.bonePos.Count;k++)
                                 {
-                                    var aa=element.bonePos[k-1];var bb=element.bonePos[k];double xx=bb.x-aa.x,zz=bb.z-aa.z,ll=xx*xx+zz*zz;
-                                    double tt=ll==0?0:Math.Max(0,Math.Min(1,((worldVertex.x-aa.x)*xx+(worldVertex.z-aa.z)*zz)/ll));
-                                    double vx=worldVertex.x-aa.x-tt*xx,vz=worldVertex.z-aa.z-tt*zz;
-                                    nearestSq=Math.Min(nearestSq,vx*vx+vz*vz);
+                                    var a=element.bonePos[k-1];var b=element.bonePos[k];
+                                    double dx=b.x-a.x,dz=b.z-a.z,len=dx*dx+dz*dz;
+                                    double t=len==0?0:Math.Max(0,Math.Min(1,((p.x-a.x)*dx+(p.z-a.z)*dz)/len));
+                                    double x=p.x-a.x-t*dx,z=p.z-a.z-t*dz;
+                                    best=Math.Min(best,x*x+z*z);
                                 }
-                                roadHalfWidth=Math.Max(roadHalfWidth,Math.Sqrt(nearestSq));
+                                width=Math.Max(width,Math.Sqrt(best));
                             }
-                            if(double.IsNaN(roadHalfWidth) || roadHalfWidth<.1 || roadHalfWidth>30){clear=false;break;}
-                            widths[element]=roadHalfWidth;
+                            if(double.IsNaN(width) || double.IsInfinity(width) || width<.1 || width>30){busPlacementReason="invalid road width";return false;}
+                            widths[element]=width;
                         }
                         for(int n=1;n<element.bonePos.Count;n++)
                         {
-                            bones=true;var a=element.bonePos[n-1];var b=element.bonePos[n];
+                            var a=element.bonePos[n-1];var b=element.bonePos[n];
                             double dx=b.x-a.x,dz=b.z-a.z,len=dx*dx+dz*dz;
                             double cx=candidate.x+bounds.center.x-marker.position.x,cz=candidate.z+bounds.center.z-marker.position.z;
                             double t=len==0?0:Math.Max(0,Math.Min(1,((cx-a.x)*dx+(cz-a.z)*dz)/len));
                             double ex=cx-a.x-t*dx,ez=cz-a.z-t*dz;
                             double distance=Math.Sqrt(ex*ex+ez*ez);
-                            double reach=distance<.0001?radius:(Math.Abs(ex)*bounds.extents.x+Math.Abs(ez)*bounds.extents.z)/distance;
-                            double margin=reach+roadHalfWidth+1;
-                            if(distance<margin){clear=false;break;}
+                            double nx=distance<.0001?outward.x:ex/distance,nz=distance<.0001?outward.z:ez/distance;
+                            // The footprint can straddle the nearest road, so its
+                            // centre may be on the opposite side from the stop.
+                            // Use that road's outward normal and signed distance.
+                            if(line==road && len>.0001)
+                            {
+                                double scale=Math.Sqrt(len);nx=-dz/scale;nz=dx/scale;
+                                if(nx*outward.x+nz*outward.z<0){nx=-nx;nz=-nz;}
+                            }
+                            double reach=Math.Abs(nx)*bounds.extents.x+Math.Abs(nz)*bounds.extents.z;
+                            double signed=line==road?ex*nx+ez*nz:distance;
+                            double missing=reach+width+1-signed;
+                            if(missing>0)
+                            {
+                                double away=nx*outward.x+nz*outward.z;
+                                if(away<=.05){busPlacementReason="another road blocks the outward path";return false;}
+                                advance=Math.Max(advance,missing/away+.05);
+                            }
                         }
-                        if(!clear)break;
                     }
-                    if(!bones && line.roadElements.Count==0)clear=false;
-                    if(!clear)break;
                 }
-                if(!clear)continue;
-                Vector3 world=mainscript.UnityPosFromGlobal(candidate);
-                if(hasHome && world.x+bounds.center.x-marker.position.x+bounds.extents.x>home.min.x && world.x+bounds.center.x-marker.position.x-bounds.extents.x<home.max.x && world.z+bounds.center.z-marker.position.z+bounds.extents.z>home.min.z && world.z+bounds.center.z-marker.position.z-bounds.extents.z<home.max.z)continue;
-                bool tile,collider;double ground=ColliderY(gen,candidate,out tile,out collider);
-                if(double.IsNaN(ground) || double.IsInfinity(ground))return false;
-                // Ground must exist beneath the entire conservative footprint.
-                foreach(int x in new[]{-1,1})foreach(int z in new[]{-1,1})
+                if(advance>0)
                 {
-                    double h=ColliderY(gen,candidate+new Vector3d(x*radius,0,z*radius),out tile,out collider);
-                    if(double.IsNaN(h) || double.IsInfinity(h)){clear=false;break;}
-                    if(Math.Abs(h-ground)>2)clear=false;
+                    move+=advance;
+                    if(move>80){busPlacementReason="road clearance too far";return false;}
+                    continue;
                 }
-                if(clear){result=candidate;return true;}
+                Vector3 world=mainscript.UnityPosFromGlobal(candidate);
+                if(hasHome && world.x+bounds.center.x-marker.position.x+bounds.extents.x>home.min.x && world.x+bounds.center.x-marker.position.x-bounds.extents.x<home.max.x && world.z+bounds.center.z-marker.position.z+bounds.extents.z>home.min.z && world.z+bounds.center.z-marker.position.z-bounds.extents.z<home.max.z){busPlacementReason="house blocks destination";return false;}
+                bool tile,collider;double ground=ColliderY(gen,candidate,out tile,out collider);
+                if(double.IsNaN(ground) || double.IsInfinity(ground)){busPlacementReason="terrain unavailable at destination";return false;}
+                result=candidate;busPlacementReason="placed";return true;
             }
-            return false;
+            busPlacementReason="road clearance did not converge";return false;
         }
 
         public static void TickBusPlacement()

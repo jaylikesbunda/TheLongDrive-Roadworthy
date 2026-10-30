@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param([string]$GameDirectory='')
 $ErrorActionPreference='Stop'
+$repoRoot=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+Push-Location $repoRoot
+try { & python -m unittest tests.test_starting_stop; if ($LASTEXITCODE -ne 0) { throw 'Starting-stop regression tests failed.' } } finally { Pop-Location }
 . (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tools\Resolve-GameDirectory.ps1')
 $GameDirectory=Resolve-GameDirectory $GameDirectory
 & (Join-Path $PSScriptRoot 'Test-Offline.ps1') -GameDirectory $GameDirectory
