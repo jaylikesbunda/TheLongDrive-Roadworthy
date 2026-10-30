@@ -2,6 +2,14 @@
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
+## v0.1.3
+
+- Preserve reliable item-data repair replies through the multiplayer relay.
+- Bound missing-item state by messages, bytes, and replay work per frame, with bounded recovery requests.
+- Cancel queued state on item deletion and reconcile changed attachment slots through native mounting routines.
+- Record item recovery and transport health on both host and clients every five seconds.
+- Update the game, lobby, installer, and release labels to v0.1.3 Roadworthy.
+
 ## v0.1.2
 
 ### Items and starting area

@@ -2,7 +2,7 @@
 
 A multiplayer and performance patch for **The Long Drive**.
 
-**v0.1.2 experimental** | Windows | Game build `2024.11.26b_test`
+**v0.1.3 experimental** | Windows | Game build `2024.11.26b_test`
 
 ## What does this patch do?
 
@@ -26,7 +26,7 @@ A multiplayer and performance patch for **The Long Drive**.
 - Save/Load buttons and confirmations line up in fixed spots.
 - Steering wheel setup no longer shows the settings tab behind it.
 - Multiplayer window, lobby list and dialogs stay inside the window.
-- The version label reads v0.1.2 Roadworthy.
+- The version label reads v0.1.3 Roadworthy.
 - Roadworthy lobbies show their patch version in the lobby browser.
 
 ### Joining and world loading
@@ -186,7 +186,7 @@ python packaging/build_release.py
 
 GitHub Actions builds and tests the installer and ZIP on pushes. To create a GitHub
 prerelease, manually run the release workflow and enter the version tag matching
-`packaging/build_release.py` (for example, `v0.1.2`). The workflow attaches the ZIP
+`packaging/build_release.py` (for example, `v0.1.3`). The workflow attaches the ZIP
 and changelog after the build job succeeds. Gameplay tests requiring
 the installed game are not run by GitHub Actions.
 

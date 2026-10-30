@@ -96,7 +96,7 @@ internal static class PatchOptionsTests
 
     static void Version()
     {
-        Check(PatchInfo.Display == "v0.1.2 Roadworthy ", "the label text is v0.1.2 Roadworthy");
-        Check(PatchInfo.Version == "0.1.2" && PatchInfo.Name == "Roadworthy", "version and name are split for reuse");
+        Check(PatchInfo.Display == "v0.1.3 Roadworthy ", "the label text is v0.1.3 Roadworthy");
+        Check(PatchInfo.Version == "0.1.3" && PatchInfo.Name == "Roadworthy", "version and name are split for reuse");
     }
 }

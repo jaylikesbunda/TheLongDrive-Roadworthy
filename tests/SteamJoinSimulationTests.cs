@@ -49,6 +49,8 @@ public static class SteamJoinSimulationTests
             Check(Simulation.InvalidAccepts==0,"client never accepts its outgoing connection");
             if(!member){Check(host.Connected==0 && client.Connected==0,"nonmember blocked before authentication");return;}
             Check(host.Connected==1 && client.Connected==1,"both endpoints configure and connect");
+            string health=host.Socket.TakeHealthSummary();
+            Check(health.Contains("pending reliable=0") && !health.Contains("\n"),"bounded textual Steam status is available without lane APIs");
             if(refuse)Simulation.RefuseSends=3;
             client.SendPassword(correct?"secret":"wrong");
             for(int frame=0;frame<1000 && !client.Node.Ready && !client.Rejected && client.Node.Error==null;frame++){double t=frame*.02;client.Tick(t);host.Tick(t);Simulation.Pump();}

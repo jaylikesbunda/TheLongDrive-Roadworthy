@@ -153,6 +153,7 @@ $tests=@(
     @{Name='SlowFrameDiagnosticsTests';Sources=@($slowFrameDiagnostics,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SlowFrameDiagnosticsTests.cs'));Refs=@()},
     @{Name='NativeScriptTimingsTests';Sources=@($nativeScriptTimings,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NativeScriptTimingsTests.cs'));Refs=@()},
     @{Name='PendingAttachTests';Sources=@($pendingAttach,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PendingAttachTests.cs'));Refs=@()},
+    @{Name='ItemRecoveryBridgeTests';Sources=@($pendingAttach,$attachReplay,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ItemRecoveryBridgeTests.cs'));Refs=@()},
     @{Name='PhaseTimingsTests';Sources=@((Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\PhaseTimings.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\ModDiagnostics.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PhaseTimingsTests.cs'));Refs=@()},
     @{Name='ItemIndexTableTests';Sources=@($itemIndexTable,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ItemIndexTableTests.cs'));Refs=$nativeRefs},
     @{Name='TerrainHoleAdjacencyTests';Sources=@($terrainHoleAdjacency,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\TerrainHoleAdjacencyTests.cs'));Refs=$nativeRefs},

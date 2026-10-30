@@ -51,6 +51,8 @@ namespace Steamworks
     }
     public static class SteamNetworkingSockets
     {
+        public static int GetDetailedConnectionStatus(HSteamNetConnection c,out string detail,int max)
+        {detail="pending reliable=0\nqueue time=0";return 0;}
         public static HSteamListenSocket CreateListenSocketP2P(int port,int count,object options){uint id=Simulation.Next++;Simulation.Listeners[Simulation.Current]=id;return new HSteamListenSocket{m_HSteamListenSocket=id};}
         public static HSteamNetConnection ConnectP2P(ref SteamNetworkingIdentity identity,int port,int count,object options)
         {

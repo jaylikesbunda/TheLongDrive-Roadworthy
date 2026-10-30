@@ -190,9 +190,13 @@ namespace TldMp
         // FIFO order. A peer that is still receiving the world snapshot has them
         // journaled and replayed after Ack, so no live gameplay byte is lost.
         public bool PublishNative(byte[] bytes)
+        {return PublishNative(bytes,false);}
+        // Item-data repair replies deliberately force even the creation pose
+        // reliable. Preserve that native override through the relay/join journal.
+        public bool PublishNative(byte[] bytes,bool forceReliable)
         {
             if(bytes==null || bytes.Length==0 || bytes.Length>58000 || Error!=null || !Compatible)return false;
-            bool reliable=StablePackets.IsReliable(bytes);
+            bool reliable=forceReliable || StablePackets.IsReliable(bytes);
             if(IsHost)
             {
                 foreach(var pair in Peers)SendNativeTo(pair.Key,pair.Value,bytes,reliable);
@@ -222,10 +226,12 @@ namespace TldMp
         static bool ValidCarBlood(StableMessage m)
         {return m.Key=="" && m.Data.Length==5 && BitConverter.ToUInt32(m.Data,0)!=0 && m.Data[4]<=1;}
         public bool PublishNativeTo(ulong peer,byte[] bytes)
+        {return PublishNativeTo(peer,bytes,false);}
+        public bool PublishNativeTo(ulong peer,byte[] bytes,bool forceReliable)
         {
             if(!IsHost || bytes==null || bytes.Length==0 || bytes.Length>58000 || Error!=null)return false;
             StablePeer p;if(!Peers.TryGetValue(peer,out p))return false;
-            SendNativeTo(peer,p,bytes,StablePackets.IsReliable(bytes));return true;
+            SendNativeTo(peer,p,bytes,forceReliable || StablePackets.IsReliable(bytes));return true;
         }
         void SendNativeTo(ulong peer,StablePeer p,byte[] bytes,bool reliable)
         {

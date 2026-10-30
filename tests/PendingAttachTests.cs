@@ -60,6 +60,66 @@ class PendingAttachTests
         Check(!q.Hold(0,0,1,State(32,0,0),0) && !q.Hold(5,0,1,null,0),"invalid hold accepted");
         var buffer=State(32,13,4);q.Hold(13,0,1,buffer,0);buffer[5]=99;present.Add(13);
         Check(q.TakeReady(exists,1)[0].Bytes[5]==4,"held message aliases caller buffer");
+
+        // Regression: the global limit used to be checked only for a new ID.
+        q.Clear();
+        for(uint i=1;i<=PendingItemQueue.Capacity;i++)q.Hold(i,0,1,State(23,i,1),0);
+        Check(!q.Hold(1,0,1,State(23,1,2),0) && q.Count==PendingItemQueue.Capacity,"existing ID bypassed the global message limit");
+        q.Remove(1);Check(q.Count==PendingItemQueue.Capacity-1 && q.Bytes==q.Count*6,"deletion did not free its exact byte/message accounting");
+        q.Clear();
+        var big=new byte[58000];big[0]=23;
+        for(uint i=1;i<=64;i++)q.Hold(i,0,1,big,0);
+        Check(q.Bytes<=PendingItemQueue.ByteCapacity && q.Count==PendingItemQueue.ByteCapacity/big.Length,"byte budget exceeded");
+        q.Clear();
+
+        // A large ready backlog is spread across frames, FIFO per item, and
+        // missing entries cannot starve ready entries behind them.
+        for(uint i=1;i<=20;i++)for(int j=0;j<16;j++)q.Hold(i,0,1,State(23,i,(byte)j),0);
+        var last=new Dictionary<uint,int>();int applied=0;
+        Action<PendingItemQueue.Held> replay=delegate(PendingItemQueue.Held h){uint id=BitConverter.ToUInt32(h.Bytes,1);int previous;last.TryGetValue(id,out previous);Check(h.Bytes[5]==(last.ContainsKey(id)?previous+1:0),"per-item FIFO changed across drain frames");last[id]=h.Bytes[5];applied++;};
+        for(int frame=0;frame<20 && q.Count>0;frame++)
+        {int before=applied;int n=q.Drain(delegate(uint id){return true;},1,128,32,delegate{return true;},replay,null);Check(n<=32 && applied-before==n,"replay exceeded its frame message budget");}
+        Check(applied==320 && q.Count==0 && q.Bytes==0,"bounded replay lost messages or accounting");
+        q.Hold(100,0,1,State(23,100,0),0);q.Hold(101,0,1,State(23,101,0),0);
+        int probes=0;
+        q.Drain(delegate(uint id){probes++;return id==101;},1,1,32,delegate{return true;},delegate{applied++;},null);
+        Check(probes==1 && q.Count==2,"scan budget ignored");
+        q.Drain(delegate(uint id){return id==101;},1,1,32,delegate{return true;},delegate{applied++;},null);
+        Check(q.Count==1 && q.Has(100),"missing object starved the next ready object");
+        int calls=0;q.Drain(delegate(uint id){return true;},1,128,32,delegate{return calls++==0;},delegate{throw new Exception("handler started beyond time budget");},null);
+        Check(q.Count==1,"time budget ignored");q.Clear();
+
+        RecoveryChecks();
+        AttachmentChecks();
         Console.WriteLine("PASS: "+checks+" held item-message assertions; state that beats its item is replayed in arrival order once the item and parent exist, newer state flushes older first, and the queue is bounded.");
+    }
+    static void RecoveryChecks()
+    {
+        var r=new ItemRecoveryRequests();var sent=new List<uint>();var present=new HashSet<uint>();
+        r.Watch(7,0);r.Watch(7,0);
+        Check(r.Count==1 && r.Tick(present.Contains,0,2,sent.Add)==1,"first missing definition request not deduplicated");
+        Check(r.Tick(present.Contains,.5,2,sent.Add)==0 && r.Tick(present.Contains,1,2,sent.Add)==1,"retry backoff ignored");
+        present.Add(7);Check(r.Tick(present.Contains,2,2,sent.Add)==0 && r.Count==0,"recovery continued after creation arrived");
+        r.Watch(8,0);r.Remove(8,.1);
+        Check(r.Deleted(8,1) && r.Tick(present.Contains,1,2,sent.Add)==0,"deleted item requested back");
+        Check(!r.Deleted(8,61),"deletion tombstone never expires");r.Clear();
+        r.Watch(9,0);
+        foreach(double t in new double[]{0,1,3,7,15,31,47,59})r.Tick(present.Contains,t,2,sent.Add);
+        Check(r.Sent==ItemRecoveryRequests.MaxAttempts && r.Exhausted==1,"unresolved definition retries are unbounded");
+        r.Tick(present.Contains,61,2,sent.Add);Check(r.Count==0,"failed recovery never retired");
+        r.Refresh(7,62);Check(r.Tick(present.Contains,62,2,sent.Add,delegate{return true;})==0,"overflow refresh overtook its older FIFO");
+        Check(r.Tick(present.Contains,63,2,sent.Add)==1 && r.Count==0,"overflow did not refresh complete state after drain");
+        r.Clear();for(uint i=1;i<=ItemRecoveryRequests.Capacity+10;i++)r.Watch(i,0);
+        Check(r.Count==ItemRecoveryRequests.Capacity && r.Tick(delegate{return false;},0,2,sent.Add)==2,"recovery table or per-frame request budget exceeded");
+        r.Clear();Check(r.Count==0,"session reset retained recovery/tombstones");
+    }
+    static void AttachmentChecks()
+    {
+        byte[] wanted=Attach(5,1,77,3);
+        Check(AttachmentReplayPolicy.SameSlot(wanted,1,2,77,0,0,0,0,3),"matching native slot not recognized");
+        Check(!AttachmentReplayPolicy.SameSlot(wanted,1,2,78,0,0,0,0,3),"different parent incorrectly treated as already applied");
+        Check(!AttachmentReplayPolicy.SameSlot(wanted,1,2,77,0,0,0,0,4),"different slot incorrectly treated as already applied");
+        Check(!AttachmentReplayPolicy.SameSlot(wanted,1,1,77,0,0,0,0,3),"collider anchor skipped without checking its pose");
+        Check(!AttachmentReplayPolicy.SameSlot(Attach(5,0,0,0),1,2,77,0,0,0,0,3),"detach skipped because the part was attached");
     }
 }

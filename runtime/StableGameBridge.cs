@@ -32,6 +32,8 @@ namespace TldMp
         static double nextPulse,nextFailure;static int packetErrors;
         static readonly Dictionary<string,double> diagnosticNext=new Dictionary<string,double>();
         static double nextJoinDiagnostic;
+        static double nextSyncHealth;
+        static int healthMaxPending,healthMaxPendingBytes;
         static bool loopbackMode;static double loopbackNextRequest;
         static bool loopbackBootstrapReceived;static mapSettingScript loopbackPreviousMap;
         static readonly HashSet<ulong> loopbackBootstrapSent=new HashSet<ulong>();
@@ -132,8 +134,9 @@ namespace TldMp
             maps.Clear();lastPlayers.Clear();lastItems.Clear();pendingCarBlood.Clear();diagnosticNext.Clear();loopbackBootstrapSent.Clear();loopbackBootstrapReceived=false;loopbackPreviousMap=null;
             if(steamTransport!=null){steamTransport.Dispose();steamTransport=null;}transportLobby=transportHost=0;nextSdrRetry=0;deliveryPeerCursor=0;delivery.Clear();hostWorldEvidence=false;
             outbox.Clear();bulkOutbox.Clear();node=null;StableMap.Configure(null);nextPulse=0;lastError=null;
+            nextSyncHealth=0;healthMaxPending=healthMaxPendingBytes=0;
             selection.Clear();
-            RoadLiveCache.Clear();RoadFarSkip.Clear();FarPlaceQueue.Clear();pendingItems.Clear();TerrainWorker.Clear();poseFilter.Clear();senderClock.Clear();PlacementSkip.Clear();liveUsables.Clear();CarCargo.Clear();
+            RoadLiveCache.Clear();RoadFarSkip.Clear();FarPlaceQueue.Clear();pendingItems.Clear();itemRecovery.Clear();TerrainWorker.Clear();poseFilter.Clear();senderClock.Clear();PlacementSkip.Clear();liveUsables.Clear();CarCargo.Clear();
         }
         static void Ensure()
         {
@@ -375,6 +378,8 @@ namespace TldMp
             {
                 int peerIndex=(first+i)%peers.Length;ulong peer=peers[peerIndex];int bytesSent=0;
                 NetStats.Pending(delivery.PendingCount(peer),delivery.PendingBytes(peer));
+                healthMaxPending=Math.Max(healthMaxPending,delivery.PendingCount(peer));
+                healthMaxPendingBytes=Math.Max(healthMaxPendingBytes,delivery.PendingBytes(peer));
                 int sent=delivery.Drain(peer,Math.Min(8,packetsLeft),bytesLeft,delegate(ulong target,NetDeliveryLane lane,byte[] bytes,bool reliable)
                 {
                     bool admitted;
@@ -486,7 +491,7 @@ namespace TldMp
             }
             if(bytes[0]==9){if(!node.IsHost && !node.Joining && !node.AwaitingSnapshot && (!loopbackMode || WorldSceneAvailable()))node.RequestSnapshot();return;}
             byte[] protectedBytes=ProtectCargoPose(bytes);
-            if(protectedBytes!=null)node.PublishNative(protectedBytes);
+            if(protectedBytes!=null)node.PublishNative(protectedBytes,hood.forceReliable || mode==EP2PSend.k_EP2PSendReliable || mode==EP2PSend.k_EP2PSendReliableWithBuffering);
         }
         public static void RouteTarget(CSteamID target,byte[] bytes,EP2PSend mode)
         {
@@ -501,8 +506,9 @@ namespace TldMp
             if(bytes[0]==9){if(!node.IsHost && !node.Joining && !node.AwaitingSnapshot && (!loopbackMode || WorldSceneAvailable()))node.RequestSnapshot();return;}
             byte[] protectedBytes=ProtectCargoPose(bytes);
             if(protectedBytes==null)return;
-            if(node.IsHost)node.PublishNativeTo((ulong)target,protectedBytes);
-            else node.PublishNative(protectedBytes);
+            bool forceReliable=networkingScript.s.hood.forceReliable || mode==EP2PSend.k_EP2PSendReliable || mode==EP2PSend.k_EP2PSendReliableWithBuffering;
+            if(node.IsHost)node.PublishNativeTo((ulong)target,protectedBytes,forceReliable);
+            else node.PublishNative(protectedBytes,forceReliable);
         }
         static void QueueMap(ulong peer,byte[] bytes)
         {if(node==null || !node.IsHost)return;if(node.Peers.ContainsKey(peer))node.SendBootstrap(peer,bytes);else maps[peer]=(byte[])bytes.Clone();}
@@ -583,7 +589,7 @@ namespace TldMp
             }
             if(!AllowNativeSafetyPacket(bytes))return false;
             if(UnsetPaint(bytes))return false;
-            NotePendingItem(sender,bytes);
+            if(NotePendingItem(sender,bytes))return false;
             NoteCargoPose(bytes);
             ObserveNative((ulong)sender,bytes);
             if(bytes.Length>0 && bytes[0]>=16 && bytes[0]<=19)CargoDiagnostics.NotePacket(true,bytes[0],StablePackets.Item(bytes),(ulong)sender);
@@ -950,7 +956,7 @@ namespace TldMp
         static void TimedSendWorld(ulong peer)
         {long start=PhaseTimings.Begin();try{SendWorld(peer);}finally{PhaseTimings.End(PhaseTimings.SnapshotSend,start,"capture+encode+validate");}}
         static void TimedApplyWorld(byte[] bytes)
-        {long start=PhaseTimings.Begin();try{pendingCarBlood.Clear();ApplyWorld(bytes);}finally{PhaseTimings.End(PhaseTimings.SnapshotApply,start,bytes==null?null:"bytes="+bytes.Length);}}
+        {long start=PhaseTimings.Begin();try{pendingCarBlood.Clear();pendingItems.Clear();itemRecovery.Clear();ApplyWorld(bytes);}finally{PhaseTimings.End(PhaseTimings.SnapshotApply,start,bytes==null?null:"bytes="+bytes.Length);}}
         static void SendWorld(ulong peer)
         {
             JoinDiagnostic("SendWorld entry target="+peer+" "+MapDiagnostic());
@@ -1019,9 +1025,13 @@ namespace TldMp
                 if(!AcceptSequenced(source,ref b))return;
                 if(!SteamP2PNetworkingUnderTheHoodScript.Expected(sender,(msgType)b[0]))return;
                 long handlerStart=Stopwatch.GetTimestamp();DispatchType=b[0];
+                bool previousReliable=hood.forceReliable;
+                // Sequence zero marks reliable one-off state. Preserve it if
+                // the host's native dispatcher relays a repair pose onward.
+                if(dispatchSequence==PoseSequence.Unordered && PoseSequence.Stamped(b[0]))hood.forceReliable=true;
                 try{networkingScript.s.ProcessMessage(sender,b,(msgType)b[0]);}
                 catch(Exception e){packetErrors++;if(Now>=nextFailure){nextFailure=Now+5;Debug.LogError("[TLD MP v3] Handler failure "+packetErrors+": "+e);}}
-                finally{DispatchType=-1;dispatchSequence=PoseSequence.Unordered;}
+                finally{hood.forceReliable=previousReliable;DispatchType=-1;dispatchSequence=PoseSequence.Unordered;}
                 NoteHandler(b,Stopwatch.GetTimestamp()-handlerStart);
             },128);
         }
@@ -1047,9 +1057,11 @@ namespace TldMp
                 byte[] received=item.Bytes;if(!AcceptSequenced(item.From,ref received))continue;item.Bytes=received;
                 // Same entry point Steam uses: AllowIncoming then the stock dispatch.
                 long handlerStart=Stopwatch.GetTimestamp();DispatchType=item.Bytes[0];
+                bool previousReliable=hood.forceReliable;
+                if(dispatchSequence==PoseSequence.Unordered && PoseSequence.Stamped(item.Bytes[0]))hood.forceReliable=true;
                 try{networkingScript.s.ProcessMessage(new CSteamID(item.From),item.Bytes,(msgType)item.Bytes[0]);}
                 catch(Exception e){packetErrors++;if(Now>=nextFailure){nextFailure=Now+5;Debug.LogError("[TLD MP v3] Handler failure "+packetErrors+": "+e);}}
-                finally{DispatchType=-1;dispatchSequence=PoseSequence.Unordered;}
+                finally{hood.forceReliable=previousReliable;DispatchType=-1;dispatchSequence=PoseSequence.Unordered;}
                 NoteHandler(item.Bytes,Stopwatch.GetTimestamp()-handlerStart);
             }
         }
@@ -1102,6 +1114,15 @@ namespace TldMp
             if(!node.IsHost && !loopbackMode && !SteamP2PNetworkingUnderTheHoodScript.HasCorrectPassword())return;
             if(!node.IsHost && !node.HostWorldLoaded && (loopbackMode?WorldSceneAvailable():hostWorldEvidence))node.HostWorldLoaded=true;
             long tickStart=Stopwatch.GetTimestamp();node.Tick(Now);pulseTickTicks=Stopwatch.GetTimestamp()-tickStart;
+            if(node.Compatible && Now>=nextSyncHealth)
+            {
+                nextSyncHealth=Now+5;
+                Debug.Log("[TLD MP sync-health] t="+Now.ToString("F2",System.Globalization.CultureInfo.InvariantCulture)+" host="+node.IsHost+" ready="+node.Ready+
+                    " sendQueue{peak="+healthMaxPending+" peakBytes="+healthMaxPendingBytes+" reliable="+outbox.PendingPackets+" reliableBytes="+outbox.PendingBytes+
+                    " bulk="+bulkOutbox.PendingPackets+" bulkBytes="+bulkOutbox.PendingBytes+"} "+TakeItemReplayHealth()+
+                    (steamTransport==null?"":" "+steamTransport.TakeHealthSummary()));
+                healthMaxPending=healthMaxPendingBytes=0;
+            }
             if((loopbackMode || ModDiagnostics.On) && Now>=nextJoinDiagnostic)
             {
                 nextJoinDiagnostic=Now+5;

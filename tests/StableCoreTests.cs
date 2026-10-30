@@ -44,6 +44,7 @@ public static class StableCoreTests
         try
         {
             var lab=new Lab();lab.Connect();foreach(var n in lab.Nodes.Values)Check(n.Ready,"all peers ready after snapshot ACK barrier");
+            ReliableRepairOverrides();
             Check(lab.Applied[20]==1 && lab.Applied[30]==1,"both clients applied hash-checked snapshot");
             lab.Tick(2);lab.Nodes[30].RequestSnapshot();var request=lab.Queue[0];lab.Queue.Clear();lab.Nodes[10].Receive(request.From,request.Bytes,2);
             lab.Nodes[10].PublishNative(Motion(1));lab.Nodes[10].PublishNative(Motion(2));
@@ -67,6 +68,22 @@ public static class StableCoreTests
             Console.WriteLine("PASS: "+checks+" reduced-core checks with THREE independent peer state machines: handshake, ID blocks, snapshot/journal/hash barrier, native journal ordering, map transfers, deferred map work, liveness and compatibility.");
             return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
+    }
+    static void ReliableRepairOverrides()
+    {
+        var lab=new Lab();lab.Connect();lab.Queue.Clear();
+        byte[] creation=Motion(123);
+        Check(lab.Nodes[20].PublishNative(creation,true),"client publishes forced-reliable item-data creation reply");
+        Check(lab.Queue.Count==1 && lab.Queue[0].Reliable,"relay discarded the client's native reliability override");
+        lab.Queue.Clear();
+        Check(lab.Nodes[10].PublishNativeTo(20,creation,true) && lab.Queue.Count==1 && lab.Queue[0].Reliable,"targeted host repair creation is reliable");
+        lab.Queue.Clear();lab.Nodes[10].PublishNativeTo(20,creation);
+        Check(lab.Queue.Count==1 && !lab.Queue[0].Reliable,"ordinary car movement was made reliable");
+        lab.Queue.Clear();lab.Nodes[10].Peers[20].Syncing=true;
+        lab.Nodes[10].PublishNativeTo(20,creation,true);
+        lab.Nodes[10].PublishNativeTo(20,Motion(124));
+        var journal=lab.Nodes[10].Peers[20].Journal;
+        Check(journal.Count==2 && journal[0].Reliable && !journal[1].Reliable,"join journal lost the reliable creation boundary");
     }
     static byte[] Password(string value)
     {

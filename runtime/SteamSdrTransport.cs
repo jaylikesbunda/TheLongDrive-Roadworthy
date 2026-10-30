@@ -18,6 +18,8 @@ namespace TldMp
         HSteamListenSocket listen=HSteamListenSocket.Invalid;
         bool disposed,legacyLanes;
         int pollPeerCursor;const double ReceiveDispatchBudgetMilliseconds=4.0;
+        int healthPeerCursor,receiveBudgetHits,receiveLimitHits,sendRefusals;
+        double maxReceiveMs;bool statusUnavailable;
         public event Action<ulong> PeerConnected;
         public event Action<ulong,int,string> PeerDisconnected;
         public event Action<Exception> ReceiveFailure;
@@ -132,7 +134,8 @@ namespace TldMp
                 {
                     long number;
                     int flags=reliable?Constants.k_nSteamNetworkingSend_Reliable:lane==NetDeliveryLane.Motion?Constants.k_nSteamNetworkingSend_UnreliableNoNagle:Constants.k_nSteamNetworkingSend_Unreliable;
-                    return SteamNetworkingSockets.SendMessageToConnection(connection,pinned.AddrOfPinnedObject(),(uint)data.Length,flags,out number)==EResult.k_EResultOK;
+                    bool accepted=SteamNetworkingSockets.SendMessageToConnection(connection,pinned.AddrOfPinnedObject(),(uint)data.Length,flags,out number)==EResult.k_EResultOK;
+                    if(!accepted)sendRefusals++;return accepted;
                 }
                 finally{pinned.Free();}
             }
@@ -146,7 +149,7 @@ namespace TldMp
                 Marshal.StructureToPtr(native,message,false);
                 var result=new long[1];SteamNetworkingSockets.SendMessages(1,new[]{message},result);
                 message=IntPtr.Zero; // SendMessages consumes the message on every result.
-                return result[0]>0;
+                if(result[0]<=0)sendRefusals++;return result[0]>0;
             }
             finally{if(message!=IntPtr.Zero)SteamNetworkingMessage_t.Release(message);}
         }
@@ -194,7 +197,35 @@ namespace TldMp
                 }
                 cursor=(cursor+1)%connectionCount;pollPeerCursor=cursor;if(!madeProgress)break;
             }
+            double elapsed=(Stopwatch.GetTimestamp()-started)*1000.0/Stopwatch.Frequency;
+            if(elapsed>maxReceiveMs)maxReceiveMs=elapsed;
+            if(handled>=maxMessages)receiveLimitHits++;
+            if(elapsed>=ReceiveDispatchBudgetMilliseconds)receiveBudgetHits++;
             return handled;
+        }
+        // Called once per health window, on the main thread. The older textual
+        // status API avoids marshalling newer status/lane structs into the game's
+        // older Steam runtime. Query at most one peer per window, rotating fairly.
+        public string TakeHealthSummary()
+        {
+            string summary="steam{legacyLane="+legacyLanes+" receiveBudgetHits="+receiveBudgetHits+" receiveLimitHits="+receiveLimitHits+
+                " maxReceiveMs="+maxReceiveMs.ToString("F2",System.Globalization.CultureInfo.InvariantCulture)+" sendRefusals="+sendRefusals+"}";
+            receiveBudgetHits=receiveLimitHits=sendRefusals=0;maxReceiveMs=0;
+            if(statusUnavailable || byPeer.Count==0)return summary;
+            var peers=new List<ulong>(byPeer.Keys);ulong peer=peers[healthPeerCursor++%peers.Count];
+            try
+            {
+                string detail;int result=SteamNetworkingSockets.GetDetailedConnectionStatus(byPeer[peer],out detail,8192);
+                if(result>=0 && !String.IsNullOrEmpty(detail))
+                {
+                    detail=detail.Replace('\r',' ').Replace('\n',' ');
+                    if(detail.Length>4096)detail=detail.Substring(0,4096);
+                    summary+=" steamStatusPeer="+peer+" status="+detail;
+                }
+            }
+            catch(EntryPointNotFoundException){statusUnavailable=true;summary+=" steamStatus=unsupported";}
+            catch(Exception e){statusUnavailable=true;summary+=" steamStatus=unavailable:"+e.GetType().Name;}
+            return summary;
         }
         static bool InReceiveBudget(long started)
         {return (Stopwatch.GetTimestamp()-started)*1000.0/Stopwatch.Frequency<ReceiveDispatchBudgetMilliseconds;}
