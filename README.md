@@ -2,7 +2,7 @@
 
 A multiplayer and performance patch for **The Long Drive**.
 
-**v0.1.1 experimental** | Windows | Game build `2024.11.26b_test`
+**v0.1.2 experimental** | Windows | Game build `2024.11.26b_test`
 
 ## What does this patch do?
 
@@ -26,7 +26,7 @@ A multiplayer and performance patch for **The Long Drive**.
 - Save/Load buttons and confirmations line up in fixed spots.
 - Steering wheel setup no longer shows the settings tab behind it.
 - Multiplayer window, lobby list and dialogs stay inside the window.
-- The version label reads v0.1.1 Roadworthy.
+- The version label reads v0.1.2 Roadworthy.
 - Roadworthy lobbies show their patch version in the lobby browser.
 
 ### Joining and world loading
@@ -44,6 +44,7 @@ A multiplayer and performance patch for **The Long Drive**.
 - Abandoned cars and other world items show all their parts for joining players.
 - Game-file checks start earlier, so the first join stalls less.
 - Multiplayer startup can continue while game files are checked.
+- Multiplayer joining since v0.1.1 is potentially fixed: joins are faster and cars and cargo stay above the ground.
 
 ### Multiplayer players and vehicles
 
@@ -76,6 +77,7 @@ A multiplayer and performance patch for **The Long Drive**.
 - Cargo ghosting for the driving client is available with TLD_MP_CARGO_GHOST=1.
 - Unpainted car parts no longer show pure black for other players.
 - Loose items in a moving car (glove box, cab, bed) stay in place for passengers and no longer fall out behind the car.
+- Wheels with oversized tyres can now be picked up through the tyre.
 
 ### Performance and streaming
 
@@ -108,6 +110,7 @@ A multiplayer and performance patch for **The Long Drive**.
 - Changing view distance no longer removes the ground under you.
 - Fixed terrain corruption when several pieces generate at once.
 - The starting-area bus stop is placed on the ground once terrain loads.
+- Bus stops are placed beside the road instead of on it.
 - Cars no longer vanish when one of their parts is far away.
 - Items no longer fall through unloaded ground.
 - Car radiators explode properly again.
@@ -183,7 +186,7 @@ python packaging/build_release.py
 
 GitHub Actions builds and tests the installer and ZIP on pushes. To create a GitHub
 prerelease, manually run the release workflow and enter the version tag matching
-`packaging/build_release.py` (for example, `v0.1.1`). The workflow attaches the ZIP
+`packaging/build_release.py` (for example, `v0.1.2`). The workflow attaches the ZIP
 and changelog after the build job succeeds. Gameplay tests requiring
 the installed game are not run by GitHub Actions.
 

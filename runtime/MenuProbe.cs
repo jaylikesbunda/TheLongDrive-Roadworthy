@@ -20,6 +20,7 @@ namespace TldMp
 
         public static void StartIfRequested(GameObject host)
         {
+            if(Environment.GetEnvironmentVariable("TLD_MP_WHEEL_PROBE")=="1" && host.GetComponent<WheelAssemblyProbe>()==null)host.AddComponent<WheelAssemblyProbe>();
             string dir = Environment.GetEnvironmentVariable("TLD_MP_MENU_PROBE");
             if (string.IsNullOrEmpty(dir) || host == null || host.GetComponent<MenuProbe>() != null) return;
             host.AddComponent<MenuProbe>().output = dir;
@@ -221,4 +222,56 @@ namespace TldMp
         static string F(float v) { return v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture); }
         static string Esc(string s) { return s.Replace("\\", "\\\\").Replace("\"", "\\\""); }
     }
+    // Opt-in scene probe: temporary prefab clones in the main menu only.
+    public sealed class WheelAssemblyProbe:MonoBehaviour
+    {
+        IEnumerator Start()
+        {
+            while(itemdatabase.s==null || mainscript.s==null || menuhandler.s==null)yield return null;
+            for(int i=0;i<120;i++)yield return null;
+            if(!DataFromMenuScript.s.mainmenu){Debug.LogError("[wheel-probe] refused outside main menu");yield break;}
+            foreach(int id in new[]{409,411})
+            {
+                GameObject rg=null,tg=null;
+                try
+                {
+                    GameObject source=itemdatabase.s.Item(43);
+                    foreach(var candidate in Resources.FindObjectsOfTypeAll<tosaveitemscript>())if(candidate.name=="Car07felnitire"){source=candidate.gameObject;break;}
+                    rg=UnityEngine.Object.Instantiate(source,new Vector3(0,10000,0),Quaternion.identity);
+                    tg=UnityEngine.Object.Instantiate(itemdatabase.s.Item(id),new Vector3(0,10000,0),Quaternion.identity);
+                    var rim=rg.GetComponent<tosaveitemscript>();var tyre=tg.GetComponent<tosaveitemscript>();rim.FStart();tyre.FStart();
+                    var slot=rim.P.wheel.gumi;
+                    while(slot.hasPart()){var previous=slot.part();slot.UnCraft();previous.gameObject.SetActive(false);UnityEngine.Object.Destroy(previous.gameObject);}
+                    slot.Craft(tyre.attachable);
+                    var controllerObject=new GameObject("WheelPickupProbeController");
+                    var player=controllerObject.AddComponent<fpscontroller>();player.enabled=false;player.input=inputscript.i;player.BcanMount=true;
+                    var collider=tyre.P.cols[0].GetComponent<Collider>();
+                    var camera=controllerObject.AddComponent<Camera>();camera.enabled=false;player.Cam=camera;player.FrayRange=4;player.pickupLayer=~0;
+                    camera.transform.position=new Vector3(2,10000,0);camera.transform.rotation=Quaternion.LookRotation(Vector3.left);Physics.SyncTransforms();
+                    var selected=StableGameBridge.ResolveWheelPickup(collider,player);
+                    Debug.Log("[wheel-probe] tyre="+id+" selected="+(selected==null?"null":selected.name)+" expected="+rim.P.name+
+                        " slotOwner="+(slot.tosaveitem==null?"null":slot.tosaveitem.name)+" slotPick="+(slot.pick==null?"null":slot.pick.name)+
+                        " tyreAttached="+tyre.attachable.attached+" sameSlot="+(tyre.attachable.slot==slot)+" hasPart="+slot.hasPart(tyre.attachable)+
+                        " rimAttached="+(rim.attachable!=null && rim.attachable.attached)+" rimSlot="+(rim.attachable!=null && rim.attachable.slot!=null)+
+                        " pickup="+rim.P.CanPickup()+" rimHeld="+rim.P.pickedUp+" rimStored="+(rim.P.physlock!=null)+" tyreGumi="+(tyre.P.gumi!=null)+" slotPart="+(slot.part()==tyre.attachable)+" slotPartSave="+(slot.part().tosave!=null)+" slotPartP="+(slot.part().tosave!=null && slot.part().tosave.P!=null)+" slotPartPIsTyre="+(slot.part().tosave!=null && slot.part().tosave.P==tyre.P)+" ownerIsRim="+(slot.tosaveitem!=null && slot.tosaveitem.P==rim.P)+" wheelSlotMatches="+(rim.P.wheel.gumi==slot));
+                    bool blocked=StableGameBridge.WheelPickupMountBlocked(player,selected);
+                    bool pickupEligible=selected!=null && !blocked && selected.CanPickup() && !selected.cantPickupWhileMount && player.CanPickupSit(selected);
+                    bool pickupIcon=pickupEligible && !player.BcanMount;
+                    bool detachIcon=player.BcanDetach || player.BcanMount;
+                    Debug.Log("[wheel-probe] UI tyre="+id+" pickup="+pickupIcon+" detach="+detachIcon+" blocked="+blocked);
+                    camera.transform.position=new Vector3(2,10000,.27f);player.BcanMount=true;player.BcanDetach=false;
+                    var side=StableGameBridge.ResolveWheelPickup(collider,player);
+                    bool sideBlocked=StableGameBridge.WheelPickupMountBlocked(player,side);
+                    Debug.Log("[wheel-probe] visible-side tyre="+id+" selected="+(side==null?"null":side.name)+" expected="+tyre.P.name+" dismount="+sideBlocked);
+                    UnityEngine.Object.Destroy(controllerObject);
+                    if(selected!=rim.P || !pickupIcon || detachIcon || side!=tyre.P || !sideBlocked)Debug.LogError("[wheel-probe] FAIL tyre="+id);else Debug.Log("[wheel-probe] PASS tyre="+id);
+                }
+                catch(Exception e){Debug.LogError("[wheel-probe] "+e);}
+                finally{if(tg!=null)UnityEngine.Object.Destroy(tg);if(rg!=null)UnityEngine.Object.Destroy(rg);}
+                yield return null;
+            }
+            Application.Quit();
+        }
+    }
+
 }

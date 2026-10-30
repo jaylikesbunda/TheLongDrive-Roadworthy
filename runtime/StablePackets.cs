@@ -9,6 +9,14 @@ namespace TldMp
     // [x]=array.
     public static class StablePackets
     {
+        // The native password exchange precedes Roadworthy's compatibility
+        // handshake. Only its two native message types may bypass that gate.
+        public static bool PasswordBootstrapAllowed(bool isHost,ulong own,ulong host,ulong target,bool member,byte[] bytes)
+        {
+            if(!member || bytes==null || bytes.Length==0 || !Valid(bytes))return false;
+            return isHost ? target!=own && (bytes[0]==5 || bytes[0]==6)
+                          : target==host && bytes[0]==5;
+        }
         sealed class Cursor
         {
             readonly byte[] b;public int P=1;public Cursor(byte[] data){b=data;}
@@ -51,7 +59,7 @@ namespace TldMp
                 case 3:spec="ts";break;
                 case 4:spec="t[f]i";break;
                 case 5:spec="s";break;
-                case 6:spec="i";break;
+                case 6:spec="y";break;
                 case 7:spec="[t]";break;
                 case 8:spec="issig";if(b.Length>4 && BitConverter.ToInt32(b,1)==2)spec+="bbiffii";break;
                 case 10:spec="bbtgvf";if(b[1]!=0)spec+=b[2]!=0?"igi":"ii";break;

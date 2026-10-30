@@ -1,4 +1,4 @@
-THE LONG DRIVE: ROADWORTHY v0.1.1 (EXPERIMENTAL)
+THE LONG DRIVE: ROADWORTHY v0.1.2 (EXPERIMENTAL)
 Multiplayer and performance patch for The Long Drive, beta 2024.11.26b_test only.
 See CHANGELOG.txt for what changed.
 

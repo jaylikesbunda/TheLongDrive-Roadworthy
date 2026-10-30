@@ -127,6 +127,8 @@ $carCargo=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'run
 $results=Join-Path $run 'results.txt'
 $nativeRefs=@("/reference:$($baseline.original)","/reference:$managed\UnityEngine.CoreModule.dll","/reference:$managed\UnityEngine.PhysicsModule.dll","/reference:$managed\com.rlabrecque.steamworks.net.dll","/reference:$managed\netstandard.dll")
 $tests=@(
+    @{Name='SteamJoinSimulationTests';Sources=@($steamSdrTransport,$netDeliveryScheduler,$net,$core,$packets,$deferredCore,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamSocketSimulation.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamJoinSimulationTests.cs'));Refs=@()},
+    @{Name='SteamConnectionDirectionTests';Sources=@($steamSdrTransport,$netDeliveryScheduler,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamConnectionDirectionTests.cs'));Refs=$nativeRefs},
     @{Name='StableCoreTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableCoreTests.cs'));Refs=@()},
     @{Name='StableAuditTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableAuditTests.cs'));Refs=@()},
     @{Name='StableJournalTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableJournalTests.cs'));Refs=@()},

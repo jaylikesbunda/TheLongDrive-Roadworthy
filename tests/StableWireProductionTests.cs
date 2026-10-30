@@ -30,7 +30,7 @@ public static class StableWireProductionTests
     static int Run()
     {
         var sid=new CSteamID(20);var v=new Vector3(1,2,3);var g=new Vector3d(100000.25,4,-200000.5);var color=new Color(.1f,.2f,.3f,1);
-        Packet(1);Packet(2);Packet(3,sid,"hi \u263a");Packet(4,sid,new float[]{.1f,-.2f},1);Packet(5,"password");Packet(6,1);Packet(7,new CSteamID[]{sid});
+        Packet(1);Packet(2);Packet(3,sid,"hi \u263a");Packet(4,sid,new float[]{.1f,-.2f},1);Packet(5,"password");Packet(6,kickType.wrongPassword);Packet(7,new CSteamID[]{sid});
         Packet(8,0,"mapID","",123,g);Packet(8,1,"","bspname",123,g);Packet(8,2,"","image",123,g,true,false,0,1f,100f,256,256);
         Packet(9);Packet(10,false,false,sid,g,v,.5f);Packet(10,true,false,sid,g,v,.5f,(uint)5,0);Packet(10,true,true,sid,g,v,.5f,0,g,0);
         Packet(11,sid,v,v,v,v,v,v,v,v,v,v,v,v,false,.1f,(byte)0);

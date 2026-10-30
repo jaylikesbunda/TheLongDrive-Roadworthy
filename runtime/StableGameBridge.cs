@@ -336,10 +336,12 @@ namespace TldMp
             try
             {
                 steamTransport=new SteamSdrTransport();transportLobby=lobby;transportHost=host;
+                steamTransport.Trace=delegate(string message){Debug.Log("[TLD MP SDR] "+message);};
                 steamTransport.AcceptPeer=delegate(ulong peer){return IsLobbyTransportPeer(lobby,peer);};
                 steamTransport.PeerDisconnected+=OnSteamPeerDisconnected;
                 if(Own==host)steamTransport.Listen(TransportVirtualPort);
-                else if(SteamP2PNetworkingUnderTheHoodScript.HasCorrectPassword())steamTransport.Connect(host,TransportVirtualPort);
+                // The native password exchange itself needs this connection.
+                else steamTransport.Connect(host,TransportVirtualPort);
                 return true;
             }
             catch(Exception e)
@@ -449,11 +451,22 @@ namespace TldMp
             return null;
         }
         static bool RepairRequest(byte type){return type==21 || type==22 || type==46 || type==12 || type==13;}
+        static bool RoutePasswordBootstrap(ulong target,byte[] bytes)
+        {
+            if(loopbackMode || node==null || bytes==null || bytes.Length==0)return false;
+            byte type=bytes[0];
+            if(type!=(byte)msgType.password && type!=(byte)msgType.kick)return false;
+            // Only the client may submit a password, and only the host may
+            // answer or reject. Steam lobby membership is checked on both ends.
+            if(!StablePackets.PasswordBootstrapAllowed(node.IsHost,Own,node.Host,target,IsLobbyTransportPeer(node.Lobby,target),bytes))return true;
+            SendEnvelopeCore(target,bytes,true,false);return true;
+        }
         public static void RouteBroadcast(byte[] bytes,EP2PSend mode)
         {
             if(!Connected || bytes==null || bytes.Length==0)return;Ensure();
             var hood=networkingScript.s.hood;
             if(capturing){captured.Add((byte[])bytes.Clone());return;}
+            if(node!=null && !node.IsHost && RoutePasswordBootstrap(node.Host,bytes))return;
             if(SuppressJoiningPlayerPosition(bytes))return;
             // Suppress only the echo of a message currently being applied from
             // the world snapshot. Native repair/ask replies are still allowed.
@@ -478,6 +491,7 @@ namespace TldMp
         {
             if(!Connected || bytes==null || bytes.Length==0)return;Ensure();
             if(capturing){captured.Add((byte[])bytes.Clone());return;}
+            if(RoutePasswordBootstrap((ulong)target,bytes))return;
             if(SuppressJoiningPlayerPosition(bytes))return;
             if(dispatching && !RepairRequest(bytes[0]))return;
             ObserveNativeSafetyOutgoing(bytes);
@@ -1257,9 +1271,97 @@ namespace TldMp
         public static void NativePoiNativeAddEnd(){FrameDiagnostics.NativePoiNativeAddEnd();}
         public static void NativePoiInstantiateBegin(){FrameDiagnostics.NativePoiInstantiateBegin();}
         public static void NativePoiInstantiateEnd(){FrameDiagnostics.NativePoiInstantiateEnd();}
+        // Pickup and dismount use different controls. Resolve only an actual
+        // tyre-slot relationship; never walk arbitrary parents or detach a rim.
+        static pickupable LooseWheelAssembly(pickupable target)
+        {
+            if(target==null)return null;
+            pickupable rim=target;
+            if(target.gumi!=null && target.tosave!=null && target.tosave.attachable!=null)
+            {
+                var tyre=target.tosave.attachable;var slot=tyre.slot;
+                if(!tyre.attached || slot==null || !slot.hasPart(tyre))return null;
+                rim=slot.tosaveitem==null?slot.pick:slot.tosaveitem.P;
+            }
+            if(rim==null || rim.wheel==null || rim.tosave==null || rim.pickedUp || rim.physlock!=null)return null;
+            var fitted=rim.tosave.attachable;
+            if(fitted!=null && (fitted.attached || fitted.slot!=null))return null;
+            var tyreSlot=rim.wheel.gumi;
+            if(tyreSlot==null || !tyreSlot.hasPart())return null;
+            foreach(var part in tyreSlot.parts)
+            {
+                if(part==null || !part.attached || part.slot!=tyreSlot || part.tosave==null || part.tosave.P==null || part.tosave.P.gumi==null)continue;
+                if(target==rim || part.tosave.P==target)return rim;
+            }
+            return null;
+        }
+        static pickupable VisibleWheelPart(pickupable rim,pickupable fallback,fpscontroller player)
+        {
+            if(player.Cam==null || rim.wheel.felniRadius<=0)return fallback;
+            // Wheel and tyre meshes can be unreadable and their physics capsules
+            // cross the hub. Project the existing pickup ray onto the rim plane
+            // in the wheel's local coordinates, where the axle is local X.
+            var origin=rim.transform.InverseTransformPoint(player.Cam.transform.position);
+            var direction=rim.transform.InverseTransformVector(player.Cam.transform.forward);
+            if(Math.Abs(direction.x)<1e-5f)return fallback;
+            float distance=-origin.x/direction.x;
+            if(distance<0 || distance>player.FrayRange)return fallback;
+            float y=origin.y+direction.y*distance,z=origin.z+direction.z*distance;
+            float radius=rim.wheel.felniRadius;
+            if(y*y+z*z>radius*radius)return fallback;
+            return rim;
+        }
+        public static pickupable ResolveWheelPickup(Collider collider,fpscontroller player)
+        {
+            var target=collider==null?null:collider.GetComponentInParent<pickupable>();
+            if(player==null || player.input==null || player.input.mountDown || player.input.mountUp)return target;
+            var rim=LooseWheelAssembly(target);
+            return rim==null?target:VisibleWheelPart(rim,target,player);
+        }
+        public static bool WheelPickupMountBlocked(fpscontroller player,pickupable target)
+        {
+            // Publish both actions after the native tyre interaction has run.
+            // Leaving BcanMount set hides GCCanPickup, even when pickup passes.
+            // Pickup and mount/dismount may share one key, so an active pickup
+            // control wins over a mount press on the same frame.
+            if(player.input!=null && ((!player.input.mountDown && !player.input.mountUp) || player.input.pickup) &&
+                player.pickedUp==null && !player.Bpickedup && !player.BAttach && !player.canusetube && !player.nowMounted &&
+                target!=null && target.wheel!=null && LooseWheelAssembly(target)!=null && target.tosave.attachable!=null && target.CanPickup() &&
+                !target.cantPickupWhileMount && player.CanPickupSit(target))
+            {
+                player.BcanMount=false;
+                player.BcanDetach=false;
+            }
+            return player.BcanMount;
+        }
+        // Pickup and dismount can share one control. When the loose rim behind a
+        // fitted tyre is what the player is aiming at, the pickup action owns the
+        // press; the native partslot UnCraft must not also run and pull the tyre
+        // off. Every other slot keeps its native dismount.
+        public static bool WheelSlotUnCraft(partslotscript slot,fpscontroller player)
+        {
+            try
+            {
+                if(slot!=null && player!=null && player.input!=null && player.input.pickup)
+                {
+                    var part=slot.part();
+                    var target=part==null||part.tosave==null?null:part.tosave.P;
+                    var rim=LooseWheelAssembly(target);
+                    if(rim!=null && VisibleWheelPart(rim,null,player)==rim)return false;
+                }
+            }
+            catch(Exception){}
+            return slot==null?false:slot.UnCraft();
+        }
         public static void BusGroundPlaced(Vector3d pos,Vector3 rot,int id,bool aligned){if(DiagnosticMode)GroundDiagnostics.Placed(pos,rot,id,aligned);}
         public static void BusGroundSpawned(poiScript script,int genId,Vector3d posID){GroundDiagnostics.QueueBusPlacement(script);if(DiagnosticMode)GroundDiagnostics.Spawned(script,genId,posID);}
-        public static void SpawnStuffAfterBusPlacement(poiScript script,poiGenScript.poiClass poi){if(GroundDiagnostics.TryBusPlacement(script))script.SpawnStuff(poi);}
+        // A house's props must never be lost to a failing roadside search, but
+        // they must also not be left behind on the road. They wait for the bus
+        // stop to reach its roadside spot, or for the deadline.
+        public static void SpawnStuffAfterBusPlacement(poiScript script,poiGenScript.poiClass poi)
+        {
+            if(GroundDiagnostics.TryBusPlacement(script) || GroundDiagnostics.HouseSpawnReady(script))script.SpawnStuff(poi);
+        }
         public static void NativePoiSpawnBegin(){FrameDiagnostics.NativePoiSpawnBegin();}
         public static void NativePoiSpawnEnd(){FrameDiagnostics.NativePoiSpawnEnd();}
         public static void NativePoiStuffBegin(){FrameDiagnostics.NativePoiStuffBegin();}

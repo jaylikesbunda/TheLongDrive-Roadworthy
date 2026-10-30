@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$true)][string]$GameDirectory,
     [Parameter(Mandatory=$true)][string]$BuildDirectory,
     [string]$RejectedAssembly='',
-    [int]$ExpectedCandidateMethods=105,
+    [int]$ExpectedCandidateMethods=106,
     [int]$ExpectedControlMethods=6
 )
 $ErrorActionPreference='Stop'

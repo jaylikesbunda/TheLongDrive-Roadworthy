@@ -2,6 +2,21 @@
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
+## v0.1.2
+
+### Items and starting area
+
+- Bus stops are placed beside the road instead of on it.
+- Wheels with oversized tyres can now be picked up through the tyre.
+
+### Multiplayer joining
+
+- Steam multiplayer joining is potentially fixed
+
+### Menus and interface
+
+- In-game and lobby labels now show v0.1.2 Roadworthy.
+
 ## v0.1.1
 
 ### Menus and interface
@@ -12,6 +27,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ### Multiplayer joining
 
+- Fixes a password exchange that could leave Steam players stuck when joining a lobby.
 - Joining players wait for a clear spawn before their position is sent to other players.
 - Missing cars can be requested when their driving state arrives early.
 

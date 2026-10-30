@@ -551,6 +551,28 @@ public static class PatchStability
     // FreezeUpd auto-stores loose items on every peer, but only the host
     // broadcasts the store. Route its single Store call through a guest gate;
     // Store itself and its network/load/spawn callers keep their stock bodies.
+    static void PatchWheelTargeting()
+    {
+        var method=Method("fpscontroller","RayStuff",0);var il=method.Body.GetILProcessor();
+        var calls=method.Body.Instructions.Where(i=>i.Operand is GenericInstanceMethod && ((GenericInstanceMethod)i.Operand).Name=="GetComponentInParent" && ((GenericInstanceMethod)i.Operand).GenericArguments.Count==1 && ((GenericInstanceMethod)i.Operand).GenericArguments[0].FullName=="pickupable" && i.Previous.Operand is MethodReference && ((MethodReference)i.Previous.Operand).Name=="get_collider").ToArray();
+        if(calls.Length!=1)throw new Exception("Expected one native pickup target lookup.");
+        var call=calls[0];var store=call.Next;
+        VariableDefinition target=null;
+        if(store.OpCode==OpCodes.Stloc || store.OpCode==OpCodes.Stloc_S)target=(VariableDefinition)store.Operand;
+        else if(store.OpCode.Code>=Code.Stloc_0 && store.OpCode.Code<=Code.Stloc_3)target=method.Body.Variables[(int)store.OpCode.Code-(int)Code.Stloc_0];
+        if(target==null || target.VariableType.FullName!="pickupable")throw new Exception("Unexpected pickup target local.");
+        var gate=store.Next;
+        while(gate!=null && !(gate.OpCode==OpCodes.Ldfld && ((FieldReference)gate.Operand).Name=="BcanMount"))gate=gate.Next;
+        if(gate==null)throw new Exception("Native mount pickup veto missing.");
+        il.InsertBefore(call,Instruction.Create(OpCodes.Ldarg_0));call.OpCode=OpCodes.Call;call.Operand=Hook("ResolveWheelPickup");
+        il.InsertBefore(gate,Instruction.Create(OpCodes.Ldloc,target));gate.OpCode=OpCodes.Call;gate.Operand=Hook("WheelPickupMountBlocked");
+        // Pickup and dismount can share one control. The partslot dismount must
+        // not also fire when the pickup control is aimed at the loose rim behind
+        // a fitted tyre; every other slot keeps its native UnCraft.
+        var uncraft=method.Body.Instructions.Where(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt) && i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="partslotscript" && ((MethodReference)i.Operand).Name=="UnCraft" && ((MethodReference)i.Operand).Parameters.Count==0).ToArray();
+        if(uncraft.Length!=2)throw new Exception("Expected two native wheel-slot UnCraft calls in RayStuff, found "+uncraft.Length);
+        foreach(var c in uncraft){il.InsertBefore(c,Instruction.Create(OpCodes.Ldarg_0));c.OpCode=OpCodes.Call;c.Operand=Hook("WheelSlotUnCraft");}
+    }
     static void OptimizeAutoStore()
     {
         var method=Method("mountStuff","FreezeUpd",0);
@@ -899,6 +921,7 @@ public static class PatchStability
                     Guard(Method("GeneszSteamP2PBase.networkingScript","DebugLog",1),"NetLog",0);
                     // Preserve native bodies while invalidating deferred movement
                     // around actual teleport and seat-entry/exit transitions.
+                    PatchWheelTargeting();
                     AfterReturn(Method("fpscontroller","Teleport",2,"UnityEngine.Vector3"),"AfterNativeSpawnTeleport",-1);
                     AfterReturn(Method("fpscontroller","GetIn",1,"seatscript"),"AfterNativeSeatEntry",-1,0);
                     Entry(Method("fpscontroller","GetOut",2,"UnityEngine.Vector3"),"BeforeNativeSeatExit",-1,1);
@@ -1059,7 +1082,7 @@ public static class PatchStability
                     }
                     // Native profiler seam observers add no gameplay control or state.
                     // Noises.Noise remains the only changed method without a bridge call.
-                    if(hooked!=102 || sites!=208)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    if(hooked!=103 || sites!=212)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
                     game.Write(args[2]);Console.WriteLine("Built native-restore assembly: "+args[2]+" ("+hooked+" hooked methods, "+sites+" bridge call sites)");
                 }
             }

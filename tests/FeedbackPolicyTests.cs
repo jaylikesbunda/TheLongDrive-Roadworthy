@@ -79,9 +79,9 @@ internal static class FeedbackPolicyTests
 
     static void InfoFormat()
     {
-        var text = FeedbackPolicy.InfoText("ABC123", "2022.3.10f1", "Windows 11", 1920, 1080, 2500.5f, false, "host, connected", "v0.1.1 Roadworthy", new DateTime(2026, 3, 4, 5, 6, 7));
+        var text = FeedbackPolicy.InfoText("ABC123", "2022.3.10f1", "Windows 11", 1920, 1080, 2500.5f, false, "host, connected", "v0.1.2 Roadworthy", new DateTime(2026, 3, 4, 5, 6, 7));
         Check(text.Contains("build-identity: ABC123\n"), "info.txt names the build identity");
-        Check(text.Contains("patch: v0.1.1 Roadworthy\n"), "info.txt names the patch version");
+        Check(text.Contains("patch: v0.1.2 Roadworthy\n"), "info.txt names the patch version");
         Check(text.Contains("unity-version: 2022.3.10f1\n"), "info.txt names the Unity version");
         Check(text.Contains("os: Windows 11\n"), "info.txt names the OS");
         Check(text.Contains("screen: 1920x1080\n"), "info.txt names the screen size");

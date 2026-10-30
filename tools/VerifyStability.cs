@@ -725,6 +725,7 @@ public static class VerifyStability
                     {"SteamP2PMenuHandlerScript.UpdLobbies/1","SW:GetLobbyVersion:Steamworks.SteamMatchmaking:GetLobbyData:2:System.String:Steamworks.CSteamID:System.String"},
                     {"SteamP2PNetworkingUnderTheHoodScript.OnCreatedLobby/1","SW:SetLobbyVersion:Steamworks.SteamMatchmaking:SetLobbyData:3:System.Boolean:Steamworks.CSteamID:System.String:System.String"},
                     {"syncScript.GetPhysicsLock/0","R:LoopbackPhysicsLock:"},
+                    {"fpscontroller.RayStuff/0","WT:ResolveWheelPickup:"},
                     {"fpscontroller.Teleport/2","A:AfterNativeSpawnTeleport:-1"},
                     {"fpscontroller.GetIn/1","A:AfterNativeSeatEntry:-1,0"},
                     {"fpscontroller.GetOut/2","D:BeforeNativeSeatExit:-1,1|AfterNativeSeatExit:-1"},
@@ -865,6 +866,38 @@ public static class VerifyStability
                     {
                         var bm=b.Methods.Single(m=>m.FullName==am.FullName);if(VerifyPatch.Fingerprint(am)==VerifyPatch.Fingerprint(bm)){unchanged++;continue;}
                         changed++;kept.Add(bm);string key=a.Name+"."+am.Name+"/"+am.Parameters.Count,rule;if(a.Name=="roadGenScript" && am.Parameters.Count>0)key+=":"+am.Parameters[0].ParameterType.FullName;if(!expected.TryGetValue(key,out rule))throw new Exception("Unexpected edit: "+key);expected.Remove(key);
+                        if(rule.StartsWith("WT:"))
+                        {
+                            var resolver=bm.Body.Instructions.Single(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="ResolveWheelPickup");
+                            var gate=bm.Body.Instructions.Single(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="WheelPickupMountBlocked");
+                            if(resolver.Previous.OpCode!=OpCodes.Ldarg_0 || (gate.Previous.OpCode!=OpCodes.Ldloc && gate.Previous.OpCode!=OpCodes.Ldloc_S))throw new Exception("Wheel targeting argument layout changed.");
+                            var local=(VariableDefinition)gate.Previous.Operand;
+                            if(local.VariableType.FullName!="pickupable")throw new Exception("Wheel gate target must be pickupable.");
+                            var nativeLookup=am.Body.Instructions.Single(i=>i.Operand is GenericInstanceMethod && ((GenericInstanceMethod)i.Operand).Name=="GetComponentInParent" && ((GenericInstanceMethod)i.Operand).GenericArguments[0].FullName=="pickupable" && i.Previous.Operand is MethodReference && ((MethodReference)i.Previous.Operand).Name=="get_collider");
+                            bm.Body.GetILProcessor().Remove(resolver.Previous);resolver.OpCode=nativeLookup.OpCode;resolver.Operand=nativeLookup.Operand;
+                            bm.Body.GetILProcessor().Remove(gate.Previous);gate.OpCode=OpCodes.Ldfld;gate.Operand=am.Body.Instructions.Select(i=>i.Operand as FieldReference).First(f=>f!=null && f.Name=="BcanMount");
+                            // The two partslot dismounts become a gated call so a
+                            // shared pickup/dismount control cannot pull the tyre
+                            // off while the rim is being picked up. Restore them.
+                            var slotHookDef=BridgeDefinition(bridge,(MethodReference)bm.Body.Instructions.First(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="WheelSlotUnCraft").Operand);
+                            if(slotHookDef.ReturnType.FullName!="System.Boolean" || slotHookDef.Parameters.Count!=2 ||
+                                slotHookDef.Parameters[0].ParameterType.FullName!="partslotscript" ||
+                                slotHookDef.Parameters[1].ParameterType.FullName!="fpscontroller")
+                                throw new Exception("Wheel slot UnCraft hook signature changed.");
+                            var nativeUnCraft=am.Body.Instructions.Where(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt) && i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="partslotscript" && ((MethodReference)i.Operand).Name=="UnCraft" && ((MethodReference)i.Operand).Parameters.Count==0).ToArray();
+                            var hookedUnCraft=bm.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="WheelSlotUnCraft").ToArray();
+                            if(nativeUnCraft.Length!=2 || hookedUnCraft.Length!=2)throw new Exception("Wheel slot UnCraft count changed: native="+nativeUnCraft.Length+" patched="+hookedUnCraft.Length);
+                            for(int k=0;k<hookedUnCraft.Length;k++)
+                            {
+                                var h=hookedUnCraft[k];
+                                if(h.Previous==null || h.Previous.OpCode!=OpCodes.Ldarg_0)throw new Exception("Wheel slot UnCraft argument layout changed.");
+                                bm.Body.GetILProcessor().Remove(h.Previous);
+                                h.OpCode=nativeUnCraft[k].OpCode;
+                                h.Operand=nativeUnCraft[k].Operand;
+                            }
+                            if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Wheel targeting changed other native instructions.");
+                            continue;
+                        }
                         if(rule.StartsWith("D:"))
                         {
                             var dual=rule.Substring(2).Split('|');if(dual.Length!=2)throw new Exception("Bad dual observer rule: "+key);
@@ -1241,7 +1274,7 @@ public static class VerifyStability
                 // Bus-ground diagnostics add two entry observers (AddPoi, poiScript.FStart): two methods, two sites.
                 // The terrain-align fix swaps two Transform.localPosition reads in poiGenScript.alignClass's constructor: one method, two sites.
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
-                if(bridgeUsers.Count!=102 || hookSites!=208)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                if(bridgeUsers.Count!=103 || hookSites!=212)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }

@@ -6,15 +6,17 @@ using UnityEngine;
 
 namespace TldMp
 {
-    // Opt-in, read-only ground diagnostics. The bridge calls in only when
-    // ModDiagnostics.On or loopback is set.
+    // Ground diagnostics plus the starting-house bus-stop placement. The bridge
+    // calls in only when ModDiagnostics.On or loopback is set.
     //  * [TLD MP bus-ground]: one line when a bus stop POI is placed and when it
     //    is spawned, plus a few bounded follow-ups once terrain has had time to
     //    load. Compares the placement height, the alignment-helper heights and
     //    the near-terrain collider under several floor anchors of the real prefab.
     //  * [TLD MP terrain-lod]: while driving, near-collider height vs the distant
     //    meshes' interpolated height at the same global XZ points ahead of the player.
-    // Nothing here writes to the game, moves an object, or changes a decision.
+    // The bus-stop half also moves the starting house's stop to a clear roadside
+    // spot and releases the house's props once that is done (or the deadline
+    // passes). Everything else here is read-only.
     public static class GroundDiagnostics
     {
         const int BusStopId = 5;
@@ -143,7 +145,12 @@ namespace TldMp
         // detached item spawners run. Entries are removed when the POI despawns.
         static readonly List<poiScript> busPlacementPending = new List<poiScript>();
         static readonly HashSet<poiScript> busPlacementComplete = new HashSet<poiScript>();
+        static readonly Dictionary<poiScript, float> busPlacementStarted = new Dictionary<poiScript, float>();
         static float nextBusPlacement;
+        // The roadside search must finish before the stop's detached props spawn,
+        // or they stay behind on the road. It runs every frame, so a few seconds
+        // is plenty of attempts; this deadline only guarantees props appear.
+        const float SpawnDeadline = 5f;
 
         static Transform StartingBusMarker(poiScript script)
         {
@@ -160,7 +167,28 @@ namespace TldMp
             var marker = StartingBusMarker(script);
             if (marker == null || busPlacementComplete.Contains(script)) return;
             if (!busPlacementPending.Contains(script)) busPlacementPending.Add(script);
+            if (!busPlacementStarted.ContainsKey(script)) busPlacementStarted[script] = Time.unscaledTime;
             TryBusPlacement(script);
+        }
+
+        // True when the house's own props may spawn. They wait for the bus stop to
+        // reach its roadside spot so nothing is left behind on the road; a short
+        // deadline guarantees they appear promptly even if the search fails.
+        public static bool HouseSpawnReady(poiScript script)
+        {
+            if (script == null) return true;
+            if (StartingBusMarker(script) == null) return true;
+            float started;
+            if (!busPlacementStarted.TryGetValue(script, out started))
+                busPlacementStarted[script] = started = Time.unscaledTime;
+            if (Time.unscaledTime - started < SpawnDeadline) return false;
+            // Stop moving the stop now: its props are about to spawn at whatever
+            // position it has, and must not be left behind by a later move.
+            busPlacementComplete.Add(script);
+            busPlacementPending.Remove(script);
+            busPlacementStarted.Remove(script);
+            Debug.Log("[TLD MP bus-placement] props released after " + F(Time.unscaledTime - started) + "s");
+            return true;
         }
 
         public static bool TryBusPlacement(poiScript script)
@@ -171,17 +199,140 @@ namespace TldMp
             if (marker == null) return true;
             var gen = NearGen(Map());
             var global = mainscript.GlobalFromUnityPos(marker.position);
+            Vector3d destination;
+            bool roadsideReady=StartingStopDestination(script,marker,gen,global,out destination);
+            if(!roadsideReady)destination=global;
             bool tile, collider;
-            double ground = ColliderY(gen, global, out tile, out collider);
+            double ground = ColliderY(gen, destination, out tile, out collider);
             if (double.IsNaN(ground) || double.IsInfinity(ground)) return false;
             var stop = marker.parent;
             var position = stop.position;
-            position.y += (float)(ground - global.y);
+            position += new Vector3((float)(destination.x-global.x),(float)(ground-global.y),(float)(destination.z-global.z));
             stop.position = position;
+            if(!roadsideReady)return false;
             busPlacementComplete.Add(script);
             busPlacementPending.Remove(script);
+            busPlacementStarted.Remove(script);
             Debug.Log("[TLD MP bus-placement] placed marker=" + F(global.y) + " ground=" + F(ground));
             return true;
+        }
+
+        // Only the child of the starting house moves. Its house/POI/save keys
+        // stay unchanged, and placement completes before detached spawners run.
+        static bool StartingStopDestination(poiScript house,Transform marker,terrainGenScript gen,Vector3d original,out Vector3d result)
+        {
+            result=original;var stop=marker.parent;
+            Bounds bounds=new Bounds(stop.position,Vector3.zero);bool found=false;
+            foreach(var renderer in stop.GetComponentsInChildren<MeshRenderer>(true))
+            {if(!found){bounds=renderer.bounds;found=true;}else bounds.Encapsulate(renderer.bounds);}
+            // The stop's own props are spawned later at anchor transforms that are
+            // not renderers yet, so the rendered bounds alone can clear the road
+            // while those props land on it. Include every spawn anchor too.
+            foreach(var spawner in stop.GetComponentsInChildren<newRandomStuffSpawnScript>(true))
+            {
+                if(spawner==null || spawner.items==null)continue;
+                for(int i=0;i<spawner.items.Length;i++)
+                {
+                    var item=spawner.items[i];
+                    if(item==null || item.places==null)continue;
+                    for(int j=0;j<item.places.Length;j++)
+                    {
+                        var anchor=item.places[j];
+                        if(anchor==null || anchor.T==null)continue;
+                        var box=new Bounds(anchor.T.position,Vector3.one*0.5f);
+                        if(!found){bounds=box;found=true;}else bounds.Encapsulate(box);
+                    }
+                }
+            }
+            if(!found)return false;
+            double radius=Math.Sqrt(Math.Pow(Math.Abs(bounds.center.x-marker.position.x)+bounds.extents.x,2)+Math.Pow(Math.Abs(bounds.center.z-marker.position.z)+bounds.extents.z,2));
+            if(double.IsNaN(radius) || radius>25 || radius<.1)return false;
+            var roads=mapSettingScript.RoadsNear(original);Vector3d nearest;
+            var road=roadGenScript.NearestPointOnRoadBone(original,roads,out nearest);
+            if(road==null || !road.generated)return false;
+            Vector3 outward=new Vector3((float)(original.x-nearest.x),0,(float)(original.z-nearest.z));
+            if(outward.sqrMagnitude<.01f){outward=house.transform.position-marker.position;outward.y=0;outward=-outward;}
+            if(outward.sqrMagnitude<.01f)outward=house.transform.right;
+            outward.Normalize();
+            // Reject the house's own solid footprint, excluding its bus stop.
+            Bounds home=new Bounds();bool hasHome=false;
+            foreach(var renderer in house.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                if(renderer.transform.IsChildOf(stop))continue;
+                if(!hasHome){home=renderer.bounds;hasHome=true;}else home.Encapsulate(renderer.bounds);
+            }
+            var widths=new Dictionary<roadGenScript.roadElementClass,double>();
+            for(int step=0;step<=80;step++)
+            {
+                Vector3d candidate=original+new Vector3d(outward.x*step,0,outward.z*step);
+                var nearby=mapSettingScript.RoadsNear(candidate);
+                if(nearby==null || nearby.Count==0)continue;
+                bool clear=true;
+                foreach(var line in nearby)
+                {
+                    if(line==null || !line.generated){clear=false;break;}
+                    bool bones=false;
+                    foreach(var element in line.roadElements)
+                    {
+                        if(element==null)continue;
+                        // Distant road elements do not constrain this bounded search.
+                        bool near=false;
+                        foreach(var bone in element.bonePos)if(Math.Abs(bone.x-original.x)<150 && Math.Abs(bone.z-original.z)<150){near=true;break;}
+                        if(!near)continue;
+                        double roadHalfWidth;
+                        if(!widths.TryGetValue(element,out roadHalfWidth))
+                        {
+                            var model=element.obj==null?null:element.obj.GetComponent<roadscript>();
+                            if(model==null || model.bakedMesh==null || model.skinnedMeshRenderer==null){clear=false;break;}
+                            roadHalfWidth=0;
+                            foreach(var vertex in model.bakedMesh.vertices)
+                            {
+                                var worldVertex=mainscript.GlobalFromUnityPos(model.skinnedMeshRenderer.transform.TransformPoint(vertex));
+                                double nearestSq=double.MaxValue;
+                                for(int k=1;k<element.bonePos.Count;k++)
+                                {
+                                    var aa=element.bonePos[k-1];var bb=element.bonePos[k];double xx=bb.x-aa.x,zz=bb.z-aa.z,ll=xx*xx+zz*zz;
+                                    double tt=ll==0?0:Math.Max(0,Math.Min(1,((worldVertex.x-aa.x)*xx+(worldVertex.z-aa.z)*zz)/ll));
+                                    double vx=worldVertex.x-aa.x-tt*xx,vz=worldVertex.z-aa.z-tt*zz;
+                                    nearestSq=Math.Min(nearestSq,vx*vx+vz*vz);
+                                }
+                                roadHalfWidth=Math.Max(roadHalfWidth,Math.Sqrt(nearestSq));
+                            }
+                            if(double.IsNaN(roadHalfWidth) || roadHalfWidth<.1 || roadHalfWidth>30){clear=false;break;}
+                            widths[element]=roadHalfWidth;
+                        }
+                        for(int n=1;n<element.bonePos.Count;n++)
+                        {
+                            bones=true;var a=element.bonePos[n-1];var b=element.bonePos[n];
+                            double dx=b.x-a.x,dz=b.z-a.z,len=dx*dx+dz*dz;
+                            double cx=candidate.x+bounds.center.x-marker.position.x,cz=candidate.z+bounds.center.z-marker.position.z;
+                            double t=len==0?0:Math.Max(0,Math.Min(1,((cx-a.x)*dx+(cz-a.z)*dz)/len));
+                            double ex=cx-a.x-t*dx,ez=cz-a.z-t*dz;
+                            double distance=Math.Sqrt(ex*ex+ez*ez);
+                            double reach=distance<.0001?radius:(Math.Abs(ex)*bounds.extents.x+Math.Abs(ez)*bounds.extents.z)/distance;
+                            double margin=reach+roadHalfWidth+1;
+                            if(distance<margin){clear=false;break;}
+                        }
+                        if(!clear)break;
+                    }
+                    if(!bones && line.roadElements.Count==0)clear=false;
+                    if(!clear)break;
+                }
+                if(!clear)continue;
+                Vector3 world=mainscript.UnityPosFromGlobal(candidate);
+                if(hasHome && world.x+bounds.center.x-marker.position.x+bounds.extents.x>home.min.x && world.x+bounds.center.x-marker.position.x-bounds.extents.x<home.max.x && world.z+bounds.center.z-marker.position.z+bounds.extents.z>home.min.z && world.z+bounds.center.z-marker.position.z-bounds.extents.z<home.max.z)continue;
+                bool tile,collider;double ground=ColliderY(gen,candidate,out tile,out collider);
+                if(double.IsNaN(ground) || double.IsInfinity(ground))return false;
+                // Ground must exist beneath the entire conservative footprint.
+                foreach(int x in new[]{-1,1})foreach(int z in new[]{-1,1})
+                {
+                    double h=ColliderY(gen,candidate+new Vector3d(x*radius,0,z*radius),out tile,out collider);
+                    if(double.IsNaN(h) || double.IsInfinity(h)){clear=false;break;}
+                    if(Math.Abs(h-ground)>2)clear=false;
+                }
+                if(clear){result=candidate;return true;}
+            }
+            return false;
         }
 
         public static void TickBusPlacement()
@@ -191,10 +342,16 @@ namespace TldMp
             for (int i = busPlacementPending.Count - 1; i >= 0; i--)
             {
                 var script = busPlacementPending[i];
-                if (script == null) busPlacementPending.RemoveAt(i);
-                else TryBusPlacement(script);
+                if (script == null) { busPlacementPending.RemoveAt(i); continue; }
+                TryBusPlacement(script);
             }
             busPlacementComplete.RemoveWhere(script => script == null);
+            if (busPlacementStarted.Count > 0)
+            {
+                List<poiScript> gone = null;
+                foreach (var pair in busPlacementStarted) if (pair.Key == null) (gone ?? (gone = new List<poiScript>())).Add(pair.Key);
+                if (gone != null) for (int i = 0; i < gone.Count; i++) busPlacementStarted.Remove(gone[i]);
+            }
         }
 
         // Hook: poiGenScript.AddPoi(Vector3d, Vector3, int, bool) entry. The position is the height placement used.

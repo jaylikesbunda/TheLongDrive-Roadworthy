@@ -63,10 +63,36 @@ public static class StableCoreTests
             var replayHello=new StableMessage {Op=StableOp.Hello,Lobby=999,Session=123,Origin=20,Data=System.Text.Encoding.UTF8.GetBytes("same-build")};
             var encoded=replayHello.Encode();for(int i=0;i<encoded.Length;i++){var b=new byte[i];Buffer.BlockCopy(encoded,0,b,0,i);Check(StableMessage.Decode(b)==null,"truncated envelope rejected");}
             Check(StableMessage.Decode(new byte[60001])==null,"oversized envelope rejected");
-            MapTransfers();MapRequestBackpressure();DeferredMapWork();NativeRelay();Liveness();CargoPosePolicyChecks();CarBloodRelay();
+            PasswordBootstrap();MapTransfers();MapRequestBackpressure();DeferredMapWork();NativeRelay();Liveness();CargoPosePolicyChecks();CarBloodRelay();
             Console.WriteLine("PASS: "+checks+" reduced-core checks with THREE independent peer state machines: handshake, ID blocks, snapshot/journal/hash barrier, native journal ordering, map transfers, deferred map work, liveness and compatibility.");
             return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
+    }
+    static byte[] Password(string value)
+    {
+        byte[] text=System.Text.Encoding.Unicode.GetBytes(value);byte[] packet=new byte[5+text.Length];packet[0]=5;
+        Buffer.BlockCopy(BitConverter.GetBytes(value.Length),0,packet,1,4);Buffer.BlockCopy(text,0,packet,5,text.Length);return packet;
+    }
+    static void PasswordBootstrap()
+    {
+        var lab=new Lab();var host=lab.Nodes[10];var client=lab.Nodes[20];
+        byte[] password=Password("correct"), wrong=Password("wrong"), accepted=Password("1"), kick=new byte[]{6,1};
+        Check(!client.PublishNative(password),"ordinary native path blocks the password before compatibility");
+        Check(StablePackets.PasswordBootstrapAllowed(false,20,10,10,true,password),"client can send password to host before compatibility");
+        Check(StablePackets.PasswordBootstrapAllowed(true,10,10,20,true,accepted),"host can send password acceptance before compatibility");
+        Check(StablePackets.PasswordBootstrapAllowed(true,10,10,20,true,kick),"host can reject wrong password before compatibility");
+        Check(!StablePackets.PasswordBootstrapAllowed(false,20,10,30,true,password) && !StablePackets.PasswordBootstrapAllowed(false,20,10,10,true,kick),"client cannot send bootstrap to another peer or issue a kick");
+        Check(!StablePackets.PasswordBootstrapAllowed(true,10,10,20,false,accepted) && !StablePackets.PasswordBootstrapAllowed(true,10,10,10,true,accepted),"host cannot bootstrap nonmembers or itself");
+        Check(!StablePackets.PasswordBootstrapAllowed(false,20,10,10,true,Motion(1)) && !StablePackets.PasswordBootstrapAllowed(false,20,10,10,true,new byte[]{5}),"other or malformed traffic cannot bypass handshake");
+        bool authenticated=false;bool rejected=false;
+        if(StablePackets.PasswordBootstrapAllowed(false,20,10,10,true,wrong))
+            if(System.Text.Encoding.Unicode.GetString(wrong,5,wrong.Length-5)!="correct")rejected=StablePackets.PasswordBootstrapAllowed(true,10,10,20,true,kick);
+        Check(rejected && !authenticated && !client.Compatible,"wrong password is rejected without starting the handshake");
+        if(StablePackets.PasswordBootstrapAllowed(false,20,10,10,true,password))
+            if(System.Text.Encoding.Unicode.GetString(password,5,password.Length-5)=="correct")authenticated=StablePackets.PasswordBootstrapAllowed(true,10,10,20,true,accepted);
+        Check(authenticated,"correct password completes the native exchange");
+        if(authenticated){client.Tick(0);lab.Pump();client.RequestSnapshot();lab.Pump();}
+        Check(client.Compatible && client.Ready && host.Peers[20].Ready,"authenticated client completes the normal handshake and snapshot");
     }
     static void CarBloodRelay()
     {

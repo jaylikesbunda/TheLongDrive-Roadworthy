@@ -21,8 +21,11 @@ namespace TldMp
         public event Action<ulong> PeerConnected;
         public event Action<ulong,int,string> PeerDisconnected;
         public event Action<Exception> ReceiveFailure;
+        public Action<string> Trace;
         public Func<ulong,bool> AcceptPeer;
         public bool HasConnection(ulong peer){return byPeer.ContainsKey(peer);}
+        internal static bool IsIncomingConnection(uint listener,uint eventListener,uint invalid)
+        {return listener!=invalid && listener==eventListener;}
 
         public SteamSdrTransport()
         {
@@ -48,6 +51,7 @@ namespace TldMp
             ThrowIfDisposed();if(peer==0||virtualPort<0||virtualPort>65535||byPeer.ContainsKey(peer))return false;
             var identity=new SteamNetworkingIdentity();identity.SetSteamID64(peer);
             HSteamNetConnection connection=SteamNetworkingSockets.ConnectP2P(ref identity,virtualPort,0,null);
+            if(Trace!=null)Trace("connect peer="+peer+" handle="+connection.m_HSteamNetConnection);
             if(connection.m_HSteamNetConnection==HSteamNetConnection.Invalid.m_HSteamNetConnection)return false;
             Bind(peer,connection);return true;
         }
@@ -61,8 +65,9 @@ namespace TldMp
         void OnStatusChanged(SteamNetConnectionStatusChangedCallback_t change)
         {
             if(disposed)return;var state=change.m_info.m_eState;ulong peer=change.m_info.m_identityRemote.GetSteamID64();
+            if(Trace!=null)Trace("status peer="+peer+" state="+state+" listener="+change.m_info.m_hListenSocket.m_HSteamListenSocket+" localListener="+listen.m_HSteamListenSocket+" reason="+change.m_info.m_eEndReason+" detail="+change.m_info.m_szEndDebug);
             if(state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connecting &&
-               change.m_info.m_hListenSocket.m_HSteamListenSocket==listen.m_HSteamListenSocket)
+               IsIncomingConnection(listen.m_HSteamListenSocket,change.m_info.m_hListenSocket.m_HSteamListenSocket,HSteamListenSocket.Invalid.m_HSteamListenSocket))
             {
                 if(peer==0 || !AcceptRemote(peer)){SteamNetworkingSockets.CloseConnection(change.m_hConn,1002,"Peer is not a current lobby member",false);return;}
                 if(SteamNetworkingSockets.AcceptConnection(change.m_hConn)!=EResult.k_EResultOK)

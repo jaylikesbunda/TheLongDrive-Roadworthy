@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Version tag matching the package version (for example v0.1.1)
+        description: Version tag matching the package version (for example v0.1.2)
         required: true
         type: string
 
