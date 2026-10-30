@@ -25,11 +25,11 @@ public class Transform {public Vector3 position,forward;}
 public class Camera {public Transform transform=new Transform();}
 public class Collider {public pickupable Item;public T GetComponentInParent<T>() where T:class{return Item as T;}}
 public static class Physics {public static Collider Hit;public static bool Raycast(Vector3 a,Vector3 b,out RaycastHit h,float d,int mask){h=new RaycastHit{collider=Hit};return Hit!=null;}}
-public class Input {public bool pickupDown=true,mountDown,mountUp,usingComputer;}
-public class Attach {public bool attached=true;public Slot slot;public Save tosave;}
-public class Slot {public Save tosaveitem;public pickupable pick;public Attach Part;public List<Attach> parts=new List<Attach>();public bool hasPart(Attach a){return parts.Contains(a);}public bool hasPart(){return parts.Count>0;}public Attach part(){return parts.Count==0?null:parts[0];}}
+public class Input {public bool pickupDown=true,pickup,mountDown,mountUp,usingComputer;}
+public class Attach {public bool attached=true;public partslotscript slot;public Save tosave;}
+public class partslotscript {public Save tosaveitem;public pickupable pick;public Attach Part;public List<Attach> parts=new List<Attach>();public int UnCraftCalls;public bool UnCraft(){UnCraftCalls++;return true;}public bool hasPart(Attach a){return parts.Contains(a);}public bool hasPart(){return parts.Count>0;}public Attach part(){return parts.Count==0?null:parts[0];}}
 public class Save {public pickupable P;public Attach attachable;}
-public class Wheel {public Slot gumi;}
+public class Wheel {public partslotscript gumi;}
 public class pickupable {public object gumi,physlock;public Save tosave;public Wheel wheel;public bool pickedUp,cantPickupWhileMount,Allowed=true;public bool CanPickup(){return Allowed;}}
 public class fpscontroller {public Input input=new Input();public pickupable pickedUp;public bool BcanDetach,BAttach,canusetube,BcanMount=true,Bpickedup,nowMounted,pushgripping,Bleaning,loadedmove=true,Other,SitAllowed=true;public Camera Cam=new Camera();public float FrayRange=4;public int pickupLayer;public int Calls;public bool otherView(){return Other;}public bool CanPickupSit(pickupable p){return SitAllowed;}public void Pickup(pickupable p,Vector3 point){Calls++;pickedUp=p;}}
 public class mainscript {public static mainscript s=new mainscript();public bool crsrLocked=true;}
@@ -37,9 +37,9 @@ public static class Adapter { METHOD }
 public static class Test {
 static int checks;
 static void Check(bool ok,string label){checks++;if(!ok)throw new Exception(label);}
-static fpscontroller Player(out pickupable rim,out pickupable tyre,out Slot slot){rim=new pickupable{wheel=new Wheel(),tosave=new Save{attachable=new Attach{attached=false}}};rim.tosave.P=rim;slot=new Slot{tosaveitem=rim.tosave};rim.wheel.gumi=slot;var a=new Attach{slot=slot};slot.Part=a;slot.parts.Add(a);tyre=new pickupable{gumi=new object(),tosave=new Save{attachable=a}};a.tosave=tyre.tosave;tyre.tosave.P=tyre;Physics.Hit=new Collider{Item=tyre};return new fpscontroller();}
+static fpscontroller Player(out pickupable rim,out pickupable tyre,out partslotscript slot){rim=new pickupable{wheel=new Wheel(),tosave=new Save{attachable=new Attach{attached=false}}};rim.tosave.P=rim;slot=new partslotscript{tosaveitem=rim.tosave};rim.wheel.gumi=slot;var a=new Attach{slot=slot};slot.Part=a;slot.parts.Add(a);tyre=new pickupable{gumi=new object(),tosave=new Save{attachable=a}};a.tosave=tyre.tosave;tyre.tosave.P=tyre;Physics.Hit=new Collider{Item=tyre};return new fpscontroller();}
 public static int Main(){
-pickupable rim,tyre;Slot slot;
+pickupable rim,tyre;partslotscript slot;
 var p=Player(out rim,out tyre,out slot);
 Check(Adapter.ResolveWheelPickup(Physics.Hit,p)==rim,"tyre hit resolves to rim");
 Check(!Adapter.WheelPickupMountBlocked(p,rim),"tyre dismount prompt no longer vetoes loose rim pickup");
@@ -53,7 +53,7 @@ Physics.Hit.Item=tyre;Check(Adapter.ResolveWheelPickup(Physics.Hit,p)==rim,"targ
 Physics.Hit.Item=rim;Check(Adapter.ResolveWheelPickup(Physics.Hit,p)==rim,"centre rim resolves with multiple slot entries");
 foreach(string mode in new[]{"mountDown","mountUp","stored","attached","slotted","looseTyre","mismatch","missingSlot","miss"}){
 p=Player(out rim,out tyre,out slot);
-switch(mode){case "mountDown":p.input.mountDown=true;break;case "mountUp":p.input.mountUp=true;break;case "stored":rim.physlock=new object();break;case "attached":rim.tosave.attachable=new Attach();break;case "slotted":rim.tosave.attachable=new Attach{attached=false,slot=new Slot()};break;case "looseTyre":tyre.tosave.attachable.attached=false;break;case "mismatch":rim.wheel.gumi=new Slot();break;case "missingSlot":tyre.tosave.attachable.slot=null;break;case "miss":Physics.Hit=null;break;}
+switch(mode){case "mountDown":p.input.mountDown=true;break;case "mountUp":p.input.mountUp=true;break;case "stored":rim.physlock=new object();break;case "attached":rim.tosave.attachable=new Attach();break;case "slotted":rim.tosave.attachable=new Attach{attached=false,slot=new partslotscript()};break;case "looseTyre":tyre.tosave.attachable.attached=false;break;case "mismatch":rim.wheel.gumi=new partslotscript();break;case "missingSlot":tyre.tosave.attachable.slot=null;break;case "miss":Physics.Hit=null;break;}
 Check(Adapter.ResolveWheelPickup(Physics.Hit,p)!=rim,"original target retained: "+mode);
 }
 p=Player(out rim,out tyre,out slot);p.input.mountDown=true;
@@ -63,6 +63,11 @@ Check(Adapter.WheelPickupMountBlocked(p,rim) && p.BcanMount && !p.BcanDetach,"in
 p=Player(out rim,out tyre,out slot);Adapter.VisualOverride=tyre;
 Check(Adapter.ResolveWheelPickup(Physics.Hit,p)==tyre,"visible tyre stays tyre");
 Check(Adapter.WheelPickupMountBlocked(p,tyre) && p.BcanMount,"visible tyre retains native dismount prompt");Adapter.VisualOverride=null;
+// When pickup and dismount share a key, picking up the rim must not detach the tyre.
+p=Player(out rim,out tyre,out slot);p.input.pickup=true;p.input.mountDown=true;
+Check(!Adapter.WheelPickupMountBlocked(p,rim),"shared pickup control exposes rim pickup");
+Check(!Adapter.WheelSlotUnCraft(slot,p) && slot.UnCraftCalls==0,"shared pickup does not detach tyre");
+p.input.pickup=false;Check(Adapter.WheelSlotUnCraft(slot,p) && slot.UnCraftCalls==1,"ordinary dismount runs native UnCraft");
 // Permission belongs to the native body, not to the resolver.
 p=Player(out rim,out tyre,out slot);rim.Allowed=false;Check(Adapter.ResolveWheelPickup(Physics.Hit,p)==rim && !rim.CanPickup(),"native burial/pickup gate still owns refusal");
 Console.WriteLine("PASS: "+checks+" production rim adapter assertions");return 0;}}
@@ -71,9 +76,10 @@ Console.WriteLine("PASS: "+checks+" production rim adapter assertions");return 0
         with tempfile.TemporaryDirectory(prefix='roadworthy-rim-') as directory:
             path = Path(directory)
             (path / 'Test.cs').write_text(fixture, encoding='utf-8')
-            subprocess.run([str(compiler), '/nologo', '/out:' + str(path / 'Test.exe'), str(path / 'Test.cs')], check=True, capture_output=True, text=True)
+            build = subprocess.run([str(compiler), '/nologo', '/out:' + str(path / 'Test.exe'), str(path / 'Test.cs')], capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             result = subprocess.run([str(path / 'Test.exe')], check=True, capture_output=True, text=True)
-            self.assertIn('23 production rim adapter assertions', result.stdout)
+            self.assertIn('26 production rim adapter assertions', result.stdout)
 
 
 if __name__ == '__main__':
