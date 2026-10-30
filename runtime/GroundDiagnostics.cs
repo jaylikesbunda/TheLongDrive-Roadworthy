@@ -227,7 +227,11 @@ namespace TldMp
             foreach(var renderer in stop.GetComponentsInChildren<MeshRenderer>(true))
             {
                 if(renderer==null)continue;
-                if(!found){bounds=renderer.bounds;found=true;}else bounds.Encapsulate(renderer.bounds);
+                var rendered=renderer.bounds;
+                // Unity can report an empty world-origin bound for inactive
+                // renderers. It is not geometry and must not expand the stop.
+                if(rendered.extents.x<=0 && rendered.extents.z<=0)continue;
+                if(!found){bounds=rendered;found=true;}else bounds.Encapsulate(rendered);
             }
             // These positions are used before the detached objects exist. The
             // margin is conservative, but is not a measurement of unknown prefabs.
@@ -250,10 +254,29 @@ namespace TldMp
             if(roads==null || roads.Count==0){busPlacementReason="roads unavailable";return false;}
             var road=roadGenScript.NearestPointOnRoadBone(original,roads,out nearest);
             if(road==null || !road.generated){busPlacementReason="road not generated";return false;}
-            Vector3 outward=new Vector3((float)(original.x-nearest.x),0,(float)(original.z-nearest.z));
-            if(outward.sqrMagnitude<.01f){outward=marker.position-house.transform.position;outward.y=0;}
-            if(outward.sqrMagnitude<.01f)outward=house.transform.right;
-            outward.Normalize();
+            // Use the normal of the nearest actual road segment. A vector to
+            // a coarse road-bone result can point almost along the road and
+            // demand a huge movement before the footprint leaves the asphalt.
+            double best=double.MaxValue,nx=0,nz=0,side=0;
+            foreach(var element in road.roadElements)
+            {
+                if(element==null || element.bonePos==null)continue;
+                for(int i=1;i<element.bonePos.Count;i++)
+                {
+                    var a=element.bonePos[i-1];var b=element.bonePos[i];
+                    double dx=b.x-a.x,dz=b.z-a.z,len=dx*dx+dz*dz;
+                    if(len<1e-9)continue;
+                    double t=Math.Max(0,Math.Min(1,((original.x-a.x)*dx+(original.z-a.z)*dz)/len));
+                    double ex=original.x-a.x-t*dx,ez=original.z-a.z-t*dz,d=ex*ex+ez*ez;
+                    if(d>=best)continue;
+                    best=d;double scale=Math.Sqrt(len);nx=-dz/scale;nz=dx/scale;side=ex*nx+ez*nz;
+                }
+            }
+            if(best==double.MaxValue){busPlacementReason="road has no usable segment";return false;}
+            if(Math.Abs(side)<.01)
+                side=(marker.position.x-house.transform.position.x)*nx+(marker.position.z-house.transform.position.z)*nz;
+            if(side<0){nx=-nx;nz=-nz;}
+            Vector3 outward=new Vector3((float)nx,0,(float)nz);
             Bounds home=new Bounds();bool hasHome=false;
             foreach(var renderer in house.GetComponentsInChildren<MeshRenderer>(true))
             {
@@ -299,7 +322,7 @@ namespace TldMp
                 if(advance>0)
                 {
                     move+=advance;
-                    if(move>80){busPlacementReason="road clearance too far";return false;}
+                    if(move>80){busPlacementReason="road clearance too far move="+F(move)+" footprint="+F(bounds.extents.x*2)+"x"+F(bounds.extents.z*2)+" direction="+F(outward.x)+","+F(outward.z);return false;}
                     continue;
                 }
                 Vector3 world=mainscript.UnityPosFromGlobal(candidate);
