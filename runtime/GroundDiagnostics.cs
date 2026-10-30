@@ -260,10 +260,9 @@ namespace TldMp
                 if(renderer==null || renderer.transform.IsChildOf(stop))continue;
                 if(!hasHome){home=renderer.bounds;hasHome=true;}else home.Encapsulate(renderer.bounds);
             }
-            var widths=new Dictionary<roadGenScript.roadElementClass,double>();
             double move=0;
-            // Move directly by the required clearance. Repeat only when another
-            // road or a bend constrains the new position; never cross a road.
+            // Test the actual baked road triangles against the projected stop
+            // footprint, rather than estimating a width from road bones.
             for(int pass=0;pass<16;pass++)
             {
                 var candidate=original+new Vector3d(outward.x*move,0,outward.z*move);
@@ -279,55 +278,21 @@ namespace TldMp
                         bool near=false;
                         foreach(var bone in element.bonePos)if(Math.Abs(bone.x-candidate.x)<150 && Math.Abs(bone.z-candidate.z)<150){near=true;break;}
                         if(!near)continue;
-                        double width;
-                        if(!widths.TryGetValue(element,out width))
+                        var model=element.obj==null?null:element.obj.GetComponent<roadscript>();
+                        if(model==null || model.bakedMesh==null || model.skinnedMeshRenderer==null){busPlacementReason="road mesh unavailable";return false;}
+                        var vertices=model.bakedMesh.vertices;var triangles=model.bakedMesh.triangles;
+                        if(vertices==null || vertices.Length==0 || triangles==null || triangles.Length<3 || triangles.Length%3!=0){busPlacementReason="road mesh empty";return false;}
+                        double cx=candidate.x+bounds.center.x-marker.position.x,cz=candidate.z+bounds.center.z-marker.position.z;
+                        for(int i=0;i<triangles.Length;i+=3)
                         {
-                            var model=element.obj==null?null:element.obj.GetComponent<roadscript>();
-                            if(model==null || model.bakedMesh==null || model.skinnedMeshRenderer==null){busPlacementReason="road mesh unavailable";return false;}
-                            width=0;
-                            foreach(var vertex in model.bakedMesh.vertices)
-                            {
-                                var p=mainscript.GlobalFromUnityPos(model.skinnedMeshRenderer.transform.TransformPoint(vertex));
-                                double best=double.MaxValue;
-                                for(int k=1;k<element.bonePos.Count;k++)
-                                {
-                                    var a=element.bonePos[k-1];var b=element.bonePos[k];
-                                    double dx=b.x-a.x,dz=b.z-a.z,len=dx*dx+dz*dz;
-                                    double t=len==0?0:Math.Max(0,Math.Min(1,((p.x-a.x)*dx+(p.z-a.z)*dz)/len));
-                                    double x=p.x-a.x-t*dx,z=p.z-a.z-t*dz;
-                                    best=Math.Min(best,x*x+z*z);
-                                }
-                                width=Math.Max(width,Math.Sqrt(best));
-                            }
-                            if(double.IsNaN(width) || double.IsInfinity(width) || width<.1 || width>30){busPlacementReason="invalid road width";return false;}
-                            widths[element]=width;
-                        }
-                        for(int n=1;n<element.bonePos.Count;n++)
-                        {
-                            var a=element.bonePos[n-1];var b=element.bonePos[n];
-                            double dx=b.x-a.x,dz=b.z-a.z,len=dx*dx+dz*dz;
-                            double cx=candidate.x+bounds.center.x-marker.position.x,cz=candidate.z+bounds.center.z-marker.position.z;
-                            double t=len==0?0:Math.Max(0,Math.Min(1,((cx-a.x)*dx+(cz-a.z)*dz)/len));
-                            double ex=cx-a.x-t*dx,ez=cz-a.z-t*dz;
-                            double distance=Math.Sqrt(ex*ex+ez*ez);
-                            double nx=distance<.0001?outward.x:ex/distance,nz=distance<.0001?outward.z:ez/distance;
-                            // The footprint can straddle the nearest road, so its
-                            // centre may be on the opposite side from the stop.
-                            // Use that road's outward normal and signed distance.
-                            if(line==road && len>.0001)
-                            {
-                                double scale=Math.Sqrt(len);nx=-dz/scale;nz=dx/scale;
-                                if(nx*outward.x+nz*outward.z<0){nx=-nx;nz=-nz;}
-                            }
-                            double reach=Math.Abs(nx)*bounds.extents.x+Math.Abs(nz)*bounds.extents.z;
-                            double signed=line==road?ex*nx+ez*nz:distance;
-                            double missing=reach+width+1-signed;
-                            if(missing>0)
-                            {
-                                double away=nx*outward.x+nz*outward.z;
-                                if(away<=.05){busPlacementReason="another road blocks the outward path";return false;}
-                                advance=Math.Max(advance,missing/away+.05);
-                            }
+                            int ia=triangles[i],ib=triangles[i+1],ic=triangles[i+2];
+                            if(ia<0 || ib<0 || ic<0 || ia>=vertices.Length || ib>=vertices.Length || ic>=vertices.Length){busPlacementReason="invalid road mesh";return false;}
+                            var a=mainscript.GlobalFromUnityPos(model.skinnedMeshRenderer.transform.TransformPoint(vertices[ia]));
+                            var b=mainscript.GlobalFromUnityPos(model.skinnedMeshRenderer.transform.TransformPoint(vertices[ib]));
+                            var c=mainscript.GlobalFromUnityPos(model.skinnedMeshRenderer.transform.TransformPoint(vertices[ic]));
+                            double exit;
+                            if(RoadTriangleExit(a,b,c,cx,cz,bounds.extents.x+1,bounds.extents.z+1,outward.x,outward.z,out exit))
+                                advance=Math.Max(advance,exit+.05);
                         }
                     }
                 }
@@ -344,6 +309,28 @@ namespace TldMp
                 result=candidate;busPlacementReason="placed";return true;
             }
             busPlacementReason="road clearance did not converge";return false;
+        }
+
+        // Swept rectangle versus a road triangle in XZ. The minimum exit among
+        // separating axes is the distance needed to leave this triangle.
+        static bool RoadTriangleExit(Vector3d a,Vector3d b,Vector3d c,double cx,double cz,double ex,double ez,double vx,double vz,out double exit)
+        {
+            exit=double.MaxValue;
+            double[] xs={1,0,b.z-a.z,c.z-b.z,a.z-c.z};
+            double[] zs={0,1,a.x-b.x,b.x-c.x,c.x-a.x};
+            for(int i=0;i<xs.Length;i++)
+            {
+                double x=xs[i],z=zs[i];
+                if(x*x+z*z<1e-12)continue;
+                double pa=a.x*x+a.z*z,pb=b.x*x+b.z*z,pc=c.x*x+c.z*z;
+                double min=Math.Min(pa,Math.Min(pb,pc)),max=Math.Max(pa,Math.Max(pb,pc));
+                double center=cx*x+cz*z,reach=Math.Abs(x)*ex+Math.Abs(z)*ez;
+                if(center+reach<min || center-reach>max)return false;
+                double speed=vx*x+vz*z;
+                if(speed>1e-9)exit=Math.Min(exit,(max-(center-reach))/speed);
+                else if(speed< -1e-9)exit=Math.Min(exit,((center+reach)-min)/-speed);
+            }
+            return exit!=double.MaxValue && !double.IsNaN(exit) && !double.IsInfinity(exit);
         }
 
         public static void TickBusPlacement()
