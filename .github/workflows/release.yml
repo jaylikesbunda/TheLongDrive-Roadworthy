@@ -35,6 +35,16 @@ jobs:
       - name: Release artifact tests
         run: python -m unittest discover -s tests -p "test_release_artifacts.py" -v
 
+      - name: Build and verify GUI Steam updater
+        run: python packaging/build_steam_updater.py
+
+      - name: Upload GUI Steam updater
+        uses: actions/upload-artifact@v4
+        with:
+          name: Roadworthy-Steam-Update
+          path: release/steam-update-exe/Roadworthy-Steam-Update.exe
+          if-no-files-found: error
+
       - name: Upload release folder
         uses: actions/upload-artifact@v4
         with:
