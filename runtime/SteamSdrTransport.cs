@@ -16,7 +16,7 @@ namespace TldMp
         readonly IntPtr[] receiveBatch=new IntPtr[64];
         readonly Callback<SteamNetConnectionStatusChangedCallback_t> statusCallback;
         HSteamListenSocket listen=HSteamListenSocket.Invalid;
-        bool disposed;
+        bool disposed,legacyLanes;
         int pollPeerCursor;const double ReceiveDispatchBudgetMilliseconds=4.0;
         public event Action<ulong> PeerConnected;
         public event Action<ulong,int,string> PeerDisconnected;
@@ -80,8 +80,27 @@ namespace TldMp
                 HSteamNetConnection existing;if(!byPeer.TryGetValue(peer,out existing))Bind(peer,change.m_hConn);
                 else if(existing.m_HSteamNetConnection==change.m_hConn.m_HSteamNetConnection)
                 {
-                    try{ConfigureLanes(change.m_hConn);var connected=PeerConnected;if(connected!=null)connected(peer);}
-                    catch(Exception e){SteamNetworkingSockets.CloseConnection(change.m_hConn,1003,"Failed to configure SDR traffic lanes",false);var failure=ReceiveFailure;if(failure!=null)failure(e);}
+                    try
+                    {
+                        if(!legacyLanes)
+                        {
+                            try{ConfigureLanes(change.m_hConn);}
+                            catch(EntryPointNotFoundException)
+                            {
+                                // The game's older steam_api64 has no lane API.
+                                // Its default ordered lane supports every packet.
+                                legacyLanes=true;
+                                if(Trace!=null)Trace("lane API unavailable; using default Steam lane");
+                            }
+                        }
+                    }
+                    catch(Exception e)
+                    {
+                        Unbind(peer,change.m_hConn);
+                        SteamNetworkingSockets.CloseConnection(change.m_hConn,1003,"Failed to configure SDR traffic lanes",false);
+                        var failure=ReceiveFailure;if(failure!=null)failure(e);return;
+                    }
+                    var connected=PeerConnected;if(connected!=null)connected(peer);
                 }
                 return;
             }
@@ -104,6 +123,19 @@ namespace TldMp
         {
             ThrowIfDisposed();if(data==null||data.Length==0||data.Length>Constants.k_cbMaxSteamNetworkingSocketsMessageSizeSend||(int)lane<0||(int)lane>2)return false;
             HSteamNetConnection connection;if(!byPeer.TryGetValue(peer,out connection))return false;
+            if(legacyLanes)
+            {
+                // Use the older byte-buffer API too: do not write the newer
+                // message structure (with m_idxLane) into an older allocation.
+                var pinned=GCHandle.Alloc(data,GCHandleType.Pinned);
+                try
+                {
+                    long number;
+                    int flags=reliable?Constants.k_nSteamNetworkingSend_Reliable:lane==NetDeliveryLane.Motion?Constants.k_nSteamNetworkingSend_UnreliableNoNagle:Constants.k_nSteamNetworkingSend_Unreliable;
+                    return SteamNetworkingSockets.SendMessageToConnection(connection,pinned.AddrOfPinnedObject(),(uint)data.Length,flags,out number)==EResult.k_EResultOK;
+                }
+                finally{pinned.Free();}
+            }
             IntPtr message=SteamNetworkingUtils.AllocateMessage(data.Length);if(message==IntPtr.Zero)return false;
             try
             {

@@ -61,6 +61,10 @@ public static class SteamJoinSimulationTests
     public static int Main()
     {
         Run(true,"same",false,true);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);Run(true,"same",false,false);
+        Simulation.MissingLaneApi=true;
+        Run(true,"same",false,true);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);
+        Check(Simulation.LegacySends>0,"missing lane export uses byte-buffer API");
+        Simulation.MissingLaneApi=false;
         Check(Simulation.InvalidAccepts==0,"no invalid accepts in any scenario");Check(Simulation.Allocations==0,"no leaked messages");
         Console.WriteLine("PASS: "+checks+" Steam join simulation assertions using production SDR transport, reliable outbox, bootstrap policy and StableNode; success, backpressure, wrong password, build mismatch and nonmember rejection.");return 0;
     }

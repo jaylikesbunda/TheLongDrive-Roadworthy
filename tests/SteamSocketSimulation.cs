@@ -34,7 +34,7 @@ namespace Steamworks
     public static class Simulation
     {
         public sealed class Socket {public ulong Owner,Remote;public uint Other,Listener;public bool Incoming,Connected,Closed,Configured;public Queue<IntPtr> Messages=new Queue<IntPtr>();}
-        public static ulong Current; public static int Allocations,AcceptCalls,InvalidAccepts,RefuseSends; public static uint Next=1;
+        public static bool MissingLaneApi; public static int LegacySends; public static ulong Current; public static int Allocations,AcceptCalls,InvalidAccepts,RefuseSends; public static uint Next=1;
         public static readonly List<object> Callbacks=new List<object>();
         public static readonly Dictionary<uint,Socket> Sockets=new Dictionary<uint,Socket>();
         public static readonly Dictionary<ulong,uint> Listeners=new Dictionary<ulong,uint>();
@@ -69,7 +69,16 @@ namespace Steamworks
             s.Connected=true;Simulation.Sockets[s.Other].Connected=true;
             Simulation.Status(connection.m_HSteamNetConnection,ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected);Simulation.Status(s.Other,ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected);return EResult.k_EResultOK;
         }
-        public static EResult ConfigureConnectionLanes(HSteamNetConnection c,int count,int[] priorities,ushort[] weights){Simulation.Sockets[c.m_HSteamNetConnection].Configured=true;return EResult.k_EResultOK;}
+        public static EResult ConfigureConnectionLanes(HSteamNetConnection c,int count,int[] priorities,ushort[] weights){if(Simulation.MissingLaneApi)throw new EntryPointNotFoundException("ConfigureConnectionLanes");Simulation.Sockets[c.m_HSteamNetConnection].Configured=true;return EResult.k_EResultOK;}
+        public static EResult SendMessageToConnection(HSteamNetConnection c,IntPtr data,uint length,int flags,out long number)
+        {
+            Simulation.LegacySends++;number=0;var s=Simulation.Sockets[c.m_HSteamNetConnection];
+            if(Simulation.RefuseSends>0){Simulation.RefuseSends--;return EResult.Failed;}
+            if(!s.Connected || s.Closed)return EResult.Failed;
+            IntPtr p=SteamNetworkingUtils.AllocateMessage((int)length);var m=SteamNetworkingMessage_t.FromIntPtr(p);
+            var bytes=new byte[length];Marshal.Copy(data,bytes,0,(int)length);Marshal.Copy(bytes,0,m.m_pData,(int)length);
+            m.m_conn=c;m.m_nFlags=flags;Marshal.StructureToPtr(m,p,false);Simulation.Sockets[s.Other].Messages.Enqueue(p);number=1;return EResult.k_EResultOK;
+        }
         public static void SendMessages(int count,IntPtr[] messages,long[] results)
         {
             for(int i=0;i<count;i++){

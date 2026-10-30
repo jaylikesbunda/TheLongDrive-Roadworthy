@@ -337,6 +337,7 @@ namespace TldMp
             {
                 steamTransport=new SteamSdrTransport();transportLobby=lobby;transportHost=host;
                 steamTransport.Trace=delegate(string message){Debug.Log("[TLD MP SDR] "+message);};
+                steamTransport.ReceiveFailure+=delegate(Exception error){Debug.LogError("[TLD MP SDR] transport failure: "+error);};
                 steamTransport.AcceptPeer=delegate(ulong peer){return IsLobbyTransportPeer(lobby,peer);};
                 steamTransport.PeerDisconnected+=OnSteamPeerDisconnected;
                 if(Own==host)steamTransport.Listen(TransportVirtualPort);
