@@ -7,7 +7,15 @@ namespace TldMp
     {
         internal static bool MayRemove(bool itemExists)
         {
-            return !itemExists;
+            return MayRemove(itemExists,false,false);
+        }
+
+        // Absence from the host's live table is not a deletion tombstone. A
+        // saved but streamed-out item, or a newly allocated client item whose
+        // creation has not arrived, must not be erased by an ask-data reply.
+        internal static bool MayRemove(bool itemExists,bool savedRecordExists,bool clientReservedID)
+        {
+            return !itemExists && !savedRecordExists && !clientReservedID;
         }
     }
 }

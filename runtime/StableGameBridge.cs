@@ -829,7 +829,18 @@ namespace TldMp
         {
             savedatascript save=savedatascript.s;
             bool exists=save!=null && save.items!=null && save.items.ContainsKey(id);
-            if(!ItemAskSafety.MayRemove(exists))return;
+            int savedIndex;
+            bool savedRecord=save!=null && save.data!=null && save.data.itemData!=null && save.data.itemData.items!=null &&
+                savedatascript.IndexOfID(save.data.itemData.items,id,out savedIndex);
+            bool clientReserved=false;
+            if(node!=null && node.IsHost)
+                foreach(var peer in node.Peers.Values)
+                    if(id>=peer.First && id<=peer.Last){clientReserved=true;break;}
+            if(!ItemAskSafety.MayRemove(exists,savedRecord,clientReserved))
+            {
+                if(!exists)DiagLimited("item-ask-preserved:"+id,"native missing-item delete suppressed id="+id+" saved="+savedRecord+" clientReserved="+clientReserved,5);
+                return;
+            }
             if(self!=null)self.SendRemoveItem(id);
         }
         public static void IgnoreCollisionSafe(mpplayerscript script,Transform target,bool ignore){PlayerLeaveSafety.IgnoreCollision(script,target,ignore);}
