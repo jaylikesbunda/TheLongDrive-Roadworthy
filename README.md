@@ -48,6 +48,8 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Multiplayer players and vehicles
 
+- Vehicle snapshots include velocity and repeat one recent update to tolerate packet loss.
+- Car smoothing uses velocity, with limited prediction and short impact update bursts.
 - The car you are riding in no longer stutters on your screen.
 - Other players no longer skip ahead when they walk.
 - Passengers no longer drift out of seats.

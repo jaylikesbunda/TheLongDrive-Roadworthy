@@ -154,6 +154,7 @@ $tests=@(
     @{Name='NativeScriptTimingsTests';Sources=@($nativeScriptTimings,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NativeScriptTimingsTests.cs'));Refs=@()},
     @{Name='PendingAttachTests';Sources=@($pendingAttach,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PendingAttachTests.cs'));Refs=@()},
     @{Name='ItemRecoveryBridgeTests';Sources=@($pendingAttach,$attachReplay,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ItemRecoveryBridgeTests.cs'));Refs=@()},
+    @{Name='VehicleMotionTests';Sources=@($net,$packets,$poseSequence,$liveUsable,$remotePoseBuffer,$carPosePolicy,$patchOptions,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\VehicleMotionTests.cs'));Refs=$nativeRefs},
     @{Name='PhaseTimingsTests';Sources=@((Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\PhaseTimings.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\ModDiagnostics.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PhaseTimingsTests.cs'));Refs=@()},
     @{Name='ItemIndexTableTests';Sources=@($itemIndexTable,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ItemIndexTableTests.cs'));Refs=$nativeRefs},
     @{Name='TerrainHoleAdjacencyTests';Sources=@($terrainHoleAdjacency,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\TerrainHoleAdjacencyTests.cs'));Refs=$nativeRefs},
@@ -307,6 +308,12 @@ Write-Host 'PASS: item-selection negative control rejected a missing Begin obser
 if($LASTEXITCODE -ne 0){throw 'Production world-cleanup IL parity failed.'}
 $extractor=Join-Path $toolDir 'ExtractReplay.exe'
 Run $csc @('/nologo','/optimize+',"/out:$extractor","/reference:$cecil",(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tools\ExtractReplay.cs'))
+$vehicleFixture=Join-Path $run 'VehicleMotionReplayFixture.exe'
+Run $csc @('/nologo','/nowarn:0649','/optimize+',"/out:$vehicleFixture",$net,$core,$packets,$poseSequence,$liveUsable,$deferredCore,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\VehicleMotionReplayFixture.cs'))
+$vehicleReplay=Join-Path $run 'VehicleMotionReplay.exe'
+Run $extractor @($runtime,$vehicleFixture,$vehicleReplay,'vehicle')
+& (Test-ExePath $vehicleReplay) 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Production vehicle motion replay failed.' }
 $worldRun=Join-Path $run 'world-load-replay'
 New-Item -ItemType Directory -Path $worldRun | Out-Null
 $worldFixture=Join-Path $worldRun 'WorldLoadReplayFixture.exe'

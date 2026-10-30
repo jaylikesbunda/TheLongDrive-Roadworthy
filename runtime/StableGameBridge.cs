@@ -137,6 +137,7 @@ namespace TldMp
             nextSyncHealth=0;healthMaxPending=healthMaxPendingBytes=0;
             selection.Clear();
             RoadLiveCache.Clear();RoadFarSkip.Clear();FarPlaceQueue.Clear();pendingItems.Clear();itemRecovery.Clear();TerrainWorker.Clear();poseFilter.Clear();senderClock.Clear();PlacementSkip.Clear();liveUsables.Clear();CarCargo.Clear();
+            vehiclePairs.Clear();vehicleClock.Clear();ClearVehicleImpacts();RemoteCarSmoothing.Clear();dispatchVehicleMotion=null;applyingVehicleMotion=false;
         }
         static void Ensure()
         {
@@ -236,16 +237,148 @@ namespace TldMp
         static readonly PoseSequenceCounter poseCounter=new PoseSequenceCounter();
         static readonly PoseSequenceFilter poseFilter=new PoseSequenceFilter();
         static readonly SenderClock senderClock=new SenderClock();
+        static readonly SenderClock vehicleClock=new SenderClock();
+        static readonly VehicleMotionPairer vehiclePairs=new VehicleMotionPairer();
+        static VehicleMotionSample dispatchVehicleMotion;
+        static bool applyingVehicleMotion;
+        static readonly bool vehicleMotionEnabled=Environment.GetEnvironmentVariable("TLD_MP_VEHICLE_SNAPSHOTS")!="0";
         // Sender and send clock of the received message being handled (0 = none).
         static ulong dispatchSender;static uint dispatchSequence;
         // Send time of the message being handled, on the local clock.
         internal static bool DispatchSendTime(double localNow,out double time,out double lateness)
         {
             time=localNow;lateness=-1;
+            if(dispatchVehicleMotion!=null)
+            {time=vehicleClock.Map(dispatchSender,dispatchVehicleMotion.ClockMs,localNow,out lateness);return true;}
             if(dispatchSequence==PoseSequence.Unordered)return false;
             time=senderClock.Map(dispatchSender,dispatchSequence,localNow,out lateness);return true;
         }
         static uint ClockMs(){return (uint)(DateTime.UtcNow.Ticks/TimeSpan.TicksPerMillisecond);}
+        internal static ulong MotionSender {get{return dispatchSender;}}
+        internal static bool DispatchVehicleVelocity(uint id,out Vector3 velocity,out Vector3 angular,out bool impact)
+        {
+            velocity=Vector3.zero;angular=Vector3.zero;impact=false;var frame=dispatchVehicleMotion;if(frame==null || frame.ID!=id)return false;
+            velocity=new Vector3(BitConverter.ToSingle(frame.Velocity,5),BitConverter.ToSingle(frame.Velocity,9),BitConverter.ToSingle(frame.Velocity,13));
+            angular=new Vector3(BitConverter.ToSingle(frame.Velocity,17),BitConverter.ToSingle(frame.Velocity,21),BitConverter.ToSingle(frame.Velocity,25));
+            impact=frame.Impact;return true;
+        }
+        sealed class VehicleImpactTrack
+        {internal tosaveitemscript Item;internal int Role;internal double Seen;internal VehicleImpactPolicy Policy=new VehicleImpactPolicy();}
+        static readonly Dictionary<int,VehicleImpactTrack> vehicleImpacts=new Dictionary<int,VehicleImpactTrack>();
+        static readonly List<int> impactKeys=new List<int>();
+        static int impactCursor,impactSendFrame=-1,impactSendsThisFrame;
+        static long vehicleImpactTriggers,vehicleImpactSent;
+        static void ClearVehicleImpacts(){vehicleImpacts.Clear();impactKeys.Clear();impactCursor=0;impactSendFrame=-1;vehicleImpactTriggers=vehicleImpactSent=0;}
+        static void RegisterVehicleImpact(tosaveitemscript item)
+        {
+            int key=item.GetInstanceID(),role=(int)item.CarWhatDoing();VehicleImpactTrack track;
+            if(!vehicleImpacts.TryGetValue(key,out track))
+            {if(vehicleImpacts.Count>=64)return;vehicleImpacts.Add(key,track=new VehicleImpactTrack {Item=item,Role=role});}
+            if(track.Role!=role){track.Role=role;track.Policy=new VehicleImpactPolicy();}
+            track.Seen=Now;
+        }
+        static bool VehicleInImpactBurst(tosaveitemscript item)
+        {VehicleImpactTrack track;return vehicleImpacts.TryGetValue(item.GetInstanceID(),out track) && Now<track.Policy.BurstUntil;}
+        static void NoteVehicleSent(tosaveitemscript item)
+        {VehicleImpactTrack track;if(vehicleImpacts.TryGetValue(item.GetInstanceID(),out track))track.Policy.LastSent=Now;}
+        static void TickVehicleImpactSamples()
+        {
+            if(!vehicleMotionEnabled || node==null || !node.Ready || !WorldSceneAvailable())return;
+            impactKeys.Clear();
+            foreach(var pair in vehicleImpacts)
+            {
+                try
+                {
+                    var track=pair.Value;var item=track.Item;
+                    if(item==null || Now-track.Seen>5 || !item.ThisOneInChargeCar()){impactKeys.Add(pair.Key);continue;}
+                    var body=item.RB;if(body==null)continue;
+                    Vector3 v=body.velocity,w=body.angularVelocity;
+                    if(track.Policy.Observe(Now,v.x,v.y,v.z,w.x,w.y,w.z))vehicleImpactTriggers++;
+                }
+                catch(Exception e){impactKeys.Add(pair.Key);DiagLimited("impact-sample:"+pair.Key,"impact observer retired after "+e.GetType().Name,5);}
+            }
+            foreach(int key in impactKeys)vehicleImpacts.Remove(key);
+        }
+        static void TickVehicleImpactBursts()
+        {
+            if(!vehicleMotionEnabled || node==null || !node.Ready || vehicleImpacts.Count==0 || !WorldSceneAvailable())return;
+            if(impactSendFrame!=Time.frameCount){impactSendFrame=Time.frameCount;impactSendsThisFrame=0;}
+            impactKeys.Clear();impactKeys.AddRange(vehicleImpacts.Keys);int count=impactKeys.Count;
+            int first=impactCursor%count;
+            for(int i=0;i<count && impactSendsThisFrame<4;i++)
+            {
+                int index=(first+i)%count;var track=vehicleImpacts[impactKeys[index]];var item=track.Item;
+                try
+                {
+                    if(item==null || !track.Policy.Due(Now) || !item.ThisOneInChargeCar())continue;
+                    track.Policy.LastSent=Now;impactSendsThisFrame++;vehicleImpactSent++;impactCursor=(index+1)%count;
+                    item.ForcePosUpd(false,false,false);
+                }
+                catch(Exception e){track.Policy.BurstUntil=Now;DiagLimited("impact-send:"+impactKeys[index],"impact burst stopped after "+e.GetType().Name,5);}
+            }
+        }
+        static bool CaptureVehicleMotion(ulong scope,byte[] bytes,bool reliable)
+        {
+            if(!vehicleMotionEnabled || reliable || bytes==null || (bytes[0]!=39 && bytes[0]!=20))return false;
+            tosaveitemscript item;
+            if(!Find(StablePackets.Item(bytes),out item) || item.car==null || !item.ThisOneInChargeCar())return false;
+            RegisterVehicleImpact(item);
+            uint clock=ClockMs();byte[] packet;
+            if(!vehiclePairs.Offer(scope,Own,bytes,Time.frameCount,Now,clock,bytes[0]==20?poseCounter.Next(clock):0,VehicleInImpactBurst(item),out packet))return false;
+            if(packet!=null){PublishVehiclePacket(scope,packet);NoteVehicleSent(item);}
+            return true;
+        }
+        static void PublishVehiclePacket(ulong scope,byte[] bytes)
+        {
+            if(node==null)return;
+            if(scope!=0 && node.IsHost)node.PublishNativeTo(scope,bytes);
+            else node.PublishNative(bytes);
+        }
+        // The envelope's origin is trusted only from the host, or when it equals
+        // the authenticated sending client. Native messages keep their true
+        // driver identity when the host relays the complete envelope onward.
+        static bool ReceiveVehicleMotion(ulong source,byte[] bytes)
+        {
+            if(bytes==null || bytes.Length==0 || bytes[0]!=VehicleMotionCodec.Type)return false;
+            if(!WorldSceneAvailable())return true;
+            if(node==null || !node.Compatible || !SteamP2PNetworkingUnderTheHoodScript.Expected(new CSteamID(source),msgType.carPosGlobal))return true;
+            if(node.IsHost && !node.Peers.ContainsKey(source))return true;
+            ulong origin;VehicleMotionSample[] samples;
+            if(!VehicleMotionCodec.TryRead(bytes,out origin,out samples) || !VehicleMotionCodec.ValidOrigin(node.IsHost,node.Host,source,origin))
+            {packetErrors++;return true;}
+            if(origin==Own)return true;
+            foreach(var sample in samples)if(!ValidateData(sample.Pose) || !ValidateData(sample.Velocity)){packetErrors++;return true;}
+            // Establish the newest clock offset before mapping its repeated
+            // predecessor, so a first packet retains the samples' true spacing.
+            double ignored;vehicleClock.Map(origin,samples[samples.Length-1].ClockMs,Now,out ignored);
+            bool accepted=false;
+            foreach(var sample in samples)
+            {
+                if(!poseFilter.Accept(origin,PoseSequence.Key(sample.Pose),sample.Sequence)){NetStats.SequenceStale++;continue;}
+                poseFilter.Accept(origin,PoseSequence.Key(sample.Velocity),sample.Sequence);
+                NetStats.SequencePassed++;
+                tosaveitemscript local;
+                // A local driver retains control through stale packets from a
+                // previous driver; remote pose and velocity are skipped together.
+                if(Find(sample.ID,out local) && local.car!=null &&
+                    (local.CarWhatDoing()==tosaveitemscript.carWhatDoing.driving || local.ThisOneInChargeCar((tosaveitemscript.carWhatDoing)sample.Role)))continue;
+                accepted=true;
+                var previous=dispatchVehicleMotion;ulong priorSender=dispatchSender;uint priorSequence=dispatchSequence;
+                bool priorApplying=applyingVehicleMotion;int priorType=DispatchType;
+                dispatchVehicleMotion=sample;dispatchSender=origin;dispatchSequence=sample.Sequence;applyingVehicleMotion=true;
+                try
+                {
+                    DispatchType=39;long start=Stopwatch.GetTimestamp();
+                    networkingScript.s.ProcessMessage(new CSteamID(origin),sample.Pose,msgType.carPosGlobal);NoteHandler(sample.Pose,Stopwatch.GetTimestamp()-start);
+                    DispatchType=20;start=Stopwatch.GetTimestamp();
+                    networkingScript.s.ProcessMessage(new CSteamID(origin),sample.Velocity,msgType.carVelocity);NoteHandler(sample.Velocity,Stopwatch.GetTimestamp()-start);
+                }
+                catch(Exception e){packetErrors++;if(Now>=nextFailure){nextFailure=Now+5;Debug.LogError("[TLD MP v3] Vehicle snapshot handler failed: "+e);}}
+                finally{dispatchVehicleMotion=previous;dispatchSender=priorSender;dispatchSequence=priorSequence;applyingVehicleMotion=priorApplying;DispatchType=priorType;}
+            }
+            if(node.IsHost && accepted)foreach(var peer in node.Peers)if(peer.Key!=source)node.PublishNativeTo(peer.Key,bytes);
+            return true;
+        }
         // Removes the sequence trailer; false drops the message (malformed, or a
         // position/velocity older than one already applied for the same object).
         static bool AcceptSequenced(ulong sender,ref byte[] bytes)
@@ -491,6 +624,8 @@ namespace TldMp
             }
             if(bytes[0]==9){if(!node.IsHost && !node.Joining && !node.AwaitingSnapshot && (!loopbackMode || WorldSceneAvailable()))node.RequestSnapshot();return;}
             byte[] protectedBytes=ProtectCargoPose(bytes);
+            bool forced=hood.forceReliable || mode==EP2PSend.k_EP2PSendReliable || mode==EP2PSend.k_EP2PSendReliableWithBuffering;
+            if(protectedBytes!=null && CaptureVehicleMotion(0,protectedBytes,forced))return;
             if(protectedBytes!=null)node.PublishNative(protectedBytes,hood.forceReliable || mode==EP2PSend.k_EP2PSendReliable || mode==EP2PSend.k_EP2PSendReliableWithBuffering);
         }
         public static void RouteTarget(CSteamID target,byte[] bytes,EP2PSend mode)
@@ -507,6 +642,7 @@ namespace TldMp
             byte[] protectedBytes=ProtectCargoPose(bytes);
             if(protectedBytes==null)return;
             bool forceReliable=networkingScript.s.hood.forceReliable || mode==EP2PSend.k_EP2PSendReliable || mode==EP2PSend.k_EP2PSendReliableWithBuffering;
+            if(CaptureVehicleMotion((ulong)target,protectedBytes,forceReliable))return;
             if(node.IsHost)node.PublishNativeTo((ulong)target,protectedBytes,forceReliable);
             else node.PublishNative(protectedBytes,forceReliable);
         }
@@ -595,7 +731,7 @@ namespace TldMp
             if(bytes.Length>0 && bytes[0]>=16 && bytes[0]<=19)CargoDiagnostics.NotePacket(true,bytes[0],StablePackets.Item(bytes),(ulong)sender);
             return true;
         }
-        public static bool AllowForward(){return !dispatching;}
+        public static bool AllowForward(){return !dispatching && !applyingVehicleMotion;}
         // Replaces stock networkingScript.DebugLog via a Guard hook. The hook always
         // returns false, so the native body never runs; NetLogWrite performs the same
         // effects (Debug.Log, console append, chat scroll, newMessage, NewTime) with a
@@ -956,7 +1092,7 @@ namespace TldMp
         static void TimedSendWorld(ulong peer)
         {long start=PhaseTimings.Begin();try{SendWorld(peer);}finally{PhaseTimings.End(PhaseTimings.SnapshotSend,start,"capture+encode+validate");}}
         static void TimedApplyWorld(byte[] bytes)
-        {long start=PhaseTimings.Begin();try{pendingCarBlood.Clear();pendingItems.Clear();itemRecovery.Clear();ApplyWorld(bytes);}finally{PhaseTimings.End(PhaseTimings.SnapshotApply,start,bytes==null?null:"bytes="+bytes.Length);}}
+        {long start=PhaseTimings.Begin();try{pendingCarBlood.Clear();pendingItems.Clear();itemRecovery.Clear();vehiclePairs.Clear();vehicleClock.Clear();ClearVehicleImpacts();RemoteCarSmoothing.Clear();ApplyWorld(bytes);}finally{PhaseTimings.End(PhaseTimings.SnapshotApply,start,bytes==null?null:"bytes="+bytes.Length);}}
         static void SendWorld(ulong peer)
         {
             JoinDiagnostic("SendWorld entry target="+peer+" "+MapDiagnostic());
@@ -1022,6 +1158,7 @@ namespace TldMp
             steamTransport.Poll(delegate(ulong source,byte[] b)
             {
                 hood.dataIn+=b.Length;NetStats.Received(b);var sender=new CSteamID(source);
+                if(ReceiveVehicleMotion(source,b))return;
                 if(!AcceptSequenced(source,ref b))return;
                 if(!SteamP2PNetworkingUnderTheHoodScript.Expected(sender,(msgType)b[0]))return;
                 long handlerStart=Stopwatch.GetTimestamp();DispatchType=b[0];
@@ -1054,6 +1191,7 @@ namespace TldMp
                 }
                 if(item.Connected || item.Bytes==null || item.Bytes.Length==0)continue;
                 hood.dataIn+=item.Bytes.Length;NetStats.Received(item.Bytes);
+                if(ReceiveVehicleMotion(item.From,item.Bytes))continue;
                 byte[] received=item.Bytes;if(!AcceptSequenced(item.From,ref received))continue;item.Bytes=received;
                 // Same entry point Steam uses: AllowIncoming then the stock dispatch.
                 long handlerStart=Stopwatch.GetTimestamp();DispatchType=item.Bytes[0];
@@ -1099,7 +1237,7 @@ namespace TldMp
             pulseDrainTicks=pulseTickTicks=0;
             Ensure();CargoDiagnostics.Tick();TickCarBlood();GroundDiagnostics.TickBusPlacement();if(DiagnosticMode)GroundDiagnostics.Tick();if(node==null)return;ReplayPendingItems();
             long drainStart=Stopwatch.GetTimestamp();
-            SettleLiveUsables();DrainDeliveryQueues();outbox.Flush(Now);bulkOutbox.Flush(Now);
+            TickVehicleImpactBursts();vehiclePairs.Flush(Now,PublishVehiclePacket);SettleLiveUsables();DrainDeliveryQueues();outbox.Flush(Now);bulkOutbox.Flush(Now);
             pulseDrainTicks=Stopwatch.GetTimestamp()-drainStart;
             if(loopbackMode && node.IsHost && WorldSceneAvailable() && syncScript.s!=null)
             {
@@ -1120,6 +1258,8 @@ namespace TldMp
                 Debug.Log("[TLD MP sync-health] t="+Now.ToString("F2",System.Globalization.CultureInfo.InvariantCulture)+" host="+node.IsHost+" ready="+node.Ready+
                     " sendQueue{peak="+healthMaxPending+" peakBytes="+healthMaxPendingBytes+" reliable="+outbox.PendingPackets+" reliableBytes="+outbox.PendingBytes+
                     " bulk="+bulkOutbox.PendingPackets+" bulkBytes="+bulkOutbox.PendingBytes+"} "+TakeItemReplayHealth()+
+                    " vehicleMotion{combinedTotal="+vehiclePairs.Combined+" repeatedTotal="+vehiclePairs.Repeated+" sameFrameSkippedTotal="+vehiclePairs.SameFrameSkipped+" fallbackTotal="+vehiclePairs.Fallback+
+                    " impactTriggersTotal="+vehicleImpactTriggers+" impactSentTotal="+vehicleImpactSent+" tracked="+vehicleImpacts.Count+"}"+
                     (steamTransport==null?"":" "+steamTransport.TakeHealthSummary()));
                 healthMaxPending=healthMaxPendingBytes=0;
             }
@@ -1143,6 +1283,7 @@ namespace TldMp
         static void RemovePlayer(ulong peer)
         {
             outbox.Drop(peer);bulkOutbox.Drop(peer);delivery.Drop(peer);loopbackBootstrapSent.Remove(peer);poseFilter.Forget(peer);senderClock.Forget(peer);liveUsables.Drop(peer);
+            vehicleClock.Forget(peer);
             if(syncScript.s==null || syncScript.s.players==null)return;
             lastPlayers.Remove(peer);
             syncScript.playerSyncClass p;if(syncScript.s.players.TryGetValue(new CSteamID(peer),out p))
@@ -1435,7 +1576,7 @@ namespace TldMp
                 long d=Stopwatch.GetTimestamp();WildlifeWeather.Tick(Connected);TickPlayerRate();
                 NoteSlowUpdate(a,b,c,d,Stopwatch.GetTimestamp());
             }
-            void FixedUpdate(){TickJoinPhysics();TickNativeSpawnSafety(true);}
+            void FixedUpdate(){TickJoinPhysics();TickNativeSpawnSafety(true);TickVehicleImpactSamples();TickVehicleImpactBursts();}
             void LateUpdate(){TickNativeSeatSafety();TickJoinPhysics();try{RemoteCarSmoothing.CheckDrift();CarCargo.HoldTick(RemoteCarSmoothing.IsSmoothed);WorldJump.Tick(Connected);PartsCensus.Tick(Connected);}catch(Exception e){if(!worldJumpFailed){worldJumpFailed=true;Debug.LogWarning("[TLD MP world] diagnostics disabled after error: "+e.GetType().Name);}}}
             void OnDestroy(){FrameDiagnostics.Shutdown();if(loopbackMode)Loopback.Stop();Reset();}
         }

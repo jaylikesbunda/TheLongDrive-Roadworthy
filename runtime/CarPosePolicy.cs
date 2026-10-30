@@ -161,4 +161,25 @@ namespace TldMp
             return body.velocity.sqrMagnitude > MotionEpsilon || body.angularVelocity.sqrMagnitude > MotionEpsilon;
         }
     }
+
+    // Detect abrupt changes in the locally authoritative body's motion. This
+    // observes physics; it never changes a body's velocity or collision flags.
+    internal sealed class VehicleImpactPolicy
+    {
+        internal const double BurstSeconds=.25,CooldownSeconds=.2,SpacingSeconds=1.0/60;
+        internal double BurstUntil,LastSent=-1000;
+        double time,vx,vy,vz,wx,wy,wz,nextTrigger;bool sampled;
+        internal bool Observe(double now,double x,double y,double z,double ax,double ay,double az)
+        {
+            if(!Finite(now)||!Finite(x)||!Finite(y)||!Finite(z)||!Finite(ax)||!Finite(ay)||!Finite(az))return false;
+            double dt=now-time;if(sampled && dt<=0)return false;
+            bool impact=sampled && dt<=.1 && now>=nextTrigger &&
+                ((x-vx)*(x-vx)+(y-vy)*(y-vy)+(z-vz)*(z-vz)>=36 || (ax-wx)*(ax-wx)+(ay-wy)*(ay-wy)+(az-wz)*(az-wz)>=9);
+            sampled=true;time=now;vx=x;vy=y;vz=z;wx=ax;wy=ay;wz=az;
+            if(impact){BurstUntil=now+BurstSeconds;nextTrigger=now+CooldownSeconds;}
+            return impact;
+        }
+        internal bool Due(double now){return now<BurstUntil && now-LastSent>=SpacingSeconds;}
+        static bool Finite(double value){return !Double.IsNaN(value)&&!Double.IsInfinity(value);}
+    }
 }

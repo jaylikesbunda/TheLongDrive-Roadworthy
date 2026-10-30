@@ -80,12 +80,15 @@ namespace TldMp
             internal bool HasTarget;
             internal double TargetX, TargetY, TargetZ;
             internal int NativeSyncs;
+            internal ulong Sender;
         }
 
         static readonly Dictionary<int, Track> tracks = new Dictionary<int, Track>();
         static readonly List<int> dead = new List<int>();
         static int tracked, applied, released;
         static int sampledInterpolated, sampledExtrapolated, sampledHeld;
+
+        internal static void Clear(){released+=tracks.Count;tracks.Clear();dead.Clear();}
 
         // Smoothing-buffer outcomes since the last call: a run of extrapolated or
         // held samples means poses arrived too far apart for the render delay.
@@ -134,7 +137,10 @@ namespace TldMp
                 tracked++;
             }
             // UpdInWorld called MultiPosUpdate with the sender's role just before this.
-            track.RemoteRole = (int)item.car.lastMultiWhatDoing;
+            int role=(int)item.car.lastMultiWhatDoing;ulong sender=StableGameBridge.MotionSender;
+            if(track.LastSample>0 && (track.Sender!=sender || track.RemoteRole!=role))
+            {track.Buffer=new RemotePoseBuffer();track.LastSample=0;track.HasTarget=false;}
+            track.RemoteRole=role;track.Sender=sender;
             // Exactly GotSync's bookkeeping; only the teleport is withheld.
             item.gotSyncLocal = false;
             item.gotSyncLastPos = pos;
@@ -149,6 +155,13 @@ namespace TldMp
             var pose = new RemotePose();
             pose.X = global.x; pose.Y = global.y; pose.Z = global.z;
             pose.Qx = q.x; pose.Qy = q.y; pose.Qz = q.z; pose.Qw = q.w;
+            Vector3 velocity,angular;bool impact;
+            if(StableGameBridge.DispatchVehicleVelocity(item.idInSave,out velocity,out angular,out impact))
+            {
+                pose.HasMotion=true;pose.Impact=impact;
+                pose.Vx=velocity.x;pose.Vy=velocity.y;pose.Vz=velocity.z;
+                pose.Wx=angular.x;pose.Wy=angular.y;pose.Wz=angular.z;
+            }
             double gapSeconds = track.LastSample > 0 ? now - track.LastSample : 0;
             // Timed by the driver's send clock, not arrival (see SenderClock).
             double sampleTime, lateness;

@@ -143,7 +143,7 @@ public static class ExtractReplay
     {
         try
         {
-            if ((args.Length != 3 && args.Length!=4) || File.Exists(args[2]) || args.Length==4 && args[3]!="movement" && args[3]!="driving" && args[3]!="items" && args[3]!="cargo" && args[3]!="seat" && args[3]!="world" && args[3]!="worldnative") throw new Exception("Usage: ExtractReplay SOURCE FIXTURE NEW_OUTPUT [movement|driving|items|cargo|seat|world|worldnative]");
+            if ((args.Length != 3 && args.Length!=4) || File.Exists(args[2]) || args.Length==4 && args[3]!="movement" && args[3]!="driving" && args[3]!="items" && args[3]!="cargo" && args[3]!="seat" && args[3]!="world" && args[3]!="worldnative" && args[3]!="vehicle") throw new Exception("Usage: ExtractReplay SOURCE FIXTURE NEW_OUTPUT [movement|driving|items|cargo|seat|world|worldnative|vehicle]");
             using (var source = AssemblyDefinition.ReadAssembly(args[0]))
             using (var fixture = AssemblyDefinition.ReadAssembly(args[1]))
             {
@@ -155,7 +155,9 @@ public static class ExtractReplay
                 bool cargo=args.Length==4 && args[3]=="cargo";
                 bool seat=args.Length==4 && args[3]=="seat";
                 var rosterCore=new[]{"EnsureItemRoster","RegisterRosterItem","RegisterCar","RemoveRosterItem","RemoveIndexed","AddLoose","RemoveLoose","ObserveItemAdded"};
-                var requested = args.Length==4 && args[3]=="worldnative"?new Dictionary<string,string[]> {
+                var requested = args.Length==4 && args[3]=="vehicle"?new Dictionary<string,string[]> {
+                    {"TldMp.StableGameBridge",new[]{"ReceiveVehicleMotion","DispatchVehicleVelocity","DispatchSendTime","AllowForward","get_MotionSender"}}
+                }:args.Length==4 && args[3]=="worldnative"?new Dictionary<string,string[]> {
                     {"savedatascript",new[]{"SaveToDictionary","LoadStuff","Save","Load","Copy","IndexOfID","IndexOfID2","Remove","Remov2"}},
                     {"itemDataClass",new[]{"Copy","RemoveID"}},
                     {"save_attachable",new[]{"Restart","Save","Load","NeedsSave"}},

@@ -9,6 +9,8 @@ namespace TldMp
     {
         internal double X, Y, Z;
         internal double Qx, Qy, Qz, Qw;
+        internal bool HasMotion,Impact;
+        internal double Vx,Vy,Vz,Wx,Wy,Wz;
     }
 
     internal enum RemoteAddResult { Accepted, OutOfOrder, Reset }
@@ -24,6 +26,7 @@ namespace TldMp
         internal const double MaxExtrapolateSeconds = 0.1;
         internal const double GapResetSeconds = 1.0;
         internal const double TeleportMetres = 50.0;
+        internal const double MaxPredictionMetres=2.0,MaxPredictionSpeed=150.0,MaxPredictionSpin=20.0;
         const double Alpha = 0.1;
 
         readonly double[] times = new double[Capacity];
@@ -149,7 +152,7 @@ namespace TldMp
                     {
                         double span = times[b] - times[a];
                         double t = span > 0.0 ? (renderTime - times[a]) / span : 1.0;
-                        pose = Blend(poses[a], poses[b], t);
+                        pose = BlendMotion(poses[a], poses[b], t, span);
                         return true;
                     }
                 }
@@ -157,6 +160,17 @@ namespace TldMp
                 return true;
             }
             pose = poses[newest];
+            if(pose.HasMotion)
+            {
+                // An impact or implausible tangent gets no prediction. Regular
+                // motion is limited by both time and distance, including spin.
+                if(pose.Impact || !Predictable(pose)){kind=SampleHeld;return true;}
+                double speed=Math.Sqrt(pose.Vx*pose.Vx+pose.Vy*pose.Vy+pose.Vz*pose.Vz);
+                double ahead=Math.Min(renderTime-times[newest],MaxExtrapolateSeconds);
+                if(speed>0)ahead=Math.Min(ahead,MaxPredictionMetres/speed);
+                pose.X+=pose.Vx*ahead;pose.Y+=pose.Vy*ahead;pose.Z+=pose.Vz*ahead;
+                RotateAhead(ref pose,ahead);return true;
+            }
             int previous = Index(count - 2);
             double velocitySpan = times[newest] - times[previous];
             if (velocitySpan > 0.0)
@@ -168,6 +182,45 @@ namespace TldMp
                 pose.Z = poses[newest].Z + (poses[newest].Z - poses[previous].Z) * k;
             }
             return true;
+        }
+
+        static bool Predictable(RemotePose p)
+        {
+            return Finite(p.Vx)&&Finite(p.Vy)&&Finite(p.Vz)&&Finite(p.Wx)&&Finite(p.Wy)&&Finite(p.Wz) &&
+                p.Vx*p.Vx+p.Vy*p.Vy+p.Vz*p.Vz<=MaxPredictionSpeed*MaxPredictionSpeed &&
+                p.Wx*p.Wx+p.Wy*p.Wy+p.Wz*p.Wz<=MaxPredictionSpin*MaxPredictionSpin;
+        }
+        static bool Finite(double v){return !Double.IsNaN(v)&&!Double.IsInfinity(v);}
+        internal static RemotePose BlendMotion(RemotePose a,RemotePose b,double t,double span)
+        {
+            RemotePose result=Blend(a,b,t);
+            if(!a.HasMotion || !b.HasMotion || a.Impact || b.Impact || !Predictable(a) || !Predictable(b) || span<=0 || span>.25)return result;
+            result.X=Monotone(a.X,b.X,a.Vx,b.Vx,t,span);
+            result.Y=Monotone(a.Y,b.Y,a.Vy,b.Vy,t,span);
+            result.Z=Monotone(a.Z,b.Z,a.Vz,b.Vz,t,span);return result;
+        }
+        // Slope-limited Hermite: transmitted tangents improve smooth motion,
+        // while each axis stays between its two authoritative endpoints.
+        static double Monotone(double a,double b,double va,double vb,double t,double span)
+        {
+            double delta=b-a;if(Math.Abs(delta)<1e-9)return a;
+            double slope=delta/span,alpha=va/slope,beta=vb/slope;
+            if(alpha<0)alpha=0;if(beta<0)beta=0;
+            double magnitude=alpha*alpha+beta*beta;
+            if(magnitude>9){double scale=3/Math.Sqrt(magnitude);alpha*=scale;beta*=scale;}
+            double t2=t*t,t3=t2*t;
+            double value=(2*t3-3*t2+1)*a+(t3-2*t2+t)*delta*alpha+(-2*t3+3*t2)*b+(t3-t2)*delta*beta;
+            return Math.Max(Math.Min(a,b),Math.Min(Math.Max(a,b),value));
+        }
+        static void RotateAhead(ref RemotePose p,double seconds)
+        {
+            double speed=Math.Sqrt(p.Wx*p.Wx+p.Wy*p.Wy+p.Wz*p.Wz);if(speed<1e-9)return;
+            double half=speed*seconds*.5,s=Math.Sin(half)/speed;
+            double x=p.Wx*s,y=p.Wy*s,z=p.Wz*s,w=Math.Cos(half);
+            double qx=w*p.Qx+x*p.Qw+y*p.Qz-z*p.Qy,qy=w*p.Qy-x*p.Qz+y*p.Qw+z*p.Qx;
+            double qz=w*p.Qz+x*p.Qy-y*p.Qx+z*p.Qw,qw=w*p.Qw-x*p.Qx-y*p.Qy-z*p.Qz;
+            double norm=Math.Sqrt(qx*qx+qy*qy+qz*qz+qw*qw);
+            if(norm>1e-9){p.Qx=qx/norm;p.Qy=qy/norm;p.Qz=qz/norm;p.Qw=qw/norm;}
         }
 
         // Linear position, normalized linear quaternion blend on the shortest path.
