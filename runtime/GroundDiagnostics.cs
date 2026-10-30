@@ -140,6 +140,84 @@ namespace TldMp
 
         static string Num(double v) { return double.IsNaN(v) ? "n/a" : F(v); }
 
+        // The native loading element belongs to the scene. Keep it visible on
+        // entering a game while nearby collision and POI contents are prepared.
+        static menuhandler loadingOwner;
+        static bool loadingFinished;
+        static float loadingStarted,loadingReadySince,loadingNextCheck;
+        const float LoadingTimeout=30f;
+
+        public static void TickLoadingOverlay(bool multiplayerReady)
+        {
+            var menu=menuhandler.s;var data=DataFromMenuScript.s;
+            if(menu==null || data==null || data.mainmenu)
+            {
+                // A scene transition may be using this same native element.
+                // Do not hide the game's own transition overlay.
+                loadingOwner=null;loadingFinished=false;return;
+            }
+            if(loadingOwner!=menu)
+            {
+                loadingOwner=menu;loadingFinished=false;loadingStarted=Time.realtimeSinceStartup;
+                loadingReadySince=0;loadingNextCheck=0;
+                if(menu.GLoadText!=null)menu.GLoadText.SetActive(true);
+            }
+            if(loadingFinished || menu.GLoadText==null)return;
+            float now=Time.realtimeSinceStartup;
+            if(now-loadingStarted>=LoadingTimeout)
+            {
+                loadingFinished=true;menu.GLoadText.SetActive(false);
+                Debug.Log("[TLD MP loading] overlay released after timeout");return;
+            }
+            if(now<loadingNextCheck)return;
+            loadingNextCheck=now+.25f;
+            bool ready=multiplayerReady && LoadingWorldReady(menu);
+            if(!ready){loadingReadySince=0;return;}
+            if(loadingReadySince==0){loadingReadySince=now;return;}
+            if(now-loadingReadySince<1f)return;
+            loadingFinished=true;menu.GLoadText.SetActive(false);
+            Debug.Log("[TLD MP loading] nearby world ready after "+F(now-loadingStarted)+"s");
+        }
+
+        public static void LoadingOverlayFailed(Exception error)
+        {
+            if(loadingFinished)return;
+            loadingFinished=true;
+            if(loadingOwner!=null && loadingOwner.GLoadText!=null)loadingOwner.GLoadText.SetActive(false);
+            Debug.LogWarning("[TLD MP loading] overlay released after error: "+error.GetType().Name);
+        }
+
+        static bool LoadingWorldReady(menuhandler menu)
+        {
+            if(menu==null || menu.currentMainMap==null || mainscript.s==null || mainscript.s.player==null)return false;
+            var map=menu.currentMainMap;var gen=NearGen(map);
+            var position=mainscript.GlobalFromUnityPos(mainscript.s.player.transform.position);
+            bool tile,collider;double ground=ColliderY(gen,position,out tile,out collider);
+            if(double.IsNaN(ground) || double.IsInfinity(ground))return false;
+            if(map.poiGens==null || itemPlaceRemoveScript.s==null)return false;
+            foreach(var pois in map.poiGens)
+            {
+                if(pois==null || !pois.isActiveAndEnabled)continue;
+                if(pois.placeStartHouse && !pois.startHouseStarted)return false;
+                if(pois.chunks==null || pois.chunkSize<=0)return false;
+                poiGenScript.chunkClass center;
+                if(!pois.chunks.TryGetValue(mainscript.GetChunkPos(position,pois.chunkSize),out center) || center==null || !center.generated)return false;
+                double range=itemPlaceRemoveScript.s.itemSpawnDist;
+                foreach(var chunk in pois.chunks)
+                {
+                    if(chunk.Value==null || chunk.Value.pois==null)continue;
+                    foreach(var entry in chunk.Value.pois)
+                    {
+                        var poi=entry.Value;if(poi==null)continue;
+                        double x=poi.pos.x-position.x,z=poi.pos.z-position.z;
+                        if(x*x+z*z>=range*range)continue;
+                        if(poi.pobj==null || !poi.pobj.gameObject.activeSelf || !poi.spawnedItems || !poi.spawnedFixed)return false;
+                    }
+                }
+            }
+            return true;
+        }
+
         // A spawned haz02 can precede its terrain tile. Keep its bus stop pending
         // until the actual near-terrain collider is ready; only then may its
         // detached item spawners run. Entries are removed when the POI despawns.
