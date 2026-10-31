@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace TldMp
 {
@@ -149,6 +150,8 @@ namespace TldMp
         static bool loadingLifted;
         static GameObject loadingBg;
         static bool loadingBgWasActive;
+        static Color loadingBgColor;
+        static bool loadingBgColorSet;
         const float LoadingTimeout=30f;
 
         public static void TickLoadingOverlay(bool multiplayerReady)
@@ -165,12 +168,22 @@ namespace TldMp
                 loadingOwner=menu;loadingFinished=false;loadingStarted=Time.realtimeSinceStartup;
                 loadingReadySince=0;loadingNextCheck=0;loadingBlock="";loadingLifted=false;
                 if(menu.GLoadText!=null)menu.GLoadText.SetActive(true);
-                // The panel's own background image ships switched off, so a held
-                // overlay floated the text over the half-loaded world. Show it
-                // for as long as the hold lasts, then put its state back.
+                // The panel's own background image is active but draws nothing
+                // (transparent or sprite-less), so a held overlay floats the
+                // text over the half-loaded world. Make it actually cover for
+                // as long as the hold lasts, then put its state back.
                 loadingBg=FindLoadingBackground(menu);
-                loadingBgWasActive=false;
-                if(loadingBg!=null){loadingBgWasActive=loadingBg.activeSelf;loadingBg.SetActive(true);}
+                loadingBgWasActive=false;loadingBgColorSet=false;
+                if(loadingBg!=null)
+                {
+                    loadingBgWasActive=loadingBg.activeSelf;loadingBg.SetActive(true);
+                    var img=loadingBg.GetComponent<Image>();
+                    if(img!=null)
+                    {
+                        loadingBgColor=img.color;loadingBgColorSet=true;
+                        img.color=img.sprite==null?new Color(0f,0f,0f,1f):new Color(img.color.r,img.color.g,img.color.b,1f);
+                    }
+                }
             }
             if(loadingFinished || menu.GLoadText==null)return;
             if(loadingBg!=null && !loadingBg.activeSelf)loadingBg.SetActive(true);
@@ -214,7 +227,7 @@ namespace TldMp
             Debug.LogWarning("[TLD MP loading] overlay released after error: "+error.GetType().Name);
         }
 
-        // LoadTextBackGround sits inside the loading panel but arrives disabled.
+        // LoadTextBackGround sits inside the loading panel.
         static GameObject FindLoadingBackground(menuhandler menu)
         {
             if(menu==null)return null;
@@ -226,7 +239,11 @@ namespace TldMp
 
         static void ReleaseLoadingOverlay(menuhandler menu)
         {
-            if(loadingBg!=null){loadingBg.SetActive(loadingBgWasActive);loadingBg=null;}
+            if(loadingBg!=null)
+            {
+                if(loadingBgColorSet){var img=loadingBg.GetComponent<Image>();if(img!=null)img.color=loadingBgColor;loadingBgColorSet=false;}
+                loadingBg.SetActive(loadingBgWasActive);loadingBg=null;
+            }
             if(menu!=null && menu.GLoadText!=null)menu.GLoadText.SetActive(false);
         }
 

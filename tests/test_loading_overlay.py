@@ -18,7 +18,10 @@ using System;using System.Collections.Generic;
 public struct Vector3 {public float x,y,z;public static readonly Vector3 zero=new Vector3();public static readonly Vector3 up=new Vector3{y=1};public static readonly Vector3 down=new Vector3{y=-1};public static Vector3 operator *(Vector3 v,float s){return new Vector3{x=v.x*s,y=v.y*s,z=v.z*s};}public static Vector3 operator +(Vector3 a,Vector3 b){return new Vector3{x=a.x+b.x,y=a.y+b.y,z=a.z+b.z};}}
 public struct Vector3d {public double x,y,z;}
 public class Transform {public Vector3 position;public GameObject gameObject;public Transform findResult;public Transform Find(string p){return findResult;}}
-public class GameObject {public bool activeSelf;public Transform transform;public GameObject(){transform=new Transform{gameObject=this};}public void SetActive(bool b){activeSelf=b;}}
+public struct Color {public float r,g,b,a;public Color(float rr,float gg,float bb,float aa){r=rr;g=gg;b=bb;a=aa;}}
+public class Sprite {}
+public class Image {public Color color;public Sprite sprite;}
+public class GameObject {public bool activeSelf;public Transform transform;public Image image;public GameObject(){transform=new Transform{gameObject=this};}public void SetActive(bool b){activeSelf=b;}public T GetComponent<T>(){return (T)(object)image;}}
 public class Rigidbody {public Vector3 velocity,angularVelocity;}
 public class Collider {public bool enabled=true;public bool isTrigger;}
 public struct RaycastHit {public Collider collider;public Vector3 point;public Vector3 normal;}
@@ -50,16 +53,16 @@ static void Check(bool v,string s){if(!v)throw new Exception(s);}
 static void Tick(float t,bool live){Time.realtimeSinceStartup=t;Adapter.TickLoadingOverlay(live);}
 public static void Main(){
 var menu=new menuhandler();menuhandler.s=menu;var gen=new poiGenScript{placeStartHouse=true};menu.currentMainMap.poiGens.Add(gen);var chunk=new poiGenScript.chunkClass();gen.chunks.Add(new Vector3d(),chunk);
-var bg=new GameObject();menu.GLoadText.transform.findResult=bg.transform;
-Tick(1,true);Check(menu.GLoadText.activeSelf,"initial overlay shown");Check(bg.activeSelf,"loading background shown");
+var bg=new GameObject();bg.image=new Image();menu.GLoadText.transform.findResult=bg.transform;
+Tick(1,true);Check(menu.GLoadText.activeSelf,"initial overlay shown");Check(bg.activeSelf,"loading background shown");Check(bg.image.color.a==1f,"sprite-less background made opaque");
 Adapter.Ground(true);Tick(2,true);Check(menu.GLoadText.activeSelf,"wait for starting house");
 gen.startHouseStarted=true;Tick(3,true);Check(menu.GLoadText.activeSelf,"wait for generated chunk");chunk.generated=true;
 var poi=new poiGenScript.poiClass{pobj=new poiScript()};poi.pobj.gameObject.activeSelf=true;chunk.pois.Add(new Vector3d(),poi);
 Tick(4,true);Check(menu.GLoadText.activeSelf,"wait for POI props");poi.spawnedItems=true;poi.spawnedFixed=true;
-Tick(5,false);Check(menu.GLoadText.activeSelf,"wait for guest spawn");Tick(6,true);Tick(6.5f,true);Check(menu.GLoadText.activeSelf,"wait for stability");Tick(7.1f,true);Check(!menu.GLoadText.activeSelf,"ready overlay hidden");Check(!bg.activeSelf,"loading background restored");
+Tick(5,false);Check(menu.GLoadText.activeSelf,"wait for guest spawn");Tick(6,true);Tick(6.5f,true);Check(menu.GLoadText.activeSelf,"wait for stability");Tick(7.1f,true);Check(!menu.GLoadText.activeSelf,"ready overlay hidden");Check(!bg.activeSelf,"loading background restored");Check(bg.image.color.a==0f,"background color restored");
 menu.GLoadText.SetActive(true);DataFromMenuScript.s.mainmenu=true;Tick(8,true);Check(menu.GLoadText.activeSelf,"preserve native transition overlay");
 DataFromMenuScript.s.mainmenu=false;var next=new menuhandler();menuhandler.s=next;Adapter.Ground(false);Tick(10,true);Tick(40.1f,true);Check(!next.GLoadText.activeSelf,"timeout releases");
-var third=new menuhandler();menuhandler.s=third;var bg3=new GameObject();third.GLoadText.transform.findResult=bg3.transform;Tick(50,true);Check(bg3.activeSelf,"error-path background shown");Adapter.LoadingOverlayFailed(new Exception());Check(!third.GLoadText.activeSelf,"error releases");Check(!bg3.activeSelf,"error restores loading background");
+var third=new menuhandler();menuhandler.s=third;var bg3=new GameObject();bg3.image=new Image{sprite=new Sprite(),color=new Color(0.5f,0.6f,0.7f,0f)};third.GLoadText.transform.findResult=bg3.transform;Tick(50,true);Check(bg3.activeSelf,"error-path background shown");Check(bg3.image.color.a==1f && bg3.image.color.r==0.5f,"sprite background revealed keeping tint");Adapter.LoadingOverlayFailed(new Exception());Check(!third.GLoadText.activeSelf,"error releases");Check(!bg3.activeSelf,"error restores loading background");Check(bg3.image.color.a==0f,"error restores background color");
 var fourth=new menuhandler();menuhandler.s=fourth;Adapter.Ground(true);mainscript.s.player.transform.position=new Vector3{y=-10};Tick(60,true);Check(fourth.GLoadText.activeSelf,"hold while below ground");Check(Math.Abs(mainscript.s.player.transform.position.y-0.05f)<0.001,"player lifted onto ground");Tick(61,true);Tick(61.5f,true);Check(fourth.GLoadText.activeSelf,"wait for stability after lift");Tick(62.1f,true);Check(!fourth.GLoadText.activeSelf,"overlay hidden after lift and hold");
 var fifth=new menuhandler();menuhandler.s=fifth;mainscript.s.player.transform.position=new Vector3{y=0};Adapter.Ground(true);Adapter.Support(false);Tick(70,true);Check(fifth.GLoadText.activeSelf,"wait for player support, not the terrain tile ray");Adapter.Support(true);Tick(71,true);Tick(71.5f,true);Check(fifth.GLoadText.activeSelf,"wait for stability after support");Tick(72.1f,true);Check(!fifth.GLoadText.activeSelf,"overlay hidden once the player is supported");
 Console.WriteLine("PASS loading overlay readiness, background, multiplayer, lifecycle, fallback, lift and support");}}
