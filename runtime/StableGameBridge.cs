@@ -134,7 +134,7 @@ namespace TldMp
             maps.Clear();lastPlayers.Clear();lastItems.Clear();pendingCarBlood.Clear();diagnosticNext.Clear();loopbackBootstrapSent.Clear();loopbackBootstrapReceived=false;loopbackPreviousMap=null;
             if(steamTransport!=null){steamTransport.Dispose();steamTransport=null;}transportLobby=transportHost=0;nextSdrRetry=0;deliveryPeerCursor=0;delivery.Clear();hostWorldEvidence=false;
             outbox.Clear();bulkOutbox.Clear();node=null;StableMap.Configure(null);nextPulse=0;lastError=null;
-            nextSyncHealth=0;healthMaxPending=healthMaxPendingBytes=0;
+            nextSyncHealth=0;healthMaxPending=healthMaxPendingBytes=0;ClearSpawnHandoff();
             selection.Clear();
             RoadLiveCache.Clear();RoadFarSkip.Clear();FarPlaceQueue.Clear();pendingItems.Clear();itemRecovery.Clear();TerrainWorker.Clear();poseFilter.Clear();senderClock.Clear();PlacementSkip.Clear();liveUsables.Clear();CarCargo.Clear();
             vehiclePairs.Clear();vehicleClock.Clear();ClearVehicleImpacts();RemoteCarSmoothing.Clear();dispatchVehicleMotion=null;applyingVehicleMotion=false;
@@ -173,7 +173,7 @@ namespace TldMp
             node.Trace=JoinDiagnostic;
             node.DeferMapWork=true;
             node.WatermarkChanged=delegate(uint high){if(savedatascript.s!=null && savedatascript.s.data!=null)savedatascript.s.data.lastID=Math.Max(savedatascript.s.data.lastID,high);};
-            node.PeerLeft=RemovePlayer;node.CarBloodReceived=ApplyCarBlood;
+            node.PeerLeft=delegate(ulong peer){appliedSpawns.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;
             StableMap.Configure(node);
             if(loopbackMode && !node.IsHost)
             {
@@ -1243,7 +1243,7 @@ namespace TldMp
         internal static void Pulse()
         {
             pulseDrainTicks=pulseTickTicks=0;
-            Ensure();CargoDiagnostics.Tick();TickCarBlood();GroundDiagnostics.TickBusPlacement();if(DiagnosticMode)GroundDiagnostics.Tick();if(node==null)return;ReplayPendingItems();
+            Ensure();CargoDiagnostics.Tick();TickCarBlood();GroundDiagnostics.TickBusPlacement();if(DiagnosticMode)GroundDiagnostics.Tick();if(node==null)return;ReplayPendingItems();TickSpawnHandoff();
             long drainStart=Stopwatch.GetTimestamp();
             TickVehicleImpactBursts();vehiclePairs.Flush(Now,PublishVehiclePacket);SettleLiveUsables();DrainDeliveryQueues();outbox.Flush(Now);bulkOutbox.Flush(Now);
             pulseDrainTicks=Stopwatch.GetTimestamp()-drainStart;
@@ -1589,6 +1589,109 @@ namespace TldMp
             void FixedUpdate(){TickJoinPhysics();TickNativeSpawnSafety(true);TickVehicleImpactSamples();TickVehicleImpactBursts();}
             void LateUpdate(){TickNativeSeatSafety();TickJoinPhysics();try{RemoteCarSmoothing.CheckDrift();CarCargo.HoldTick(RemoteCarSmoothing.IsSmoothed);WorldJump.Tick(Connected);PartsCensus.Tick(Connected);}catch(Exception e){if(!worldJumpFailed){worldJumpFailed=true;Debug.LogWarning("[TLD MP world] diagnostics disabled after error: "+e.GetType().Name);}}}
             void OnDestroy(){FrameDiagnostics.Shutdown();if(loopbackMode)Loopback.Stop();Reset();}
+        }
+        static readonly HashSet<uint> announcedSpawns=new HashSet<uint>();
+        static readonly Dictionary<ulong,ulong> appliedSpawns=new Dictionary<ulong,ulong>();
+        static List<uint> spawnIDs;
+        static byte[] spawnPayload;
+        static ulong spawnSequence;
+        static double nextSpawnScan,nextSpawnSend;
+        static int spawnAttempts;
+        static void ClearSpawnHandoff()
+        {announcedSpawns.Clear();appliedSpawns.Clear();spawnIDs=null;spawnPayload=null;spawnSequence=0;nextSpawnScan=nextSpawnSend=0;spawnAttempts=0;}
+        static void AckSpawn(ulong sequence)
+        {
+            if(spawnPayload==null || sequence!=spawnSequence)return;
+            foreach(uint id in spawnIDs)announcedSpawns.Add(id);
+            Debug.Log("[TLD MP spawn] acknowledged transaction="+sequence+" items="+spawnIDs.Count);
+            spawnPayload=null;spawnIDs=null;
+        }
+        static void TickSpawnHandoff()
+        {
+            if(node==null || node.IsHost || !node.Ready || !WorldSceneAvailable() || savedatascript.s==null)return;
+            if(spawnPayload!=null)
+            {
+                if(Now<nextSpawnSend)return;
+                if(spawnAttempts>=5){Debug.LogError("[TLD MP spawn] host did not acknowledge transaction="+spawnSequence+"; reconnect before spawning more items.");nextSpawnSend=Double.MaxValue;return;}
+                spawnAttempts++;nextSpawnSend=Now+2;node.SendSpawn(spawnSequence,spawnPayload);return;
+            }
+            if(Now<nextSpawnScan)return;nextSpawnScan=Now+.25;
+            var items=new List<tosaveitemscript>();
+            foreach(var pair in savedatascript.s.items)
+                if(pair.Key>=node.FirstID && pair.Key<=node.LastID && !announcedSpawns.Contains(pair.Key) && pair.Value!=null && pair.Value.gameObject.activeInHierarchy)items.Add(pair.Value);
+            if(items.Count==0)return;
+            if(items.Count>128){Debug.LogError("[TLD MP spawn] more than 128 unannounced items; handoff refused.");nextSpawnScan=Double.MaxValue;return;}
+            // Capture definitions first. Ordinary SyncAll suppresses these for
+            // loose guest parts, so attachments alone cannot create the objects.
+            var packets=new List<byte[]>();var ids=new List<uint>();
+            bool previous=capturing;var prior=captured;capturing=true;captured=packets;
+            try
+            {
+                foreach(var item in items){ids.Add(item.idInSave);syncScript.s.SendItemPosGlobal(item.idInSave,item.id,mainscript.GlobalFromUnityPos(item.useThisForPos.position),item.useThisForPos.eulerAngles);}
+                foreach(var item in items)item.SyncAll();
+            }
+            finally{capturing=previous;captured=prior;}
+            using(var stream=new System.IO.MemoryStream())using(var writer=new System.IO.BinaryWriter(stream))
+            {
+                // Keep only definitions and persistent state for this transaction.
+                var allowed=new HashSet<uint>(ids);var selected=new List<byte[]>();
+                foreach(var packet in packets)if(packet.Length>0 && (packet[0]==16 || PendingItemQueue.Holdable(packet[0])) && allowed.Contains(StablePackets.Item(packet)))selected.Add(packet);
+                if(selected.Count>1024)throw new InvalidOperationException("Spawn handoff packet limit exceeded.");
+                writer.Write(ids.Count);writer.Write(selected.Count);
+                foreach(var packet in selected){writer.Write(packet.Length);writer.Write(packet);}
+                if(stream.Length>58000){Debug.LogError("[TLD MP spawn] handoff exceeds 58000 bytes; refused.");nextSpawnScan=Double.MaxValue;return;}
+                spawnPayload=stream.ToArray();spawnIDs=ids;spawnSequence++;spawnAttempts=0;nextSpawnSend=Now;
+            }
+            Debug.Log("[TLD MP spawn] captured transaction="+spawnSequence+" items="+ids.Count+" bytes="+spawnPayload.Length);
+        }
+        static bool ApplySpawn(ulong source,ulong sequence,byte[] bytes)
+        {
+            ulong prior;if(appliedSpawns.TryGetValue(source,out prior) && sequence<=prior)return true;
+            StablePeer peer;if(node==null || !node.IsHost || !node.Peers.TryGetValue(source,out peer) || bytes==null || bytes.Length>58000)return false;
+            var packets=new List<byte[]>();var definitions=new HashSet<uint>();
+            try
+            {
+                using(var stream=new System.IO.MemoryStream(bytes,false))using(var reader=new System.IO.BinaryReader(stream))
+                {
+                    int count=reader.ReadInt32(),length=reader.ReadInt32();if(count<1 || count>128 || length<count || length>1024)return false;
+                    for(int i=0;i<length;i++)
+                    {
+                        int size=reader.ReadInt32();if(size<5 || size>stream.Length-stream.Position)return false;
+                        var packet=reader.ReadBytes(size);if(!StablePackets.Valid(packet) || (packet[0]!=16 && !PendingItemQueue.Holdable(packet[0])))return false;
+                        uint id=StablePackets.Item(packet);if(id<peer.First || id>peer.Last)return false;
+                        if(i<count){if(packet[0]!=16 || !definitions.Add(id))return false;}else if(!definitions.Contains(id))return false;
+                        uint parent=PendingItemQueue.Parent(packet);if(parent!=0 && !definitions.Contains(parent) && !HeldItemExists(parent))return false;
+                        if(!ValidateData(packet))return false;packets.Add(packet);
+                    }
+                    if(stream.Position!=stream.Length)return false;
+                }
+                // All input is checked before native creation. Existing IDs are
+                // updated by native UpdItem, never instantiated a second time.
+                foreach(var packet in packets)
+                {
+                    if(packet[0]==16)Deliver(source,packet);
+                    else
+                    {
+                        bool previous=dispatching;dispatching=true;
+                        try{ReplayOneHeld(new PendingItemQueue.Held {Bytes=packet,Sender=source});}
+                        finally{dispatching=previous;}
+                    }
+                }
+                foreach(uint id in definitions)if(!HeldItemExists(id))return false;
+                foreach(var packet in packets)if(packet[0]==42)
+                {
+                    tosaveitemscript item;if(!Find(StablePackets.Item(packet),out item) || item.attachable==null)return false;
+                    var live=new save_attachable(item.attachable,item.idInSave);
+                    if(BitConverter.ToInt32(packet,5)==0){if(item.attachable.attached)return false;continue;}
+                    if(BitConverter.ToInt32(packet,9)!=2)return false;
+                    if(!AttachmentReplayPolicy.SameSlot(packet,live.attachType,live.indexType,live.parentid,live.poigenid,live.poiid.x,live.poiid.y,live.poiid.z,live.index))return false;
+                }
+                appliedSpawns[source]=sequence;
+                foreach(var packet in packets)node.PublishNative(packet,true);
+                Debug.Log("[TLD MP spawn] applied source="+source+" transaction="+sequence+" items="+definitions.Count);
+                return true;
+            }
+            catch(Exception e){Debug.LogWarning("[TLD MP spawn] apply failed source="+source+" transaction="+sequence+" error="+e);return false;}
         }
     }
 }

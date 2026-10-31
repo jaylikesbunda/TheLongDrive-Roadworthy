@@ -34,7 +34,7 @@ namespace TldMp
     // Session, handshake, liveness, world-manifest transfer and join journal.
     // There is no ownership/lease/epoch authority here: native gameplay bytes are
     // relayed as opaque transport payloads and native handlers decide everything.
-    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18 }
+    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18, Spawn=19, SpawnAck=20 }
 
     public sealed class StableMessage
     {
@@ -52,7 +52,7 @@ namespace TldMp
             {
                 if(r.ReadByte()!=254 || r.ReadUInt32()!=0x33444C54 || r.ReadByte()!=3) return null;
                 var m=new StableMessage { Op=(StableOp)r.ReadByte(),Lobby=r.ReadUInt64(),Session=r.ReadUInt64(),Origin=r.ReadUInt64(),Epoch=r.ReadUInt64(),Sequence=r.ReadUInt64(),WorldRevision=r.ReadUInt64(),Key=r.ReadString() };
-                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.CarBlood) return null;
+                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.SpawnAck) return null;
                 m.Data=r.ReadBytes(n);return m;
             }} catch(Exception e) { if(e is IOException || e is ArgumentException || e is OverflowException) return null;throw; }
         }
@@ -96,6 +96,13 @@ namespace TldMp
         public Action<byte[]> ApplySnapshot;
         public Action<ulong> SnapshotRequested;
         public Action<uint,bool> CarBloodReceived;
+        public Func<ulong,ulong,byte[],bool> SpawnReceived;
+        public Action<ulong> SpawnAcknowledged;
+        public bool SendSpawn(ulong sequence,byte[] bytes)
+        {
+            if(IsHost || !Ready || bytes==null || bytes.Length>58000)return false;
+            var m=Message(StableOp.Spawn,"",bytes);m.Sequence=sequence;Emit(Host,m,true);return true;
+        }
         public Action<string> Notice;
         public Action<uint> WatermarkChanged;
         public Action<ulong> PeerLeft;
@@ -348,6 +355,12 @@ namespace TldMp
                 }
                 StablePeer p;if(!Peers.TryGetValue(sender,out p) || p.Session!=m.Session || m.Origin!=sender)return;p.Seen=now;
                 if(m.Op==StableOp.Heartbeat)return;
+                if(m.Op==StableOp.Spawn)
+                {
+                    if(p.Ready && m.Sequence!=0 && SpawnReceived!=null && SpawnReceived(sender,m.Sequence,m.Data))
+                    {var ack=Message(StableOp.SpawnAck,"",new byte[0]);ack.Sequence=m.Sequence;Emit(sender,ack,true);}
+                    return;
+                }
                 if(m.Op==StableOp.CarBlood)
                 {
                     if(!p.Ready || !ValidCarBlood(m))return;
@@ -404,6 +417,7 @@ namespace TldMp
             }
             if(!Compatible || m.Session!=HostSession)return;lastHost=now;
             if(m.Op==StableOp.Heartbeat)return;
+            if(m.Op==StableOp.SpawnAck){if(Ready && m.Data.Length==0 && SpawnAcknowledged!=null)SpawnAcknowledged(m.Sequence);return;}
             if(m.Op==StableOp.CarBlood)
             {
                 if(ValidCarBlood(m) && CarBloodReceived!=null)CarBloodReceived(BitConverter.ToUInt32(m.Data,0),m.Data[4]!=0);

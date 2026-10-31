@@ -41,6 +41,16 @@ public static class StableCoreTests
     static byte[] Control(int value){var b=new byte[5];b[0]=37;Buffer.BlockCopy(BitConverter.GetBytes(value),0,b,1,4);return b;}
     public static int Main()
     {
+        var spawnLab=new Lab();spawnLab.Connect();var spawnHost=spawnLab.Nodes[10];var spawnClient=spawnLab.Nodes[20];
+        int spawnApplied=0,spawnAcked=0;
+        spawnHost.SpawnReceived=delegate(ulong source,ulong sequence,byte[] data){spawnApplied++;return source==20 && sequence==1 && data.Length==3;};
+        spawnClient.SpawnAcknowledged=delegate(ulong sequence){if(sequence==1)spawnAcked++;};
+        Check(spawnClient.SendSpawn(1,new byte[]{1,2,3}),"ready client spawn not accepted");spawnLab.Pump();
+        Check(spawnApplied==1 && spawnAcked==1,"spawn handoff or acknowledgement failed");
+        spawnHost.SpawnReceived=delegate{return false;};spawnClient.SendSpawn(2,new byte[]{1});spawnLab.Pump();
+        Check(spawnAcked==1,"failed host application acknowledged");
+        Check(!spawnHost.SendSpawn(1,new byte[]{1}) && !spawnClient.SendSpawn(3,new byte[58001]),"spawn sender or byte bound bypassed");
+
         try
         {
             var lab=new Lab();lab.Connect();foreach(var n in lab.Nodes.Values)Check(n.Ready,"all peers ready after snapshot ACK barrier");

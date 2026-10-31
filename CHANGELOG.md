@@ -9,6 +9,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Add velocity-aware car smoothing and short, rate-limited impact updates.
 - Fix loopback vehicle snapshot admission and test motion over impaired localhost connections.
 - Preserve attachment replay order across changing parents and improve queue and vehicle-part diagnostics.
+- Send client-spawned items as bounded reliable batches with creation before state and host acknowledgement.
 - Bound missing-item state by messages, bytes, and replay work per frame, with bounded recovery requests.
 - Cancel queued state on item deletion and reconcile changed attachment slots through native mounting routines.
 - Record item recovery and transport health on both host and clients every five seconds.
