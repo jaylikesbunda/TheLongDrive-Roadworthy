@@ -177,6 +177,9 @@ python packaging/build_release.py
   on a disposable copy of the game). It needs the game installed; `-GameDirectory`
   overrides Steam detection, and `TLD_GAME_DIR` works too.
 - The Python tests skip game-dependent checks when no game is found.
+- Local two-instance motion tests: run `Start-Loopback.ps1 -Role Host`, load a test save, then run `Start-Loopback.ps1 -Role Client -RttMs 200 -JitterMs 40 -LossPercent 5`.
+- Loopback enables combined snapshots, repeats, impact bursts and car smoothing at a 60 Hz target. Use `-CarRate 20`, `-NativeVehicleMotion`, or `-NativeCarSmoothing` for comparisons; apply network impairment on one instance only.
+- In the receiver's log, `vehicleReceive` should show rising `receivedTotal` and `processedTotal`. Sender `combinedTotal`/`repeatedTotal` and `impactTriggersTotal`/`impactSentTotal` show which motion features ran.
 - `build_release.py` needs Python 3.12 with `packaging/requirements.txt`. It downloads
   the pinned Mono.Cecil 0.11.6 package into `.tools/` on first run and checks its SHA-256.
 

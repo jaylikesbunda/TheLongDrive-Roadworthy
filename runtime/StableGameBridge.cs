@@ -268,7 +268,8 @@ namespace TldMp
         static readonly List<int> impactKeys=new List<int>();
         static int impactCursor,impactSendFrame=-1,impactSendsThisFrame;
         static long vehicleImpactTriggers,vehicleImpactSent;
-        static void ClearVehicleImpacts(){vehicleImpacts.Clear();impactKeys.Clear();impactCursor=0;impactSendFrame=-1;vehicleImpactTriggers=vehicleImpactSent=0;}
+        static long vehicleMotionReceived,vehicleMotionProcessed,vehicleAdmissionRejected,vehicleSceneRejected,vehicleMalformed,vehicleControlIgnored;
+        static void ClearVehicleImpacts(){vehicleImpacts.Clear();impactKeys.Clear();impactCursor=0;impactSendFrame=-1;vehicleImpactTriggers=vehicleImpactSent=0;vehicleMotionReceived=vehicleMotionProcessed=vehicleAdmissionRejected=vehicleSceneRejected=vehicleMalformed=vehicleControlIgnored=0;}
         static void RegisterVehicleImpact(tosaveitemscript item)
         {
             int key=item.GetInstanceID(),role=(int)item.CarWhatDoing();VehicleImpactTrack track;
@@ -340,14 +341,20 @@ namespace TldMp
         static bool ReceiveVehicleMotion(ulong source,byte[] bytes)
         {
             if(bytes==null || bytes.Length==0 || bytes[0]!=VehicleMotionCodec.Type)return false;
-            if(!WorldSceneAvailable())return true;
-            if(node==null || !node.Compatible || !SteamP2PNetworkingUnderTheHoodScript.Expected(new CSteamID(source),msgType.carPosGlobal))return true;
-            if(node.IsHost && !node.Peers.ContainsKey(source))return true;
+            vehicleMotionReceived++;
+            if(!WorldSceneAvailable()){vehicleSceneRejected++;return true;}
+            if(node==null || !node.Compatible){vehicleAdmissionRejected++;return true;}
+            // Loopback uses synthetic IDs/lobby and is authenticated by its
+            // localhost endpoint plus the StableNode handshake, not Steam lobby
+            // membership. Match the existing ReadLoopback native-message path.
+            if(loopbackMode){if(source!=Loopback.Peer){vehicleAdmissionRejected++;return true;}}
+            else if(!SteamP2PNetworkingUnderTheHoodScript.Expected(new CSteamID(source),msgType.carPosGlobal)){vehicleAdmissionRejected++;return true;}
+            if(node.IsHost && !node.Peers.ContainsKey(source)){vehicleAdmissionRejected++;return true;}
             ulong origin;VehicleMotionSample[] samples;
             if(!VehicleMotionCodec.TryRead(bytes,out origin,out samples) || !VehicleMotionCodec.ValidOrigin(node.IsHost,node.Host,source,origin))
-            {packetErrors++;return true;}
+            {packetErrors++;vehicleMalformed++;return true;}
             if(origin==Own)return true;
-            foreach(var sample in samples)if(!ValidateData(sample.Pose) || !ValidateData(sample.Velocity)){packetErrors++;return true;}
+            foreach(var sample in samples)if(!ValidateData(sample.Pose) || !ValidateData(sample.Velocity)){packetErrors++;vehicleMalformed++;return true;}
             // Establish the newest clock offset before mapping its repeated
             // predecessor, so a first packet retains the samples' true spacing.
             double ignored;vehicleClock.Map(origin,samples[samples.Length-1].ClockMs,Now,out ignored);
@@ -361,7 +368,7 @@ namespace TldMp
                 // A local driver retains control through stale packets from a
                 // previous driver; remote pose and velocity are skipped together.
                 if(Find(sample.ID,out local) && local.car!=null &&
-                    (local.CarWhatDoing()==tosaveitemscript.carWhatDoing.driving || local.ThisOneInChargeCar((tosaveitemscript.carWhatDoing)sample.Role)))continue;
+                    (local.CarWhatDoing()==tosaveitemscript.carWhatDoing.driving || local.ThisOneInChargeCar((tosaveitemscript.carWhatDoing)sample.Role))){vehicleControlIgnored++;continue;}
                 accepted=true;
                 var previous=dispatchVehicleMotion;ulong priorSender=dispatchSender;uint priorSequence=dispatchSequence;
                 bool priorApplying=applyingVehicleMotion;int priorType=DispatchType;
@@ -372,6 +379,7 @@ namespace TldMp
                     networkingScript.s.ProcessMessage(new CSteamID(origin),sample.Pose,msgType.carPosGlobal);NoteHandler(sample.Pose,Stopwatch.GetTimestamp()-start);
                     DispatchType=20;start=Stopwatch.GetTimestamp();
                     networkingScript.s.ProcessMessage(new CSteamID(origin),sample.Velocity,msgType.carVelocity);NoteHandler(sample.Velocity,Stopwatch.GetTimestamp()-start);
+                    vehicleMotionProcessed++;
                 }
                 catch(Exception e){packetErrors++;if(Now>=nextFailure){nextFailure=Now+5;Debug.LogError("[TLD MP v3] Vehicle snapshot handler failed: "+e);}}
                 finally{dispatchVehicleMotion=previous;dispatchSender=priorSender;dispatchSequence=priorSequence;applyingVehicleMotion=priorApplying;DispatchType=priorType;}
@@ -1260,6 +1268,7 @@ namespace TldMp
                     " bulk="+bulkOutbox.PendingPackets+" bulkBytes="+bulkOutbox.PendingBytes+"} "+TakeItemReplayHealth()+
                     " vehicleMotion{combinedTotal="+vehiclePairs.Combined+" repeatedTotal="+vehiclePairs.Repeated+" sameFrameSkippedTotal="+vehiclePairs.SameFrameSkipped+" fallbackTotal="+vehiclePairs.Fallback+
                     " impactTriggersTotal="+vehicleImpactTriggers+" impactSentTotal="+vehicleImpactSent+" tracked="+vehicleImpacts.Count+"}"+
+                    " vehicleReceive{receivedTotal="+vehicleMotionReceived+" processedTotal="+vehicleMotionProcessed+" admissionRejectedTotal="+vehicleAdmissionRejected+" sceneRejectedTotal="+vehicleSceneRejected+" malformedTotal="+vehicleMalformed+" controlIgnoredTotal="+vehicleControlIgnored+"}"+
                     (steamTransport==null?"":" "+steamTransport.TakeHealthSummary()));
                 healthMaxPending=healthMaxPendingBytes=0;
             }

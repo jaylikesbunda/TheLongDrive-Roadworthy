@@ -32,7 +32,7 @@ public class tosaveitemscript:UnityEngine.Object
 namespace GeneszSteamP2PBase
 {
     public class SteamP2PNetworkingUnderTheHoodScript
-    {public static bool Admit=true;public static bool Expected(Steamworks.CSteamID sender,msgType type){return Admit;}}
+    {public static bool Admit=true;public static int Queries;public static bool Expected(Steamworks.CSteamID sender,msgType type){Queries++;return Admit;}}
     public class networkingScript
     {
         public static networkingScript s=new networkingScript();
@@ -41,6 +41,7 @@ namespace GeneszSteamP2PBase
 }
 namespace TldMp
 {
+    public static class Loopback {public static ulong ConfiguredPeer;public static ulong Peer {get{return ConfiguredPeer;}}}
     internal static class NetStats {internal static long SequenceStale,SequencePassed;}
     public static class StableGameBridge
     {
@@ -49,8 +50,9 @@ namespace TldMp
         static readonly SenderClock vehicleClock=new SenderClock(),senderClock=new SenderClock();
         static VehicleMotionSample dispatchVehicleMotion;
         static ulong dispatchSender;static uint dispatchSequence;
-        static bool applyingVehicleMotion,dispatching;internal static int DispatchType=-1;
+        static bool applyingVehicleMotion,dispatching,loopbackMode;internal static int DispatchType=-1;
         static int packetErrors;static double nextFailure,fixtureClock;
+        static long vehicleMotionReceived,vehicleMotionProcessed,vehicleAdmissionRejected,vehicleSceneRejected,vehicleMalformed,vehicleControlIgnored;
         static readonly Dictionary<uint,tosaveitemscript> items=new Dictionary<uint,tosaveitemscript>();
         static ulong Own {get{return node.Own;}}internal static double Now {get{return fixtureClock;}}
         static bool WorldSceneAvailable(){return SceneReady;}
@@ -72,9 +74,12 @@ namespace TldMp
             node=current;poseFilter.Clear();vehicleClock.Clear();senderClock.Clear();items.Clear();Events.Clear();Times.Clear();
             packetErrors=0;nextFailure=0;dispatchSequence=0;DispatchType=-1;dispatchVehicleMotion=null;applyingVehicleMotion=false;fixtureClock=1;NativeForwards=0;SceneReady=true;ThrowPose=false;
             GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Admit=true;
+            GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Queries=0;loopbackMode=false;Loopback.ConfiguredPeer=0;
+            vehicleMotionReceived=vehicleMotionProcessed=vehicleAdmissionRejected=vehicleSceneRejected=vehicleMalformed=vehicleControlIgnored=0;
         }
         public static void LocalDriver(uint id){items[id]=new tosaveitemscript {Role=tosaveitemscript.carWhatDoing.driving};}
         public static void LocalHost(uint id){items[id]=new tosaveitemscript {Role=tosaveitemscript.carWhatDoing.justHost};}
+        public static void UseLoopback(ulong peer){loopbackMode=true;Loopback.ConfiguredPeer=peer;GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Admit=false;}
         public static bool Receive(ulong source,byte[] bytes){fixtureClock+=.02;return ReceiveVehicleMotion(source,bytes);}
         public static void Native(ulong sender,byte[] bytes)
         {
@@ -132,6 +137,17 @@ internal static class VehicleMotionReplayFixture
         StableGameBridge.ThrowPose=false;StableGameBridge.Receive(10,VehicleMotionCodec.Encode(20,Frame(3,1100,30),second));
         Check(StableGameBridge.Events.Count==2 && StableGameBridge.Events[0]=="20:39:30","native failure wedged later motion");
         StableGameBridge.Configure(client);StableGameBridge.SceneReady=false;StableGameBridge.Receive(10,packet);Check(StableGameBridge.Events.Count==0,"motion touched an unavailable Unity scene");
+        // Reproduce the live localhost regression: there is no real Steam lobby
+        // for these IDs. Ordinary loopback native traffic already bypasses
+        // Steam.Expected; complete motion packets must use that same boundary.
+        StableGameBridge.Configure(client);GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Admit=false;
+        StableGameBridge.Receive(10,packet);Check(StableGameBridge.Events.Count==0 && GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Queries==1,"real Steam admission was bypassed");
+        StableGameBridge.Configure(client);StableGameBridge.UseLoopback(10);StableGameBridge.Receive(10,packet);
+        Check(StableGameBridge.Events.Count==4 && GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Queries==0,"localhost motion was incorrectly checked against a real Steam lobby");
+        StableGameBridge.Configure(client);StableGameBridge.UseLoopback(99);StableGameBridge.Receive(10,packet);
+        Check(StableGameBridge.Events.Count==0,"loopback accepted motion from outside its configured endpoint");
+        StableGameBridge.Configure(host);StableGameBridge.UseLoopback(20);relayed.Clear();StableGameBridge.Receive(20,packet);
+        Check(StableGameBridge.Events.Count==4 && relayed.Count==1 && GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Queries==0,"localhost host did not accept and relay its authenticated client");
         Console.WriteLine("PASS: "+checks+" exact production vehicle ingress/dispatch IL assertions; relay identity, native forwarding suppression, atomic motion, send-time spacing, duplicate rejection, local-driver protection and exception recovery. Native scene/physics/Steam stand-ins.");
     }
 }

@@ -7,6 +7,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Preserve reliable item-data repair replies through the multiplayer relay.
 - Send combined vehicle snapshots with bounded repeats for packet loss.
 - Add velocity-aware car smoothing and short, rate-limited impact updates.
+- Fix loopback vehicle snapshot admission and test motion over impaired localhost connections.
 - Bound missing-item state by messages, bytes, and replay work per frame, with bounded recovery requests.
 - Cancel queued state on item deletion and reconcile changed attachment slots through native mounting routines.
 - Record item recovery and transport health on both host and clients every five seconds.
