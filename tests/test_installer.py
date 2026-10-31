@@ -362,6 +362,13 @@ class UpdateTests(V4StateTests):
         self.addCleanup(shutil.rmtree, self.cache, True)
         self.payload_patch = mock.patch.object(installer, "PAYLOAD_SHA256", self.FAKE_PAYLOAD)
         self.payload_patch.start(); self.addCleanup(self.payload_patch.stop)
+        self.cecil_bytes = b"synthetic Cecil fixture; never loaded"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as archive:
+            archive.writestr(".tools/cecil.zip", self.cecil_bytes)
+        self.payload = buf.getvalue()
+        self.cecil_patch = mock.patch.object(installer, "CECIL_SHA256", digest(self.cecil_bytes))
+        self.cecil_patch.start(); self.addCleanup(self.cecil_patch.stop)
         self.calls = []
         self.candidate_v3 = self.cache / "cand-v3.dll"
         self.candidate_v3.write_bytes(self.NEWV3)
@@ -401,7 +408,7 @@ class UpdateTests(V4StateTests):
 
     def cli(self, *arguments, build_mp=None, build_sp=None, run_ps=None, progress=None):
         argv = ["--no-pause", "--game-dir", str(self.game), "--cache-dir", str(self.cache), *arguments]
-        patches = [mock.patch.object(installer, "payload_bytes", return_value=test_payload()),
+        patches = [mock.patch.object(installer, "payload_bytes", return_value=self.payload),
                    mock.patch.object(installer, "preflight"),
                    mock.patch.object(installer, "build_multiplayer",
                                      side_effect=build_mp or (lambda work, log, game: self.manifest)),
@@ -541,6 +548,18 @@ class UpdateTests(V4StateTests):
         before = self.managed_hashes()
         self.assertEqual(self.cli("--status", run_ps=lambda *a: self.fail("status touched PowerShell")), 0)
         self.assertEqual(self.managed_hashes(), before)
+
+    def test_upgrade_never_reads_the_cached_cecil_package(self):
+        self.install_v4()
+        real_read = Path.read_bytes
+        forbidden = (ROOT / ".tools" / "cecil.zip").resolve()
+        def guard(path):
+            assert path.resolve() != forbidden, "update must not depend on the developer's .tools cache"
+            return real_read(path)
+        with mock.patch.object(Path, "read_bytes", guard):
+            self.assertEqual(self.cli(), 0)
+        with zipfile.ZipFile(io.BytesIO(self.payload)) as archive:
+            self.assertEqual(archive.read(".tools/cecil.zip"), self.cecil_bytes)
 
     def test_progress_monotonic_and_failure_stays_below_100(self):
         self.install_v4()

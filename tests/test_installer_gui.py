@@ -1,7 +1,9 @@
 """Exercise the real Tk GUI with a fake worker; never install or launch the game."""
 import base64
+import gc
 import importlib.util
 from pathlib import Path
+import sys
 import threading
 import time
 import tkinter as tk
@@ -16,7 +18,59 @@ spec.loader.exec_module(app)
 NO_RELEASES = {"version": None, "tag": None, "newer": False, "url": None}
 
 
-class IconTests(unittest.TestCase):
+class TkCase(unittest.TestCase):
+    """Deterministic Tk lifecycle: cyclic GC stays off while widgets live,
+    GUI worker threads are tracked and joined, Tk var finalizers run on the
+    main thread during cleanup, and unraisable exceptions are captured."""
+
+    def setUp(self):
+        gc.collect()                       # settle any garbage on the main thread first
+        self._gc_was = gc.isenabled()
+        gc.disable()
+        self._unraisable = []
+        self._prev_hook = sys.unraisablehook
+        sys.unraisablehook = self._unraisable.append
+        self._threads = []
+        original_start = threading.Thread.start
+        def track(thread):
+            self._threads.append(thread)
+            original_start(thread)
+        self._tp = mock.patch.object(threading.Thread, "start", autospec=True, side_effect=track)
+        self._tp.start()
+        self.addCleanup(self._tp.stop)     # survives setUp failure too
+        # Runs LAST (cleanups fire LIFO): collect on the main thread under the
+        # test hook, then ALWAYS restore the previous hook and GC state before
+        # asserting, so a failure can't hide later errors.
+        def finalize():
+            captured = []
+            try:
+                gc.collect()
+                captured = list(self._unraisable)
+            finally:
+                sys.unraisablehook = self._prev_hook
+                if self._gc_was:
+                    gc.enable()
+            if captured:
+                print("unraisable:", [repr(c) for c in captured])
+            self.assertFalse(captured, "Tk/GC finalizers raised off-thread")
+        self.addCleanup(finalize)
+
+    def tearDown(self):
+        deadline = time.monotonic() + 5
+        try:
+            for thread in self._threads:
+                remaining = max(0.0, deadline - time.monotonic())
+                thread.join(remaining)
+            alive = [t.name for t in self._threads if t.is_alive()]
+            self.assertFalse(alive, f"GUI workers still running: {alive}")
+        finally:
+            try:
+                self._tp.stop()
+            except RuntimeError:
+                pass
+
+
+class IconTests(TkCase):
     def test_embedded_icon_is_a_png_and_can_be_applied(self):
         data = base64.b64decode(app.APP_ICON_PNG_B64)
         self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
@@ -46,7 +100,7 @@ def fake_info(state, relation, version=None):
                          "relation": relation}
 
 
-class GuiTests(unittest.TestCase):
+class GuiTests(TkCase):
     def pump_until(self, root, predicate, timeout=3):
         deadline = time.monotonic() + timeout
         while not predicate() and time.monotonic() < deadline:
@@ -257,7 +311,7 @@ class GuiTests(unittest.TestCase):
             hold.set()
             root.destroy()
 
-    def test_details_collapsed_toggle_and_error_expand(self):
+    def test_details_collapsed_toggle(self):
         root = tk.Tk()
         root.withdraw()
         try:
@@ -273,14 +327,12 @@ class GuiTests(unittest.TestCase):
             self.assertFalse(ui["log"].winfo_manager())
         finally:
             root.destroy()
+
+    def test_invalid_scan_expands_details_with_error(self):
         root = tk.Tk()
         root.withdraw()
         try:
-            with mock.patch.object(app, "discover_games", return_value=[]), \
-                 mock.patch.object(app, "check_updates", return_value=NO_RELEASES), \
-                 mock.patch.object(app, "choose_game", side_effect=lambda p_: Path(p_)), \
-                 mock.patch.object(app, "installed_state", side_effect=app.InstallerError("bad files")), \
-                 mock.patch.object(app, "main_cli") as worker:
+            with mock.patch.object(app, "discover_games", return_value=[]),                  mock.patch.object(app, "check_updates", return_value=NO_RELEASES),                  mock.patch.object(app, "choose_game", side_effect=lambda p_: Path(p_)),                  mock.patch.object(app, "installed_state", side_effect=app.InstallerError("bad files")),                  mock.patch.object(app, "main_cli") as worker:
                 ui = app.build_gui(root)
                 ui["path"].set(r"C:\Bad Game")
                 self.pump_until(root, lambda: "Cannot use" in ui["status"].get())
@@ -288,6 +340,63 @@ class GuiTests(unittest.TestCase):
                 self.assertIn("bad files", ui["log"].get("1.0", "end"))
         finally:
             root.destroy()
+
+    def test_multiple_guis_on_one_root_leave_no_orphan_callbacks(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            first = self.open_gui(root, {"state": "original", "relation": "original"})[0]
+            second = self.open_gui(root, {"state": "v4", "relation": "current"})[0]
+            for _ in range(6):
+                root.update()
+            self.assertTrue(first["path"].trace_info())   # prove traces were armed
+            other = tk.Tk()
+            bg_errors = []
+            other.report_callback_exception = lambda *a: bg_errors.append(a)
+            try:
+                root.destroy()                            # every instance cleans up
+                self.assertFalse(first["path"].trace_info(), "path trace left behind")
+                for _ in range(30):
+                    other.update()
+                    time.sleep(.01)
+                self.assertFalse(bg_errors, f"orphaned poll callbacks: {bg_errors}")
+            finally:
+                other.destroy()
+        finally:
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
+
+    def test_late_worker_result_after_destroy_never_touches_tk(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            hold = threading.Event()
+            def worker(argv, progress=None):
+                hold.wait(3)
+                if progress:
+                    progress(50, "late")
+                return 0
+            ui, _ = self.open_gui(root, {"state": "original", "relation": "original"}, worker)
+            self.pump_until(root, lambda: ui["info"][0] is not None)
+            ui["run"]()
+            self.pump_until(root, lambda: ui["busy"][0])
+            root.destroy()
+            hold.set()
+            other = tk.Tk()
+            try:
+                for _ in range(50):
+                    other.update()
+                    time.sleep(.01)
+            finally:
+                other.destroy()
+        finally:
+            hold.set()
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
 
     def test_details_toggle_stays_responsive_while_busy(self):
         root = tk.Tk()

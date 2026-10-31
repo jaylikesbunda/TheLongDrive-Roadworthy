@@ -1066,6 +1066,7 @@ def build_gui(root):
     sized = [False]
     check_busy = [False]
     update_url = [None]
+    trace_token = [None]
     controls = [entry, primary, restore, browse]
 
     def check_releases():
@@ -1302,6 +1303,10 @@ def build_gui(root):
                     try: root.after_cancel(holder[0])
                     except Exception: pass
                     holder[0] = None
+            if trace_token[0] is not None:
+                try: path.trace_remove("write", trace_token[0])
+                except tk.TclError: pass
+                trace_token[0] = None
 
     def close():
         if busy[0]:
@@ -1321,9 +1326,9 @@ def build_gui(root):
             except Exception: pass
         debounce[0] = root.after(400, check_state)
 
-    path.trace_add("write", on_path_change)
+    trace_token[0] = path.trace_add("write", on_path_change)
     root.protocol("WM_DELETE_WINDOW", close)
-    root.bind("<Destroy>", destroyed)
+    root.bind("<Destroy>", destroyed, add="+")
     detect()
     check_releases()
     poll()
