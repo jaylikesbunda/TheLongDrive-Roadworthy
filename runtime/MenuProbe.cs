@@ -5,6 +5,7 @@ using System.IO;
 using System.Text;
 using GeneszSteamP2PBase;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace TldMp
 {
@@ -51,6 +52,13 @@ namespace TldMp
             string resList = Environment.GetEnvironmentVariable("TLD_MP_MENU_PROBE_RES");
             if (string.IsNullOrEmpty(resList)) resList = "1920x1080,1280x720,1024x768,1280x1024,2560x1080,1600x900";
             string only = Environment.GetEnvironmentVariable("TLD_MP_MENU_PROBE_ONLY");
+            if (only == "loading-composition")
+            {
+                yield return StartCoroutine(LoadingComposition());
+                Note("done"); Flush();
+                if (Environment.GetEnvironmentVariable("TLD_MP_MENU_PROBE_QUIT") == "1") { yield return null; Application.Quit(); }
+                yield break;
+            }
             foreach (string res in resList.Split(','))
             {
                 string[] p = res.Trim().Split('x');
@@ -221,6 +229,143 @@ namespace TldMp
         }
         static string F(float v) { return v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture); }
         static string Esc(string s) { return s.Replace("\\", "\\\\").Replace("\"", "\\\""); }
+
+        // Opt-in render diagnostic for the held loading overlay. Captures the
+        // game's own menu composition, then the held stack built by
+        // GroundDiagnostics.TickLoadingOverlay, then isolations of each piece.
+        // Restores every flag, object and the Driver it touched.
+        IEnumerator LoadingComposition()
+        {
+            var menu = menuhandler.s; var data = DataFromMenuScript.s;
+            var menuBg = Find(Column, "MenuBackGround");
+            var menuBgObj = menuBg == null ? null : menuBg.gameObject;
+            var driver = UnityEngine.Object.FindObjectOfType<StableGameBridge.Driver>();
+            Transform dimmerT = null;
+            if (menu.GLoadText != null && menu.GLoadText.transform != null) dimmerT = menu.GLoadText.transform.Find("LoadTextBackGround");
+            if (dimmerT == null && menu.transform != null) dimmerT = menu.transform.Find("2/TextLoad/LoadTextBackGround");
+            var dimImg = dimmerT == null ? null : dimmerT.gameObject.GetComponent<Image>();
+            bool dataWas = data.mainmenu;
+            bool menuWas = menu.Menu != null && menu.Menu.activeSelf;
+            bool bgObjWas = menuBgObj != null && menuBgObj.activeSelf;
+            bool loadWas = menu.GLoadText != null && menu.GLoadText.activeSelf;
+            bool driverWas = driver != null && driver.enabled;
+            bool menuUpdateWas = menu.enabled;
+            bool mainWas = mainscript.s != null && mainscript.s.enabled;
+            bool pauseWas = mainscript.s != null && mainscript.s.pauseMenuOpen;
+            bool dimWas = dimImg == null || dimImg.enabled;
+            Note("snapshot mainmenu=" + dataWas + " Menu=" + menuWas + " MenuBackGround=" + bgObjWas + " GLoadText=" + loadWas + " driver=" + driverWas + " menuUpdate=" + menuUpdateWas + " mainscript=" + mainWas + " pauseMenuOpen=" + pauseWas + " dimImg=" + dimWas);
+            try
+            {
+                if (driver != null) driver.enabled = false;
+                menu.enabled = false;
+                if (mainscript.s != null) { mainscript.s.enabled = false; mainscript.s.pauseMenuOpen = false; }
+                Screen.SetResolution(1920, 1080, FullScreenMode.Windowed);
+                for (int i = 0; i < 60 && (Screen.width != 1920 || Screen.height != 1080); i++) yield return null;
+                for (int i = 0; i < 10; i++) yield return null;
+                // Native reference: the game's own stack while its loading text is up.
+                if (menu.GLoadText != null) menu.GLoadText.SetActive(true);
+                for (int i = 0; i < 4; i++) yield return null;
+                yield return new WaitForEndOfFrame();
+                Capture("native-reference", menu, dimmerT);
+                // Let the hold code learn the menu's composition, then hide the
+                // menu the way the game's own load handoff does.
+                GroundDiagnostics.TickLoadingOverlay(false);
+                data.mainmenu = false;
+                if (menu.Menu != null) menu.Menu.SetActive(false);
+                if (menuBgObj != null) menuBgObj.SetActive(false);
+                GroundDiagnostics.TickLoadingOverlay(false);
+                if (menu.Menu != null) menu.Menu.SetActive(false);
+                if (menuBgObj != null) menuBgObj.SetActive(false);
+                for (int i = 0; i < 4; i++) yield return null;
+                yield return new WaitForEndOfFrame();
+                Capture("held-composition", menu, dimmerT);
+                // Baseline pair: same captured sprite drawn at the menu's own
+                // .25 opacity, to compare against the corrected full alpha.
+                var paperOnly = dimmerT == null || dimmerT.parent == null ? null : Find(dimmerT.parent, "TldMpLoadingPaper");
+                var paperImg = paperOnly == null ? null : paperOnly.gameObject.GetComponent<Image>();
+                if (paperImg != null) paperImg.color = new Color(paperImg.color.r, paperImg.color.g, paperImg.color.b, .2509804f);
+                for (int i = 0; i < 2; i++) yield return null;
+                yield return new WaitForEndOfFrame();
+                Capture("held-paper-native-opacity", menu, dimmerT);
+                if (paperImg != null) paperImg.color = new Color(paperImg.color.r, paperImg.color.g, paperImg.color.b, 1f);
+                // Same stack without the native dimmer image.
+                if (dimImg != null) dimImg.enabled = false;
+                for (int i = 0; i < 2; i++) yield return null;
+                yield return new WaitForEndOfFrame();
+                Capture("held-no-dimmer", menu, dimmerT);
+                if (dimImg != null) dimImg.enabled = true;
+                // Paper alone: generated base and frame off, dimmer image off.
+                var baseT = dimmerT == null || dimmerT.parent == null ? null : Find(dimmerT.parent, "TldMpLoadingBase");
+                var frameT = dimmerT == null || dimmerT.parent == null ? null : Find(dimmerT.parent, "TldMpLoadingFrame");
+                if (menu.Menu != null) menu.Menu.SetActive(false);
+                if (menuBgObj != null) menuBgObj.SetActive(false);
+                if (baseT != null) baseT.gameObject.SetActive(false);
+                if (frameT != null) frameT.gameObject.SetActive(false);
+                if (dimImg != null) dimImg.enabled = false;
+                for (int i = 0; i < 2; i++) yield return null;
+                yield return new WaitForEndOfFrame();
+                Capture("held-paper-alone", menu, dimmerT);
+                if (dimImg != null) dimImg.enabled = true;
+            }
+            finally
+            {
+                data.mainmenu = true;
+                try { GroundDiagnostics.TickLoadingOverlay(false); } catch (Exception e) { Note("cleanup tick failed: " + e.GetType().Name + " " + e.Message); }
+                data.mainmenu = dataWas;
+                if (menu.Menu != null) menu.Menu.SetActive(menuWas);
+                if (menuBgObj != null) menuBgObj.SetActive(bgObjWas);
+                if (menu.GLoadText != null) menu.GLoadText.SetActive(loadWas);
+                if (dimImg != null) dimImg.enabled = dimWas;
+                menu.enabled = menuUpdateWas;
+                if (mainscript.s != null) { mainscript.s.enabled = mainWas; mainscript.s.pauseMenuOpen = pauseWas; }
+                if (driver != null) driver.enabled = driverWas;
+                Note("restored mainmenu=" + data.mainmenu + " Menu=" + (menu.Menu != null && menu.Menu.activeSelf) + " MenuBackGround=" + (menuBgObj != null && menuBgObj.activeSelf) + " menuUpdate=" + menu.enabled + " mainscript=" + (mainscript.s != null && mainscript.s.enabled) + " pauseMenuOpen=" + (mainscript.s != null && mainscript.s.pauseMenuOpen) + " driver=" + (driver != null && driver.enabled));
+            }
+        }
+
+        void Capture(string stem, menuhandler menu, Transform dimmerT)
+        {
+            try { ScreenCapture.CaptureScreenshot(Path.Combine(output, stem + ".png")); } catch (Exception e) { Note(stem + " screenshot failed: " + e.Message); }
+            var sb = new StringBuilder();
+            sb.AppendLine(stem + " screen=" + Screen.width + "x" + Screen.height);
+            DumpImage(sb, "menuBackGroundImage", menu.menuBackGroundImage);
+            DumpImage(sb, "menuOverlayBG", menu.menuOverlayBG);
+            DumpImage(sb, "menuOverlayBGKeret", menu.menuOverlayBGKeret);
+            DumpImage(sb, "dimmer", dimmerT == null ? null : dimmerT.gameObject.GetComponent<Image>());
+            if (dimmerT != null && dimmerT.parent != null)
+                for (int i = 0; i < dimmerT.parent.childCount; i++)
+                {
+                    var c = dimmerT.parent.GetChild(i);
+                    if (c.name.StartsWith("TldMpLoading")) DumpImage(sb, c.name, c.gameObject.GetComponent<Image>());
+                }
+            try { File.WriteAllText(Path.Combine(output, stem + ".txt"), sb.ToString()); } catch (Exception e) { Note(stem + " dump failed: " + e.Message); }
+        }
+
+        static void DumpImage(StringBuilder sb, string label, Image img)
+        {
+            if (img == null) { sb.AppendLine(label + ": <missing>"); return; }
+            var go = img.gameObject; var t = go.transform;
+            sb.Append(label + ": " + PathOf(t));
+            sb.Append(" active=" + go.activeSelf + "/" + go.activeInHierarchy + " enabled=" + img.enabled + " layer=" + go.layer + " sib=" + t.GetSiblingIndex());
+            var sp = img.sprite;
+            sb.Append(sp == null ? " sprite=null" : " sprite=" + sp.name + "#" + sp.GetInstanceID() + " tex=" + (sp.texture == null ? "null" : sp.texture.width + "x" + sp.texture.height));
+            var c = img.color; sb.Append(" color=" + c.r + "," + c.g + "," + c.b + "," + c.a);
+            sb.Append(" type=" + img.type + " preserveAspect=" + img.preserveAspect + " raycast=" + img.raycastTarget);
+            var m = img.material; sb.Append(m == null ? " mat=null" : " mat=" + m.name + " shader=" + (m.shader == null ? "null" : m.shader.name));
+            var cr = img.canvasRenderer; sb.Append(cr == null ? " canvasAlpha=n/a" : " canvasAlpha=" + cr.GetAlpha());
+            var rt = t as RectTransform;
+            if (rt != null) { var r = rt.rect; sb.Append(" rect=" + r.width + "x" + r.height + " anchors=" + rt.anchorMin + ">" + rt.anchorMax + " size=" + rt.sizeDelta); }
+            float ga = 1f; bool found = false;
+            foreach (var g in img.GetComponentsInParent<CanvasGroup>()) if (g != null) { found = true; ga *= g.alpha; }
+            sb.AppendLine(found ? " groupAlpha=" + ga : " groupAlpha=none");
+        }
+
+        static string PathOf(Transform t)
+        {
+            var s = t.name;
+            for (var p = t.parent; p != null; p = p.parent) s = p.name + "/" + s;
+            return s;
+        }
     }
     // Opt-in scene probe: temporary prefab clones in the main menu only.
     public sealed class WheelAssemblyProbe:MonoBehaviour

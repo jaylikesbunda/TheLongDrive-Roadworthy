@@ -151,42 +151,68 @@ namespace TldMp
         static GameObject loadingBg;
         static bool loadingBgWasActive;
         static Color loadingBgColor;
+        static Sprite loadingBgSprite;
         static bool loadingBgColorSet;
+        static GameObject loadingBaseLayer,loadingPaperLayer,loadingFrameLayer;
+        static bool loadingWantBase,loadingWantPaper,loadingWantFrame;
+        static Sprite loadingBaseApplySprite,loadingPaperApplySprite,loadingFrameApplySprite;
+        static Color loadingBaseApplyColor,loadingPaperApplyColor,loadingFrameApplyColor;
+        static bool loadingBaseSet,loadingPaperSet,loadingFrameSet;
+        static Sprite loadingSrcBaseSprite,loadingBaseSprite,loadingPaperSprite,loadingFrameSprite;
+        static Color loadingBaseColor,loadingPaperColor,loadingFrameColor;
         const float LoadingTimeout=30f;
+        // Authored MenuBackGround colour: an opaque warm base under everything.
+        static readonly Color LoadingBaseFallback=new Color(.9056604f,.8620289f,.6792453f,1f);
 
         public static void TickLoadingOverlay(bool multiplayerReady)
         {
             var menu=menuhandler.s;var data=DataFromMenuScript.s;
+            CaptureLoadingBackdrop(menu,data);
             if(menu==null || data==null || data.mainmenu)
             {
                 // A scene transition may be using this same native element.
                 // Do not hide the game's own transition overlay.
-                loadingOwner=null;loadingFinished=false;loadingBg=null;return;
+                RestoreLoadingBackground();
+                loadingOwner=null;loadingFinished=false;return;
             }
             if(loadingOwner!=menu)
             {
                 loadingOwner=menu;loadingFinished=false;loadingStarted=Time.realtimeSinceStartup;
                 loadingReadySince=0;loadingNextCheck=0;loadingBlock="";loadingLifted=false;
                 if(menu.GLoadText!=null)menu.GLoadText.SetActive(true);
-                // The panel's own background image is active but draws nothing
-                // (transparent or sprite-less), so a held overlay floats the
-                // text over the half-loaded world. Make it actually cover for
-                // as long as the hold lasts, then put its state back.
+                // The game's own loading screen is a stack: the opaque
+                // MenuBackGround base (a screenshot after a session, else the
+                // warm colour), the translucent paper the player picked, its
+                // border, then the half-dark LoadTextBackGround dimmer under
+                // the text. The dimmer's own sprite and colour are left alone;
+                // the pieces it lacks are added as plain Image layers beneath
+                // it so the hold draws the same composition.
+                RestoreLoadingBackground();
                 loadingBg=FindLoadingBackground(menu);
                 loadingBgWasActive=false;loadingBgColorSet=false;
+                loadingWantBase=loadingWantPaper=loadingWantFrame=false;
                 if(loadingBg!=null)
                 {
                     loadingBgWasActive=loadingBg.activeSelf;loadingBg.SetActive(true);
                     var img=loadingBg.GetComponent<Image>();
-                    if(img!=null)
-                    {
-                        loadingBgColor=img.color;loadingBgColorSet=true;
-                        img.color=img.sprite==null?new Color(0f,0f,0f,1f):new Color(img.color.r,img.color.g,img.color.b,1f);
-                    }
+                    if(img!=null){loadingBgSprite=img.sprite;loadingBgColor=img.color;loadingBgColorSet=true;}
+                    BuildLoadingLayers(menu);
                 }
             }
             if(loadingFinished || menu.GLoadText==null)return;
-            if(loadingBg!=null && !loadingBg.activeSelf)loadingBg.SetActive(true);
+            // Native UI code can hide the panel or clear the images mid-load;
+            // put the held composition back before waiting on the next poll.
+            if(!menu.GLoadText.activeSelf)menu.GLoadText.SetActive(true);
+            if(loadingBg!=null)
+            {
+                if(!loadingBg.activeSelf)loadingBg.SetActive(true);
+                if(loadingBgColorSet)
+                {
+                    var img=loadingBg.GetComponent<Image>();
+                    if(img!=null){img.sprite=loadingBgSprite;img.color=loadingBgColor;}
+                }
+                ReassertLoadingLayers(menu);
+            }
             float now=Time.realtimeSinceStartup;
             if(now-loadingStarted>=LoadingTimeout)
             {
@@ -237,13 +263,147 @@ namespace TldMp
             return t==null?null:t.gameObject;
         }
 
+        // While the menu is showing, remember the loading composition it would
+        // draw: the MenuBackGround base, the translucent paper the player
+        // picked and its border. The pick survives scene reloads, so a new
+        // world's authored defaults must not replace it later.
+        static void CaptureLoadingBackdrop(menuhandler menu,DataFromMenuScript data)
+        {
+            if(menu==null)return;
+            if(!(data!=null && data.mainmenu) && !(menu.Menu!=null && menu.Menu.activeSelf))return;
+            var baseImg=menu.menuBackGroundImage;
+            if(baseImg!=null)
+            {
+                loadingBaseColor=baseImg.color;loadingBaseSet=true;
+                if(!ReferenceEquals(baseImg.sprite,loadingSrcBaseSprite))
+                {
+                    // The pause menu feeds the base a screenshot sprite the
+                    // game destroys on teardown. Keep an owned clone of it and
+                    // drop only that clone when the source changes. Reference
+                    // compare: a destroyed source still reads as that object
+                    // here, while Unity == would report it as already gone and
+                    // keep a stale clone forever.
+                    if(loadingBaseSprite!=null)UnityEngine.Object.Destroy(loadingBaseSprite);
+                    loadingSrcBaseSprite=baseImg.sprite;
+                    loadingBaseSprite=loadingSrcBaseSprite==null?null:UnityEngine.Object.Instantiate<Sprite>(loadingSrcBaseSprite);
+                }
+            }
+            var paper=menu.menuOverlayBG;
+            if(paper!=null && paper.sprite!=null){loadingPaperSprite=paper.sprite;loadingPaperColor=paper.color;loadingPaperSet=true;}
+            var frame=menu.menuOverlayBGKeret;
+            if(frame!=null && frame.sprite!=null){loadingFrameSprite=frame.sprite;loadingFrameColor=frame.color;loadingFrameSet=true;}
+        }
+
+        static void BuildLoadingLayers(menuhandler menu)
+        {
+            ClearLoadingLayers();
+            if(loadingBg==null||loadingBg.transform==null||loadingBg.transform.parent==null)return;
+            var cover=loadingBg.transform as RectTransform;
+            if(cover==null)return;
+            var parent=loadingBg.transform.parent;
+            var baseSrc=menu.menuBackGroundImage;
+            if(loadingBaseSet){loadingBaseApplySprite=loadingBaseSprite;loadingBaseApplyColor=new Color(loadingBaseColor.r,loadingBaseColor.g,loadingBaseColor.b,1f);}
+            else if(baseSrc!=null){loadingBaseApplySprite=baseSrc.sprite;loadingBaseApplyColor=new Color(baseSrc.color.r,baseSrc.color.g,baseSrc.color.b,1f);}
+            else{loadingBaseApplySprite=null;loadingBaseApplyColor=LoadingBaseFallback;}
+            loadingBaseLayer=MakeLoadingLayer("TldMpLoadingBase",parent,cover,baseSrc);loadingWantBase=true;
+            var paperSrc=menu.menuOverlayBG;
+            // The menu's own .25 tint multiplies an already translucent paper
+            // sprite; on the loading base that washes the art out. Keep the
+            // source RGB and sprite but draw the layer at full alpha.
+            if(loadingPaperSet){loadingPaperApplySprite=loadingPaperSprite;loadingPaperApplyColor=new Color(loadingPaperColor.r,loadingPaperColor.g,loadingPaperColor.b,1f);loadingWantPaper=true;}
+            else if(paperSrc!=null){loadingPaperApplySprite=paperSrc.sprite;loadingPaperApplyColor=new Color(paperSrc.color.r,paperSrc.color.g,paperSrc.color.b,1f);loadingWantPaper=true;}
+            if(loadingWantPaper)loadingPaperLayer=MakeLoadingLayer("TldMpLoadingPaper",parent,cover,paperSrc);
+            var frameSrc=menu.menuOverlayBGKeret;
+            if(loadingFrameSet){loadingFrameApplySprite=loadingFrameSprite;loadingFrameApplyColor=loadingFrameColor;loadingWantFrame=true;}
+            else if(frameSrc!=null){loadingFrameApplySprite=frameSrc.sprite;loadingFrameApplyColor=frameSrc.color;loadingWantFrame=true;}
+            if(loadingWantFrame)loadingFrameLayer=MakeLoadingLayer("TldMpLoadingFrame",parent,cover,frameSrc);
+            ApplyLoadingLayers();
+            OrderLoadingLayers();
+        }
+
+        // A bare image sibling of the dimmer covering the same rect, so the
+        // composition keeps the dimmer's fullscreen size whatever its parent
+        // looks like. Only its own picture and tint are ever set.
+        static GameObject MakeLoadingLayer(string name,Transform parent,RectTransform cover,Image source)
+        {
+            var layer=new GameObject(name,typeof(RectTransform),typeof(Image));
+            layer.layer=loadingBg.layer;
+            var t=(RectTransform)layer.transform;
+            t.SetParent(parent,false);
+            t.anchorMin=cover.anchorMin;t.anchorMax=cover.anchorMax;t.pivot=cover.pivot;
+            t.sizeDelta=cover.sizeDelta;t.anchoredPosition3D=cover.anchoredPosition3D;
+            t.localRotation=cover.localRotation;t.localScale=cover.localScale;
+            var img=layer.GetComponent<Image>();
+            img.raycastTarget=false;
+            if(source!=null){img.material=source.material;img.preserveAspect=source.preserveAspect;img.type=source.type;}
+            return layer;
+        }
+
+        static void ApplyLoadingLayers()
+        {
+            if(loadingBaseLayer!=null){var img=loadingBaseLayer.GetComponent<Image>();if(img!=null){img.sprite=loadingBaseApplySprite;img.color=loadingBaseApplyColor;}}
+            if(loadingPaperLayer!=null){var img=loadingPaperLayer.GetComponent<Image>();if(img!=null){img.sprite=loadingPaperApplySprite;img.color=loadingPaperApplyColor;}}
+            if(loadingFrameLayer!=null){var img=loadingFrameLayer.GetComponent<Image>();if(img!=null){img.sprite=loadingFrameApplySprite;img.color=loadingFrameApplyColor;}}
+        }
+
+        static void ReassertLoadingLayers(menuhandler menu)
+        {
+            if((loadingWantBase && loadingBaseLayer==null)||(loadingWantPaper && loadingPaperLayer==null)||(loadingWantFrame && loadingFrameLayer==null))BuildLoadingLayers(menu);
+            if(loadingBaseLayer!=null && !loadingBaseLayer.activeSelf)loadingBaseLayer.SetActive(true);
+            if(loadingPaperLayer!=null && !loadingPaperLayer.activeSelf)loadingPaperLayer.SetActive(true);
+            if(loadingFrameLayer!=null && !loadingFrameLayer.activeSelf)loadingFrameLayer.SetActive(true);
+            ApplyLoadingLayers();
+            OrderLoadingLayers();
+        }
+
+        // Stack the layers in order immediately under the dimmer: base, then
+        // paper, then frame, each placed just below the one above it.
+        static void OrderLoadingLayers()
+        {
+            if(loadingBg==null || loadingBg.transform==null || loadingBg.transform.parent==null)return;
+            Transform anchor=loadingBg.transform;
+            if(loadingFrameLayer!=null){PlaceBefore(loadingFrameLayer.transform,anchor);anchor=loadingFrameLayer.transform;}
+            if(loadingPaperLayer!=null){PlaceBefore(loadingPaperLayer.transform,anchor);anchor=loadingPaperLayer.transform;}
+            if(loadingBaseLayer!=null)PlaceBefore(loadingBaseLayer.transform,anchor);
+        }
+
+        static void PlaceBefore(Transform t,Transform anchor)
+        {
+            int at=anchor.GetSiblingIndex();
+            if(t.GetSiblingIndex()<at)at--;
+            t.SetSiblingIndex(at);
+        }
+
+        static void ClearLoadingLayers()
+        {
+            ClearLoadingLayer(ref loadingBaseLayer);ClearLoadingLayer(ref loadingPaperLayer);ClearLoadingLayer(ref loadingFrameLayer);
+            loadingWantBase=loadingWantPaper=loadingWantFrame=false;
+        }
+
+        static void ClearLoadingLayer(ref GameObject layer)
+        {
+            if(layer==null)return;
+            layer.SetActive(false);UnityEngine.Object.Destroy(layer);layer=null;
+        }
+
+        // Put the held dimmer and our layers back without hiding the panel; a
+        // scene transition may still be showing the game's own overlay.
+        static void RestoreLoadingBackground()
+        {
+            ClearLoadingLayers();
+            if(loadingBg==null)return;
+            if(loadingBgColorSet)
+            {
+                var img=loadingBg.GetComponent<Image>();
+                if(img!=null){img.sprite=loadingBgSprite;img.color=loadingBgColor;}
+                loadingBgColorSet=false;
+            }
+            loadingBg.SetActive(loadingBgWasActive);loadingBg=null;
+        }
+
         static void ReleaseLoadingOverlay(menuhandler menu)
         {
-            if(loadingBg!=null)
-            {
-                if(loadingBgColorSet){var img=loadingBg.GetComponent<Image>();if(img!=null)img.color=loadingBgColor;loadingBgColorSet=false;}
-                loadingBg.SetActive(loadingBgWasActive);loadingBg=null;
-            }
+            RestoreLoadingBackground();
             if(menu!=null && menu.GLoadText!=null)menu.GLoadText.SetActive(false);
         }
 
