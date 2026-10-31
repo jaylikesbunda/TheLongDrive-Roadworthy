@@ -1269,7 +1269,8 @@ namespace TldMp
                     " vehicleMotion{combinedTotal="+vehiclePairs.Combined+" repeatedTotal="+vehiclePairs.Repeated+" sameFrameSkippedTotal="+vehiclePairs.SameFrameSkipped+" fallbackTotal="+vehiclePairs.Fallback+
                     " impactTriggersTotal="+vehicleImpactTriggers+" impactSentTotal="+vehicleImpactSent+" tracked="+vehicleImpacts.Count+"}"+
                     " vehicleReceive{receivedTotal="+vehicleMotionReceived+" processedTotal="+vehicleMotionProcessed+" admissionRejectedTotal="+vehicleAdmissionRejected+" sceneRejectedTotal="+vehicleSceneRejected+" malformedTotal="+vehicleMalformed+" controlIgnoredTotal="+vehicleControlIgnored+"}"+
-                    (steamTransport==null?"":" "+steamTransport.TakeHealthSummary()));
+                    (steamTransport==null?"":" "+steamTransport.TakeHealthSummary())+
+                    (!loopbackMode || Loopback.Transport==null?"":" "+Loopback.Transport.TakeQueueHealth()));
                 healthMaxPending=healthMaxPendingBytes=0;
             }
             if((loopbackMode || ModDiagnostics.On) && Now>=nextJoinDiagnostic)

@@ -14,13 +14,15 @@ namespace TldMp
     {
         internal const float IntervalSeconds = 10f;
         internal const float RadiusMetres = 60f;
-        const int MaxOwners = 12, MaxNames = 12;
+        const int MaxOwners = 24, MaxNames = 32;
         static float next;
 
         sealed class Owner
         {
             internal string Key, Name;
             internal int Slots, Filled;
+            internal bool Car;
+            internal tosaveitemscript Item;
             internal readonly List<string> Empty = new List<string>();
             internal readonly List<string> Parts = new List<string>();
         }
@@ -57,7 +59,7 @@ namespace TldMp
                 Owner owner;
                 if (!owners.TryGetValue(key, out owner))
                 {
-                    owner = new Owner { Key = key, Name = name };
+                    owner = new Owner { Key = key, Name = name, Item = slot.tosaveitem, Car = slot.tosaveitem != null && slot.tosaveitem.car != null };
                     owners[key] = owner;
                 }
                 owner.Slots++;
@@ -77,12 +79,33 @@ namespace TldMp
             text.Append(Time.realtimeSinceStartup.ToString("F1", CultureInfo.InvariantCulture)).Append(" host=").Append(syncScript.IsHost())
                 .Append(" owners=").Append(owners.Count);
             int shown = 0;
-            foreach (var owner in owners.Values)
+            var ordered = new List<Owner>(owners.Values);
+            ordered.Sort(delegate(Owner a, Owner b) { int cars = b.Car.CompareTo(a.Car); return cars != 0 ? cars : String.CompareOrdinal(a.Key,b.Key); });
+            foreach (var owner in ordered)
             {
                 if (++shown > MaxOwners) break;
                 text.Append(" {").Append(owner.Key).Append(' ').Append(owner.Name).Append(" filled=").Append(owner.Filled).Append('/').Append(owner.Slots)
-                    .Append(" parts=[").Append(String.Join(";", owner.Parts.ToArray())).Append("] empty=[").Append(String.Join(";", owner.Empty.ToArray())).Append("]}");
+                    .Append(" parts=[").Append(String.Join(";", owner.Parts.ToArray())).Append("] empty=[").Append(String.Join(";", owner.Empty.ToArray())).Append(']');
+                if (owner.Car && owner.Item != null && owner.Item.colors != null)
+                {
+                    text.Append(" colors=[");
+                    int count = Math.Min(owner.Item.colors.Count, 16);
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (i > 0) text.Append(';');
+                        var color = owner.Item.colors[i];
+                        if (color == null) { text.Append(i).Append(":null"); continue; }
+                        text.Append(i).Append(':').Append(color.set ? '1' : '0').Append(':')
+                            .Append(color.color.r.ToString("F2",CultureInfo.InvariantCulture)).Append(',')
+                            .Append(color.color.g.ToString("F2",CultureInfo.InvariantCulture)).Append(',')
+                            .Append(color.color.b.ToString("F2",CultureInfo.InvariantCulture));
+                    }
+                    if (owner.Item.colors.Count > count) text.Append(";...");
+                    text.Append(']');
+                }
+                text.Append('}');
             }
+            if (owners.Count > MaxOwners) text.Append(" omittedOwners=").Append(owners.Count-MaxOwners);
             Debug.Log(text.ToString());
         }
     }

@@ -36,10 +36,23 @@ class PendingAttachTests
         Check(ready!=null && ready.Count==3 && ready[0].Bytes[0]==42 && ready[2].Bytes[0]==32 && ready[2].Bytes[5]==7 && ready[0].Sender==9,"held messages not replayed in arrival order with their sender");
         Check(q.Count==0 && q.Items==0 && q.Replayed==3,"queue not emptied");
 
-        // The latest attachment's parent gates the replay.
+        // Each attachment's parent gates its own replay.
         present.Add(10);
         Check(q.Hold(10,500,1,Attach(10,1,500,1),3) && q.TakeReady(exists,4)==null,"replayed before parent exists");
         present.Add(500);Check(q.TakeReady(exists,5).Count==1,"not replayed once parent exists");
+
+        q.Clear(); present.Add(20); present.Add(600);
+        q.Hold(20,600,1,Attach(20,1,600,1),0);q.Hold(20,700,1,Attach(20,1,700,2),0);
+        var appliedParents=new List<uint>();var missingParents=new List<uint>();
+        Action<PendingItemQueue.Held> recordParent=delegate(PendingItemQueue.Held h){appliedParents.Add(PendingItemQueue.Parent(h.Bytes));};
+        q.Drain(exists,1,128,32,delegate{return true;},recordParent,missingParents.Add);
+        Check(appliedParents.Count==1 && appliedParents[0]==600 && q.Count==1 && missingParents.Contains(700),"ready older attachment blocked by later missing parent");
+        present.Add(700);q.Drain(exists,2,128,32,delegate{return true;},recordParent,missingParents.Add);
+        Check(appliedParents.Count==2 && appliedParents[1]==700 && q.Count==0,"later attachment did not wait for its own parent");
+        q.Hold(20,800,1,Attach(20,1,800,1),0);q.Hold(20,0,1,Attach(20,0,0,0),0);
+        q.Drain(exists,1,128,32,delegate{return true;},recordParent,missingParents.Add);
+        Check(q.Count==2 && appliedParents.Count==2 && missingParents.Contains(800),"detach bypassed earlier missing parent");
+        q.Clear();
 
         // A newer message for an item that now exists flushes older held state first.
         Check(q.Hold(11,0,1,State(41,11,1),6) && q.Hold(11,0,1,State(41,11,2),6.1),"fluid states not held");

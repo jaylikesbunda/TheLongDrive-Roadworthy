@@ -98,6 +98,7 @@ namespace TldMp
     public sealed class LoopbackEvent
     {
         public ulong From;public byte[] Bytes;public bool Connected,Disconnected,Reliable;
+        internal double EnqueuedAt;
     }
     public sealed class LoopbackNetworkProfile
     {
@@ -163,6 +164,7 @@ namespace TldMp
         readonly Queue<byte[]> sendQueue=new Queue<byte[]>();
         const int MaxQueuedMessages=8192,MaxSendBytes=64*1024*1024;
         int sendBytes;
+        int receivePeak;double receiveMaxWaitMs;
         Thread thread;TcpListener listener;TcpClient clientConnection;NetworkStream stream;
         volatile bool running,ready;string error;int boundPort;
         readonly LoopbackNetworkProfile profile;readonly LoopbackFaultQueue incoming,outgoing;
@@ -178,6 +180,14 @@ namespace TldMp
         public bool Ready{get{return ready;}}
         public int BoundPort{get{return boundPort;}}
         public string Error{get{lock(gate)return error;}}
+        public string TakeQueueHealth()
+        {
+            lock(gate)
+            {
+                string result="loopbackQueue{receive="+queue.Count+" receivePeak="+receivePeak+" maxWaitMs="+receiveMaxWaitMs.ToString("F1",CultureInfo.InvariantCulture)+" send="+sendQueue.Count+" sendBytes="+sendBytes+" impaired="+profile.Enabled+"}";
+                receivePeak=queue.Count;receiveMaxWaitMs=0;return result;
+            }
+        }
         public bool Start()
         {
             if(config==null || !config.Enabled)return false;
@@ -261,7 +271,9 @@ namespace TldMp
                 if(incoming!=null && incoming.Take(Clock,out bytes,out reliable))
                 {item=new LoopbackEvent {From=config.Peer,Bytes=bytes,Reliable=reliable};Monitor.PulseAll(gate);return true;}
                 if(queue.Count==0){item=null;return false;}
-                item=queue.Dequeue();Monitor.PulseAll(gate);return true;
+                item=queue.Dequeue();
+                if(item.EnqueuedAt>0)receiveMaxWaitMs=Math.Max(receiveMaxWaitMs,(Clock-item.EnqueuedAt)*1000);
+                Monitor.PulseAll(gate);return true;
             }
         }
         void Run(){if(config.Host)RunHost();else RunClient();}
@@ -356,7 +368,7 @@ namespace TldMp
                 // The reader waits for the main thread to drain the bounded queue.
                 // TCP applies backpressure to the separate socket writer.
                 while(running && queue.Count>=MaxQueuedMessages)Monitor.Wait(gate,100);
-                if(running)queue.Enqueue(item);
+                if(running){item.EnqueuedAt=Clock;queue.Enqueue(item);receivePeak=Math.Max(receivePeak,queue.Count);}
             }
         }
         void SetError(string text){lock(gate){if(error==null)error=text;}}

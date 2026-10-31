@@ -18,7 +18,7 @@ namespace TldMp
         public const int ByteCapacity = 2 * 1024 * 1024;
 
         public struct Held { public byte[] Bytes; public ulong Sender; }
-        sealed class Entry { internal readonly List<Held> Messages = new List<Held>(); internal uint ID, Parent; internal double Expires, Created; internal LinkedListNode<Entry> Node; }
+        sealed class Entry { internal readonly List<Held> Messages = new List<Held>(); internal uint ID; internal double Expires, Created; internal LinkedListNode<Entry> Node; }
         readonly Dictionary<uint, Entry> pending = new Dictionary<uint, Entry>();
         readonly LinkedList<Entry> order = new LinkedList<Entry>();
         LinkedListNode<Entry> cursor;
@@ -68,8 +68,6 @@ namespace TldMp
             }
             if (entry.Messages.Count >= PerItemCapacity) { Dropped++; return false; }
             entry.Messages.Add(new Held { Bytes = (byte[])bytes.Clone(), Sender = sender });
-            // The latest attachment decides which parent the replay waits for.
-            if (bytes.Length > 0 && bytes[0] == 42) entry.Parent = parent;
             total++; this.bytes += bytes.Length; HeldCount++;
             return true;
         }
@@ -119,11 +117,12 @@ namespace TldMp
                     Remove(entry); continue;
                 }
                 if (!exists(entry.ID)) { if (missing != null) missing(entry.ID); continue; }
-                if (entry.Parent != 0 && !exists(entry.Parent)) { if (missing != null) missing(entry.Parent); continue; }
                 // Keep a busy item from consuming the whole per-frame allowance.
                 int allowance = Math.Min(8, maxMessages - sent);
                 while (entry.Messages.Count > 0 && allowance-- > 0 && withinBudget())
                 {
+                    uint parent = Parent(entry.Messages[0].Bytes);
+                    if (parent != 0 && !exists(parent)) { if (missing != null) missing(parent); break; }
                     Held message = entry.Messages[0]; entry.Messages.RemoveAt(0);
                     total--; bytes -= message.Bytes.Length; Replayed++; sent++;
                     replay(message);
@@ -145,7 +144,10 @@ namespace TldMp
             {
                 Entry entry = pending[id];
                 if (now >= entry.Expires) { Expired += entry.Messages.Count; Remove(entry); continue; }
-                if (!exists(id) || entry.Parent != 0 && !exists(entry.Parent)) continue;
+                if (!exists(id)) continue;
+                bool parentsReady = true;
+                foreach (var message in entry.Messages) { uint parent = Parent(message.Bytes); if (parent != 0 && !exists(parent)) { parentsReady = false; break; } }
+                if (!parentsReady) continue;
                 if (ready == null) ready = new List<Held>();
                 ready.AddRange(Take(id));
             }
