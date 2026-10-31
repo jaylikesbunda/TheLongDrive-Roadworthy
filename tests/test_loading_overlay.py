@@ -15,13 +15,17 @@ class LoadingOverlayTests(unittest.TestCase):
         end = source.index('        // A spawned haz02 can precede', begin)
         fixture = r'''
 using System;using System.Collections.Generic;
-public struct Vector3 {public float x,y,z;public static readonly Vector3 zero=new Vector3();}
+public struct Vector3 {public float x,y,z;public static readonly Vector3 zero=new Vector3();public static readonly Vector3 up=new Vector3{y=1};public static readonly Vector3 down=new Vector3{y=-1};public static Vector3 operator *(Vector3 v,float s){return new Vector3{x=v.x*s,y=v.y*s,z=v.z*s};}public static Vector3 operator +(Vector3 a,Vector3 b){return new Vector3{x=a.x+b.x,y=a.y+b.y,z=a.z+b.z};}}
 public struct Vector3d {public double x,y,z;}
 public class Transform {public Vector3 position;}
 public class GameObject {public bool activeSelf;public void SetActive(bool b){activeSelf=b;}}
 public class Rigidbody {public Vector3 velocity,angularVelocity;}
-public class Player {public Transform transform=new Transform();public Rigidbody RB=new Rigidbody();}
-public class mainscript {public static mainscript s=new mainscript();public Player player=new Player();public static Vector3d GlobalFromUnityPos(Vector3 p){return new Vector3d{x=p.x,y=p.y,z=p.z};}public static Vector3d GetChunkPos(Vector3d p,float size){return new Vector3d();}}
+public class Collider {public bool enabled=true;public bool isTrigger;}
+public struct RaycastHit {public Collider collider;public Vector3 point;public Vector3 normal;}
+public enum QueryTriggerInteraction {Ignore}
+public static class Physics {public static RaycastHit[] supportHits=new RaycastHit[0];public static RaycastHit[] RaycastAll(Vector3 o,Vector3 d,float m,int mask,QueryTriggerInteraction q){return supportHits;}}
+public class fpscontroller {public Transform transform=new Transform();public Rigidbody RB=new Rigidbody();public Collider[] C=new Collider[0];}
+public class mainscript {public static mainscript s=new mainscript();public fpscontroller player=new fpscontroller();public static Vector3d GlobalFromUnityPos(Vector3 p){return new Vector3d{x=p.x,y=p.y,z=p.z};}public static Vector3d GetChunkPos(Vector3d p,float size){return new Vector3d();}}
 public class DataFromMenuScript {public static DataFromMenuScript s=new DataFromMenuScript();public bool mainmenu;}
 public class mapSettingScript {public List<poiGenScript> poiGens=new List<poiGenScript>();}
 public class menuhandler {public static menuhandler s;public GameObject GLoadText=new GameObject();public mapSettingScript currentMainMap=new mapSettingScript();}
@@ -32,7 +36,10 @@ public class itemPlaceRemoveScript {public static itemPlaceRemoveScript s=new it
 public static class Time {public static float realtimeSinceStartup;}
 public static class Debug {public static void Log(string s){}public static void LogWarning(string s){}}
 public static class Adapter {
-static bool hasGround;public static void Ground(bool v){hasGround=v;}
+static bool hasGround;
+static void SetSupport(bool v){Physics.supportHits=v?new[]{new RaycastHit{normal=new Vector3{y=1},collider=new Collider()}}:new RaycastHit[0];}
+public static void Ground(bool v){hasGround=v;SetSupport(v);}
+public static void Support(bool v){SetSupport(v);}
 static terrainGenScript NearGen(mapSettingScript map){return new terrainGenScript();}
 static double ColliderY(terrainGenScript g,Vector3d p,out bool tile,out bool collider){tile=collider=hasGround;return hasGround?0:double.NaN;}
 static string F(double x){return x.ToString();}
@@ -53,7 +60,8 @@ menu.GLoadText.SetActive(true);DataFromMenuScript.s.mainmenu=true;Tick(8,true);C
 DataFromMenuScript.s.mainmenu=false;var next=new menuhandler();menuhandler.s=next;Adapter.Ground(false);Tick(10,true);Tick(40.1f,true);Check(!next.GLoadText.activeSelf,"timeout releases");
 var third=new menuhandler();menuhandler.s=third;Tick(50,true);Adapter.LoadingOverlayFailed(new Exception());Check(!third.GLoadText.activeSelf,"error releases");
 var fourth=new menuhandler();menuhandler.s=fourth;Adapter.Ground(true);mainscript.s.player.transform.position=new Vector3{y=-10};Tick(60,true);Check(fourth.GLoadText.activeSelf,"hold while below ground");Check(Math.Abs(mainscript.s.player.transform.position.y-0.05f)<0.001,"player lifted onto ground");Tick(61,true);Tick(61.5f,true);Check(fourth.GLoadText.activeSelf,"wait for stability after lift");Tick(62.1f,true);Check(!fourth.GLoadText.activeSelf,"overlay hidden after lift and hold");
-Console.WriteLine("PASS loading overlay readiness, multiplayer, lifecycle and fallback");}}
+var fifth=new menuhandler();menuhandler.s=fifth;mainscript.s.player.transform.position=new Vector3{y=0};Adapter.Ground(true);Adapter.Support(false);Tick(70,true);Check(fifth.GLoadText.activeSelf,"wait for player support, not the terrain tile ray");Adapter.Support(true);Tick(71,true);Tick(71.5f,true);Check(fifth.GLoadText.activeSelf,"wait for stability after support");Tick(72.1f,true);Check(!fifth.GLoadText.activeSelf,"overlay hidden once the player is supported");
+Console.WriteLine("PASS loading overlay readiness, multiplayer, lifecycle, fallback, lift and support");}}
 '''.replace('METHOD', source[begin:end])
         compiler = Path(os.environ['WINDIR']) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
         with tempfile.TemporaryDirectory(prefix='roadworthy-loading-') as directory:

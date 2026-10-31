@@ -205,43 +205,62 @@ namespace TldMp
             Debug.LogWarning("[TLD MP loading] overlay released after error: "+error.GetType().Name);
         }
 
+        // True when the player is standing on something walkable: terrain, a
+        // floor, a car roof. The terrain tile's own raycast can miss while a
+        // pooled tile is inactive, even though the player is safely supported.
+        // Support is what actually keeps the body from falling through.
+        static bool PlayerSupported(fpscontroller player)
+        {
+            if(player==null)return false;
+            var origin=player.transform.position+Vector3.up*.35f;
+            var hits=Physics.RaycastAll(origin,Vector3.down,3.5f,~0,QueryTriggerInteraction.Ignore);
+            for(int i=0;i<hits.Length;i++)
+            {
+                var hit=hits[i];var c=hit.collider;
+                if(c==null || !c.enabled || hit.normal.y<.45f)continue;
+                bool own=false;
+                if(player.C!=null)for(int j=0;j<player.C.Length;j++)if(player.C[j]==c){own=true;break;}
+                if(!own)return true;
+            }
+            return false;
+        }
+
         static bool LoadingWorldReady(menuhandler menu,out string blocked,out double gap)
         {
             blocked="world";gap=double.NaN;
             if(menu==null || menu.currentMainMap==null || mainscript.s==null || mainscript.s.player==null)return false;
             var map=menu.currentMainMap;var gen=NearGen(map);
-            var position=mainscript.GlobalFromUnityPos(mainscript.s.player.transform.position);
+            var player=mainscript.s.player;
+            var position=mainscript.GlobalFromUnityPos(player.transform.position);
             bool tile=false,collider=false;double ground=double.NaN;
-            if(gen==null)blocked="near terrain generator";
-            else
+            if(gen!=null)ground=ColliderY(gen,position,out tile,out collider);
+            if(!double.IsNaN(ground) && !double.IsInfinity(ground))
             {
-                ground=ColliderY(gen,position,out tile,out collider);
-                blocked=!tile?"ground tile at "+F(position.x)+","+F(position.z):(!collider?"ground collider mesh":"ground raycast");
-            }
-            if(double.IsNaN(ground) || double.IsInfinity(ground))return false;
-            gap=position.y-ground;
-            if(gap<-1.5)
-            {
-                // The ray above the player hit ground, but the player is under
-                // that surface. A fresh world can leave the body at its pre-load
-                // height; gravity then drops it through the one-sided terrain.
-                var player=mainscript.s.player;
-                var unity=player.transform.position;
-                double lift=ground+.05-position.y;
-                unity.y+=(float)lift;
-                player.transform.position=unity;
-                if(player.RB!=null)
+                gap=position.y-ground;
+                if(gap<-1.5)
                 {
-                    player.RB.velocity=Vector3.zero;
-                    player.RB.angularVelocity=Vector3.zero;
+                    // The ray above the player hit ground, but the player is under
+                    // that surface. A fresh world can leave the body at its pre-load
+                    // height; gravity then drops it through the one-sided terrain.
+                    var unity=player.transform.position;
+                    double lift=ground+.05-position.y;
+                    unity.y+=(float)lift;
+                    player.transform.position=unity;
+                    if(player.RB!=null)
+                    {
+                        player.RB.velocity=Vector3.zero;
+                        player.RB.angularVelocity=Vector3.zero;
+                    }
+                    if(!loadingLifted)
+                    {
+                        loadingLifted=true;
+                        Debug.Log("[TLD MP loading] lifted player "+F(lift)+"m onto ground y="+F(ground));
+                    }
+                    blocked="player below ground";return false;
                 }
-                if(!loadingLifted)
-                {
-                    loadingLifted=true;
-                    Debug.Log("[TLD MP loading] lifted player "+F(lift)+"m onto ground y="+F(ground));
-                }
-                blocked="player below ground";return false;
             }
+            blocked=gen==null?"near terrain generator":"player support";
+            if(!PlayerSupported(player))return false;
             if(map.poiGens==null || itemPlaceRemoveScript.s==null)return false;
             foreach(var pois in map.poiGens)
             {
