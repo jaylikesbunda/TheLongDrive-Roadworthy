@@ -146,6 +146,7 @@ namespace TldMp
         static bool loadingFinished;
         static float loadingStarted,loadingReadySince,loadingNextCheck;
         static string loadingBlock="";
+        static bool loadingLifted;
         const float LoadingTimeout=30f;
 
         public static void TickLoadingOverlay(bool multiplayerReady)
@@ -160,7 +161,7 @@ namespace TldMp
             if(loadingOwner!=menu)
             {
                 loadingOwner=menu;loadingFinished=false;loadingStarted=Time.realtimeSinceStartup;
-                loadingReadySince=0;loadingNextCheck=0;loadingBlock="";
+                loadingReadySince=0;loadingNextCheck=0;loadingBlock="";loadingLifted=false;
                 if(menu.GLoadText!=null)menu.GLoadText.SetActive(true);
             }
             if(loadingFinished || menu.GLoadText==null)return;
@@ -172,8 +173,8 @@ namespace TldMp
             }
             if(now<loadingNextCheck)return;
             loadingNextCheck=now+.25f;
-            string blocked=null;
-            bool ready=multiplayerReady && LoadingWorldReady(menu,out blocked);
+            string blocked=null;double gap=double.NaN;
+            bool ready=multiplayerReady && LoadingWorldReady(menu,out blocked,out gap);
             if(!multiplayerReady)blocked="multiplayer";
             if(!ready)
             {
@@ -188,12 +189,12 @@ namespace TldMp
             if(loadingReadySince==0)
             {
                 loadingReadySince=now;
-                Debug.Log("[TLD MP loading] checks passed at "+F(now-loadingStarted)+"s; holding");
+                Debug.Log("[TLD MP loading] checks passed at "+F(now-loadingStarted)+"s; playerGroundGap="+F(gap)+"; holding");
                 return;
             }
             if(now-loadingReadySince<1f)return;
             loadingFinished=true;menu.GLoadText.SetActive(false);
-            Debug.Log("[TLD MP loading] nearby world ready after "+F(now-loadingStarted)+"s; checks passed at "+F(loadingReadySince-loadingStarted)+"s");
+            Debug.Log("[TLD MP loading] nearby world ready after "+F(now-loadingStarted)+"s; checks passed at "+F(loadingReadySince-loadingStarted)+"s; playerGroundGap="+F(gap));
         }
 
         public static void LoadingOverlayFailed(Exception error)
@@ -204,9 +205,9 @@ namespace TldMp
             Debug.LogWarning("[TLD MP loading] overlay released after error: "+error.GetType().Name);
         }
 
-        static bool LoadingWorldReady(menuhandler menu,out string blocked)
+        static bool LoadingWorldReady(menuhandler menu,out string blocked,out double gap)
         {
-            blocked="world";
+            blocked="world";gap=double.NaN;
             if(menu==null || menu.currentMainMap==null || mainscript.s==null || mainscript.s.player==null)return false;
             var map=menu.currentMainMap;var gen=NearGen(map);
             var position=mainscript.GlobalFromUnityPos(mainscript.s.player.transform.position);
@@ -218,6 +219,29 @@ namespace TldMp
                 blocked=!tile?"ground tile at "+F(position.x)+","+F(position.z):(!collider?"ground collider mesh":"ground raycast");
             }
             if(double.IsNaN(ground) || double.IsInfinity(ground))return false;
+            gap=position.y-ground;
+            if(gap<-1.5)
+            {
+                // The ray above the player hit ground, but the player is under
+                // that surface. A fresh world can leave the body at its pre-load
+                // height; gravity then drops it through the one-sided terrain.
+                var player=mainscript.s.player;
+                var unity=player.transform.position;
+                double lift=ground+.05-position.y;
+                unity.y+=(float)lift;
+                player.transform.position=unity;
+                if(player.RB!=null)
+                {
+                    player.RB.velocity=Vector3.zero;
+                    player.RB.angularVelocity=Vector3.zero;
+                }
+                if(!loadingLifted)
+                {
+                    loadingLifted=true;
+                    Debug.Log("[TLD MP loading] lifted player "+F(lift)+"m onto ground y="+F(ground));
+                }
+                blocked="player below ground";return false;
+            }
             if(map.poiGens==null || itemPlaceRemoveScript.s==null)return false;
             foreach(var pois in map.poiGens)
             {
