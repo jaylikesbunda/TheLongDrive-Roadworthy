@@ -210,8 +210,13 @@ namespace TldMp
             if(menu==null || menu.currentMainMap==null || mainscript.s==null || mainscript.s.player==null)return false;
             var map=menu.currentMainMap;var gen=NearGen(map);
             var position=mainscript.GlobalFromUnityPos(mainscript.s.player.transform.position);
-            bool tile,collider;double ground=ColliderY(gen,position,out tile,out collider);
-            blocked="ground collider";
+            bool tile=false,collider=false;double ground=double.NaN;
+            if(gen==null)blocked="near terrain generator";
+            else
+            {
+                ground=ColliderY(gen,position,out tile,out collider);
+                blocked=!tile?"ground tile at "+F(position.x)+","+F(position.z):(!collider?"ground collider mesh":"ground raycast");
+            }
             if(double.IsNaN(ground) || double.IsInfinity(ground))return false;
             if(map.poiGens==null || itemPlaceRemoveScript.s==null)return false;
             foreach(var pois in map.poiGens)
