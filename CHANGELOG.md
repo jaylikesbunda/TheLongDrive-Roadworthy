@@ -4,19 +4,18 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ## v0.1.3
 
-- Preserve reliable item-data repair replies through the multiplayer relay.
-- Send combined vehicle snapshots with bounded repeats for packet loss.
-- Add velocity-aware car smoothing and short, rate-limited impact updates.
-- Fix loopback vehicle snapshot admission and test motion over impaired localhost connections.
-- Preserve attachment replay order across changing parents and improve queue and vehicle-part diagnostics.
-- Send client-spawned items as bounded reliable batches with creation before state and host acknowledgement.
-- Retry unconfirmed spawns without duplicating acknowledged items.
-- Protect new client items and saved items from premature removal.
-- Bound missing-item state by messages, bytes, and replay work per frame, with bounded recovery requests.
-- Cancel queued state on item deletion and reconcile changed attachment slots through native mounting routines.
-- Record item recovery and transport health on both host and clients every five seconds.
-- Log receive-queue delays, vehicle part slots and saved car colors.
-- Update the game, lobby, installer, and release labels to v0.1.3 Roadworthy.
+- Missing-item repairs reach other players more reliably.
+- Vehicle updates better tolerate packet loss.
+- Smoother remote cars and faster updates after impacts.
+- Fixed missing car movement updates in tests on the same PC.
+- Part updates stay in order when their mounting point changes.
+- Improved syncing of cars and parts spawned by guests.
+- Failed spawn deliveries retry without duplicating confirmed spawns.
+- New guest items and saved items are protected from early deletion.
+- Missing-item recovery uses less memory and spreads work across frames.
+- Deleted items discard old updates, and moved parts update their mounts.
+- Multiplayer logs make missing parts, delays and color differences easier to investigate.
+- Game, lobby and installer labels now show v0.1.3 Roadworthy.
 
 ## v0.1.2
 
@@ -27,7 +26,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ### Multiplayer joining
 
-- Steam multiplayer joining is potentially fixed
+- Steam multiplayer joining is potentially fixed.
 
 ### Menus and interface
 
@@ -43,20 +42,20 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ### Multiplayer joining
 
-- Fixes a password exchange that could leave Steam players stuck when joining a lobby.
+- Fixed Steam players getting stuck during the password check.
 - Joining players wait for a clear spawn before their position is sent to other players.
-- Missing cars can be requested when their driving state arrives early.
+- Missing cars can be recovered when driving updates arrive first.
 
 ### Performance
 
 - Multiplayer startup can continue while game files are checked.
-- Reuses mirror visibility calculations when the camera has not moved.
+- Mirrors use less CPU when the camera is still.
 - The graphics preset only changes the game's shadow settings when Performance is selected.
 
 ### World streaming
 
-- Refreshes streaming positions immediately after the world recenters.
-- Ground diagnostics keep recording during longer drives.
+- World streaming keeps up when the world recenters.
+- Ground logs keep recording during longer drives.
 
 ## v0.1.0
 
@@ -78,7 +77,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Joining refuses to start if your map or build differs from the host's.
 - Test clients running on the same PC use the host's map and starting position.
 - A joining player is not released until the ground under them has loaded.
-- A joining player is moved to a clear spot on solid ground instead of dropping inside a car, prop or wall.
+- Joining players spawn on clear ground, away from cars, props and walls.
 - Sending the world to a joining player no longer holds up everyone else's movement.
 - Reconnecting no longer makes the game handle the same Steam event several times.
 - When a player leaves, the remaining players no longer freeze.
@@ -93,7 +92,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Passengers no longer drift out of seats.
 - Wheels and attached parts no longer drift away from moving cars.
 - A car being pushed by another player moves smoothly instead of jumping once a second.
-- When a car crashes and gets bloody, everyone sees the blood, not just the driver.
+- Everyone sees blood on cars after a crash.
 - Car smoothing can be turned on or off in Settings > Misc.
 - Passengers receive car position updates up to 60 times a second instead of about 5.
 - Other players' movement updates 30 times a second instead of about 3.
@@ -114,18 +113,18 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Items are no longer pulled out of your hands or off mounts by delayed updates.
 - Quitting no longer deletes held or worn items.
 - Box pieces and loose items no longer get stuck in a guest's car or teleport.
-- Cargo ghosting for the driving client is available with TLD_MP_CARGO_GHOST=1.
+- Drivers can enable cargo ghosting with TLD_MP_CARGO_GHOST=1.
 - Unpainted car parts no longer show pure black for other players.
-- Loose items in a moving car (glove box, cab, bed) stay in place for passengers and no longer fall out behind the car.
+- Loose cargo stays inside moving cars for passengers.
 
 ### Performance and streaming
 
-- Test clients on the same PC no longer disconnect just because a burst of updates arrives faster than the game reads them.
+- Tests on the same PC stay connected during bursts of updates.
 - A flood of network updates no longer freezes the game.
 - Roads update faster when two players are nearby.
 - Guests generate distant props with less stutter.
 - Received item and car updates cost less CPU.
-- Roads draw as static meshes at any scale.
+- Roads of any size draw more efficiently.
 - Roads update faster while you drive.
 - Roads cost less to draw.
 - Mirrors that are off screen no longer render.
@@ -154,7 +153,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ### Graphics settings
 
-- New graphics preset: 2x MSAA, four pixel lights, 80 m shadows with two cascades, realtime reflection probes off.
+- New graphics preset reduces reflections and limits shadow and lighting costs.
 - Realtime reflection probes stay off after loading a save.
 
 ### Single-player and multiplayer wildlife

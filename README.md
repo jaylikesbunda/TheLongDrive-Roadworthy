@@ -48,9 +48,9 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Multiplayer players and vehicles
 
-- Vehicle snapshots include velocity and repeat one recent update to tolerate packet loss.
-- Car smoothing uses velocity, with limited prediction and short impact update bursts.
-- Vehicle snapshots work with local test peers without Steam lobby IDs.
+- Vehicle updates better tolerate packet loss.
+- Smoother remote cars and faster updates after impacts.
+- Car movement updates work in tests on the same PC.
 - The car you are riding in no longer stutters on your screen.
 - Other players no longer skip ahead when they walk.
 - Passengers no longer drift out of seats.
@@ -73,13 +73,13 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Multiplayer items and parts
 
-- Client-spawned items send creation before part and color state, with host acknowledgement.
-- Unconfirmed spawns retry within limits; acknowledged items are not duplicated.
-- New client items and saved items are protected from premature removal.
-- Early part and color updates wait for missing items and replay in order.
-- Attachment updates wait for each parent and reconcile changed slots through native mounting routines.
-- Item recovery queues and requests have bounded memory and per-frame work.
-- Reliable item-data repair replies are preserved through the multiplayer relay.
+- Improved syncing of cars and parts spawned by guests.
+- Failed spawn deliveries retry without duplicating confirmed spawns.
+- New guest items and saved items are protected from early deletion.
+- Part and color updates stay in order while missing items load.
+- Moved parts update their mounts correctly.
+- Missing-item recovery uses less memory and spreads work across frames.
+- Missing-item repairs reach other players more reliably.
 - Items held by other players no longer disappear.
 - Items are no longer pulled out of your hands or off mounts by delayed updates.
 - Quitting no longer deletes held or worn items.
@@ -141,9 +141,8 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Saving and diagnostics
 
-- Multiplayer logs report item recovery and transport health every five seconds.
-- Local test logs include receive-queue delays and spawn acknowledgements.
-- Nearby vehicle logs prioritize cars and include part slots and saved colors.
+- Multiplayer logs make missing parts, delays and color differences easier to investigate.
+- Local test logs show whether spawned items reached the host.
 - Press F11 to save a feedback bundle of your logs.
 - Store and unstore logs name the item and its position.
 - Safer saving with a `.bak` backup.
