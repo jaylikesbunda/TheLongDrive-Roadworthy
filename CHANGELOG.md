@@ -15,6 +15,8 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Missing-item recovery uses less memory and spreads work across frames.
 - Deleted items discard old updates, and moved parts update their mounts.
 - Multiplayer logs make missing parts, delays and color differences easier to investigate.
+- The loading screen, background included, stays up until the nearby world has loaded in.
+- The menu news window shows the Roadworthy changes above the original game news.
 - Game, lobby and installer labels now show v0.1.3 Roadworthy.
 
 ## v0.1.2

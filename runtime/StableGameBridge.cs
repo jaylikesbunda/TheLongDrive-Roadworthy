@@ -1583,6 +1583,7 @@ namespace TldMp
                 long b=Stopwatch.GetTimestamp();FrameDiagnostics.PulseBegin();Pulse();
                 long c=Stopwatch.GetTimestamp();TickNativeSpawnSafety(false);FrameDiagnostics.PulseEnd();
                 try{GroundDiagnostics.TickLoadingOverlay(!Connected || (node!=null && (node.IsHost || (node.Ready && spawnFinished))));}catch(Exception e){GroundDiagnostics.LoadingOverlayFailed(e);}
+                TickNewsChangelog();
                 long d=Stopwatch.GetTimestamp();WildlifeWeather.Tick(Connected);TickPlayerRate();
                 NoteSlowUpdate(a,b,c,d,Stopwatch.GetTimestamp());
             }

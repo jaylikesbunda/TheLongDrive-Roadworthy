@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using TMPro;
 using UnityEngine;
 using Steamworks;
@@ -32,6 +33,44 @@ namespace TldMp
         {
             string roadworthy = SteamMatchmaking.GetLobbyData(lobby, "roadworthy_version");
             return string.IsNullOrEmpty(roadworthy) ? SteamMatchmaking.GetLobbyData(lobby, key) : roadworthy;
+        }
+
+        // The vanilla news window reads news.txt once at scene start. Keep the
+        // Roadworthy notes on top of that text so the same button shows both.
+        // The notes are compiled in from CHANGELOG.md at build time.
+        static menuhandler newsStamped;
+        static bool newsFailed;
+        static string newsNotes;
+
+        internal static string NewsNotes
+        {
+            get
+            {
+                if (newsNotes == null)
+                    try { newsNotes = Encoding.UTF8.GetString(Convert.FromBase64String(PatchNotes.ChangelogBase64)).Trim(); }
+                    catch { newsNotes = ""; }
+                return newsNotes;
+            }
+        }
+
+        public static void TickNewsChangelog()
+        {
+            try
+            {
+                var menu = menuhandler.s;
+                if (menu == null || menu.newsText == null || newsStamped == menu) return;
+                string notes = NewsNotes;
+                if (notes.Length == 0) { newsStamped = menu; return; }
+                string text = menu.newsText.text;
+                if (text != null && text.StartsWith(notes)) { newsStamped = menu; return; }
+                menu.newsText.text = string.IsNullOrEmpty(text) ? notes : notes + "\n\n---------- Original game news ----------\n\n" + text;
+                if (menu.newsButton != null && !menu.newsButton.activeSelf) menu.newsButton.SetActive(true);
+                newsStamped = menu;
+            }
+            catch (Exception e)
+            {
+                if (!newsFailed) { newsFailed = true; Debug.LogWarning("[TLD MP news] changelog prepend failed: " + e.GetType().Name); }
+            }
         }
 
         // Called from TldStable.Configure after scene load and before every return

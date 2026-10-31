@@ -147,6 +147,8 @@ namespace TldMp
         static float loadingStarted,loadingReadySince,loadingNextCheck;
         static string loadingBlock="";
         static bool loadingLifted;
+        static GameObject loadingBg;
+        static bool loadingBgWasActive;
         const float LoadingTimeout=30f;
 
         public static void TickLoadingOverlay(bool multiplayerReady)
@@ -156,19 +158,26 @@ namespace TldMp
             {
                 // A scene transition may be using this same native element.
                 // Do not hide the game's own transition overlay.
-                loadingOwner=null;loadingFinished=false;return;
+                loadingOwner=null;loadingFinished=false;loadingBg=null;return;
             }
             if(loadingOwner!=menu)
             {
                 loadingOwner=menu;loadingFinished=false;loadingStarted=Time.realtimeSinceStartup;
                 loadingReadySince=0;loadingNextCheck=0;loadingBlock="";loadingLifted=false;
                 if(menu.GLoadText!=null)menu.GLoadText.SetActive(true);
+                // The panel's own background image ships switched off, so a held
+                // overlay floated the text over the half-loaded world. Show it
+                // for as long as the hold lasts, then put its state back.
+                loadingBg=FindLoadingBackground(menu);
+                loadingBgWasActive=false;
+                if(loadingBg!=null){loadingBgWasActive=loadingBg.activeSelf;loadingBg.SetActive(true);}
             }
             if(loadingFinished || menu.GLoadText==null)return;
+            if(loadingBg!=null && !loadingBg.activeSelf)loadingBg.SetActive(true);
             float now=Time.realtimeSinceStartup;
             if(now-loadingStarted>=LoadingTimeout)
             {
-                loadingFinished=true;menu.GLoadText.SetActive(false);
+                loadingFinished=true;ReleaseLoadingOverlay(menu);
                 Debug.Log("[TLD MP loading] overlay released after timeout; last wait="+loadingBlock);return;
             }
             if(now<loadingNextCheck)return;
@@ -193,7 +202,7 @@ namespace TldMp
                 return;
             }
             if(now-loadingReadySince<1f)return;
-            loadingFinished=true;menu.GLoadText.SetActive(false);
+            loadingFinished=true;ReleaseLoadingOverlay(menu);
             Debug.Log("[TLD MP loading] nearby world ready after "+F(now-loadingStarted)+"s; checks passed at "+F(loadingReadySince-loadingStarted)+"s; playerGroundGap="+F(gap));
         }
 
@@ -201,8 +210,24 @@ namespace TldMp
         {
             if(loadingFinished)return;
             loadingFinished=true;
-            if(loadingOwner!=null && loadingOwner.GLoadText!=null)loadingOwner.GLoadText.SetActive(false);
+            ReleaseLoadingOverlay(loadingOwner);
             Debug.LogWarning("[TLD MP loading] overlay released after error: "+error.GetType().Name);
+        }
+
+        // LoadTextBackGround sits inside the loading panel but arrives disabled.
+        static GameObject FindLoadingBackground(menuhandler menu)
+        {
+            if(menu==null)return null;
+            Transform t=null;
+            if(menu.GLoadText!=null && menu.GLoadText.transform!=null)t=menu.GLoadText.transform.Find("LoadTextBackGround");
+            if(t==null && menu.transform!=null)t=menu.transform.Find("2/TextLoad/LoadTextBackGround");
+            return t==null?null:t.gameObject;
+        }
+
+        static void ReleaseLoadingOverlay(menuhandler menu)
+        {
+            if(loadingBg!=null){loadingBg.SetActive(loadingBgWasActive);loadingBg=null;}
+            if(menu!=null && menu.GLoadText!=null)menu.GLoadText.SetActive(false);
         }
 
         // True when the player is standing on something walkable: terrain, a
