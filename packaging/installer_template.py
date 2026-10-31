@@ -24,6 +24,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 
 APP_TITLE = "The Long Drive: Roadworthy"
@@ -330,6 +333,52 @@ def installation_info(game: Path) -> dict:
     else:
         info["relation"] = "update"
     return info
+
+
+UPDATES_API = "https://api.github.com/repos/jaylikesbunda/TheLongDrive-Roadworthy/releases?per_page=100&page={}"
+RELEASE_PAGE = "https://github.com/jaylikesbunda/TheLongDrive-Roadworthy/releases/tag/"
+
+
+def check_updates() -> dict:
+    """Best published release on GitHub, prereleases included, drafts skipped.
+    Strictly read-only: unauthenticated GET, 5s timeout, 2 MiB cap, at most the
+    first three generated pages, no server-provided URLs followed. Any failure
+    raises InstallerError; a missing published release reports version None."""
+    bundled = _version_tuple(VERSION)
+    best, best_tag = None, None
+    for page in (1, 2, 3):
+        request = urllib.request.Request(UPDATES_API.format(page), headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"Roadworthy-Installer/{VERSION}"})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                data = response.read(2 * 1024 * 1024 + 1)
+        except (OSError, ValueError) as exc:
+            raise InstallerError(f"Could not check for newer releases: {exc}")
+        if len(data) > 2 * 1024 * 1024:
+            raise InstallerError("The release list response was too large; refusing it.")
+        try:
+            releases = json.loads(data)
+        except ValueError:
+            raise InstallerError("The release list was not valid JSON.")
+        if not isinstance(releases, list):
+            raise InstallerError("The release list had an unexpected shape.")
+        for entry in releases:
+            if not isinstance(entry, dict) or entry.get("draft") or not entry.get("published_at"):
+                continue
+            tag = entry.get("tag_name")
+            if not isinstance(tag, str):
+                continue
+            candidate = _version_tuple(tag[1:] if tag.lower().startswith("v") else tag)
+            if candidate is not None and (best is None or candidate > best):
+                best, best_tag = candidate, tag
+        if len(releases) < 100:
+            break
+    if best is None:
+        return {"version": None, "tag": None, "newer": False, "url": None}
+    newer = bundled is not None and best > bundled
+    return {"version": ".".join(str(part) for part in best), "tag": best_tag, "newer": newer,
+            "url": RELEASE_PAGE + urllib.parse.quote(best_tag, safe="")}
 
 
 def stamp_metadata(receipt_path: Path) -> None:
@@ -746,6 +795,7 @@ def main_cli(argv=None, progress=None) -> int:
     action.add_argument("--restore-all", action="store_true", help="Undo every pass (v4 -> v3 -> vanilla)")
     action.add_argument("--test-only", action="store_true", help="Build and verify the patch without changing the game")
     action.add_argument("--status", action="store_true", help="Inspect installation without changing files")
+    action.add_argument("--check-updates", action="store_true", help="Check GitHub for a newer published release (read-only)")
     action.add_argument("--list", action="store_true", help="List detected Steam installations")
     action.add_argument("--update", action="store_true", help="Update an older recognized install to this bundled build")
     parser.add_argument("--allow-downgrade", action="store_true", help="Permit replacing a newer recognized Roadworthy release")
@@ -760,6 +810,16 @@ def main_cli(argv=None, progress=None) -> int:
         if args.list:
             for game in discover_games():
                 print(game)
+            return 0
+        if args.check_updates:
+            result = check_updates()
+            if result["version"] is None:
+                print(f"Bundled release: {VERSION}\nNo published releases found.")
+            else:
+                print(f"Bundled release: {VERSION}\nLatest published: {result['tag']} "
+                      f"({'newer' if result['newer'] else 'not newer'}; prereleases included)")
+                if result["newer"]:
+                    print(result["url"])
             return 0
         game = choose_game(args.game_dir)
         emit(0, "Checking the current installation")
@@ -907,7 +967,7 @@ def build_gui(root):
 
     BG, PANEL, INPUT, TEXT, MUTED, ACCENT, ERROR = "#141819", "#20262d", "#0e1217", "#edf0f2", "#9da9b5", "#edb85c", "#e47b70"
     root.title(APP_TITLE)
-    root.geometry("680x400"); root.minsize(620, 380)
+    root.geometry("680x424"); root.minsize(620, 404)
     root.configure(bg=BG)
     root.option_add("*Font", "{Segoe UI} 9")
     style = ttk.Style(root)
@@ -961,6 +1021,13 @@ def build_gui(root):
         ttk.Label(card, text=caption, style="CardMuted.TLabel").pack(anchor="w")
         ttk.Label(card, textvariable=var, style="Card.TLabel", font=("Segoe UI", 11, "bold"), wraplength=290).pack(anchor="w")
         ttk.Label(card, textvariable=bvar, style="CardMuted.TLabel", wraplength=290).pack(anchor="w")
+    updates_row = ttk.Frame(content)
+    updates_row.pack(fill="x", pady=(0, 6))
+    update_status = tk.StringVar(value="Checking for newer releases...")
+    ttk.Label(updates_row, textvariable=update_status, style="Muted.TLabel").pack(side="left", fill="x", expand=True)
+    download_button = ttk.Button(updates_row, text="Get newer installer", style="Accent.TButton")
+    check_button = ttk.Button(updates_row, text="Check updates")
+    check_button.pack(side="left")
     ttk.Label(content, text="Game folder").pack(anchor="w")
     folder = ttk.Frame(content)
     folder.pack(fill="x", pady=(3, 0))
@@ -997,7 +1064,27 @@ def build_gui(root):
     poll_id = [None]
     details_on = [False]
     sized = [False]
+    check_busy = [False]
+    update_url = [None]
     controls = [entry, primary, restore, browse]
+
+    def check_releases():
+        if check_busy[0] or busy[0] or not root.winfo_exists():
+            return
+        check_busy[0] = True
+        check_button.configure(state="disabled")
+        update_status.set("Checking for newer releases...")
+        def scan():
+            try:
+                events.put(("update_result", check_updates()))
+            except InstallerError as exc:
+                events.put(("update_error", str(exc)))
+            except Exception as exc:
+                events.put(("update_error", f"{type(exc).__name__}: {exc}"))
+        threading.Thread(target=scan, daemon=True).start()
+
+    download_button.configure(command=lambda: update_url[0] and __import__("webbrowser").open(update_url[0]))
+    check_button.configure(command=check_releases)
 
     def show_details(on=True):
         if on == details_on[0]:
@@ -1006,17 +1093,17 @@ def build_gui(root):
         details.configure(text="Details \u25be" if on else "Details \u25b8")
         if on:
             log.pack(fill="both", expand=True, before=buttons)
-            root.minsize(620, 520)
-            if not sized[0] and root.winfo_height() < 520:
-                root.geometry("680x560")
+            root.minsize(620, 544)
+            if not sized[0] and root.winfo_height() < 544:
+                root.geometry("680x584")
         else:
             log.pack_forget()
-            root.minsize(620, 380)
-            if not sized[0] and root.winfo_height() > 480:
-                root.geometry("680x400")
+            root.minsize(620, 404)
+            if not sized[0] and root.winfo_height() > 504:
+                root.geometry("680x424")
 
     def track_resize(event):
-        if event.widget is root and details_on[0] and (root.winfo_width() != 680 or root.winfo_height() not in (400, 560)):
+        if event.widget is root and details_on[0] and (root.winfo_width() != 680 or root.winfo_height() not in (424, 584)):
             sized[0] = True
 
     details.configure(command=lambda: show_details(not details_on[0]))
@@ -1048,6 +1135,7 @@ def build_gui(root):
         busy[0] = value
         entry.configure(state="disabled" if value else "normal")
         browse.configure(state="disabled" if value else "normal")
+        check_button.configure(state="disabled" if value or check_busy[0] else "normal")
         if value:
             primary.configure(state="disabled"); restore.configure(state="disabled")
         else:
@@ -1174,6 +1262,24 @@ def build_gui(root):
                     pump_log(f"Stopped: {event[2]}\n")
                     show_details()
                     apply_state()
+                elif kind == "update_result":
+                    check_busy[0] = False
+                    check_button.configure(state="disabled" if busy[0] else "normal")
+                    result = event[1]
+                    if result["newer"]:
+                        update_status.set(f"{result['tag']} available (bundled v{VERSION})")
+                        update_url[0] = result["url"]
+                        download_button.pack(side="left", padx=(0, 6))
+                    else:
+                        download_button.pack_forget()
+                        update_status.set(f"No newer published version (latest {result['tag']})"
+                                          if result["version"] else "No published releases found")
+                elif kind == "update_error":
+                    check_busy[0] = False
+                    check_button.configure(state="disabled" if busy[0] else "normal")
+                    download_button.pack_forget()
+                    update_status.set("Could not check releases; offline installation still works.")
+                    pump_log(f"Update check failed: {event[1]}\n")
                 elif kind == "done":
                     act, code = event[1], event[2]
                     set_busy(False)
@@ -1219,13 +1325,16 @@ def build_gui(root):
     root.protocol("WM_DELETE_WINDOW", close)
     root.bind("<Destroy>", destroyed)
     detect()
+    check_releases()
     poll()
     return {"path": path, "status": status, "run": run, "busy": busy, "controls": controls,
             "log": log, "primary": primary, "restore": restore, "progress": progress,
             "progress_value": progress_value, "phase": phase, "state": state, "info": info,
             "installed": installed, "installed_build": installed_build,
             "bundled": bundled, "bundled_build": bundled_build, "subtitle": subtitle,
-            "details": details, "details_on": details_on, "show_details": show_details}
+            "details": details, "details_on": details_on, "show_details": show_details,
+            "update_status": update_status, "check_updates_button": check_button,
+            "download_button": download_button, "check_busy": check_busy}
 
 
 def run_gui():
@@ -1287,8 +1396,8 @@ def gui_self_test():
     root.withdraw()
     set_window_icon(root)
     release = threading.Event()
-    saved_cli, saved_discovery, saved_state, saved_info, saved_choose = (globals()["main_cli"], globals()["discover_games"],
-                                                           globals()["installed_state"], globals()["installation_info"], globals()["choose_game"])
+    saved_cli, saved_discovery, saved_state, saved_info, saved_choose, saved_updates = (globals()["main_cli"], globals()["discover_games"],
+        globals()["installed_state"], globals()["installation_info"], globals()["choose_game"], globals()["check_updates"])
     fixture_state = ["original"]
     calls = []
 
@@ -1314,6 +1423,7 @@ def gui_self_test():
         globals()["installed_state"] = lambda game: fixture_state[0]
         globals()["installation_info"] = fake_info
         globals()["choose_game"] = lambda p: Path(p)
+        globals()["check_updates"] = lambda: {"version": None, "tag": None, "newer": False, "url": None}
         ui = build_gui(root)
         ui["path"].set("GUI fixture only")
         deadline = time.monotonic() + 3
@@ -1348,7 +1458,7 @@ def gui_self_test():
     finally:
         release.set()
         root.destroy()
-        globals()["main_cli"], globals()["discover_games"], globals()["installed_state"], globals()["installation_info"], globals()["choose_game"] = (saved_cli, saved_discovery, saved_state, saved_info, saved_choose)
+        globals()["main_cli"], globals()["discover_games"], globals()["installed_state"], globals()["installation_info"], globals()["choose_game"], globals()["check_updates"] = (saved_cli, saved_discovery, saved_state, saved_info, saved_choose, saved_updates)
     print("PASS: bundled Tk GUI, embedded icon, embedded title/beta, responsive worker and Install/Restore-all action. No game files accessed.")
     return 0
 

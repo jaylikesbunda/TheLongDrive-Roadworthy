@@ -4,6 +4,8 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ## v0.1.3
 
+- Installer checks GitHub releases for a newer published version on open and
+  via --check-updates (read-only, never downloads by itself).
 - Installer detects the installed release/build, updates recognized older installs
   (legacy release version may be unknown) with an offline verified build (recovery copies kept), blocks
   downgrades over newer releases, adds a separate Restore original, real stage

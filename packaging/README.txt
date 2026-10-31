@@ -19,6 +19,10 @@ RESTORE
   fully built and verified before any previous patch is touched, and recovery
   copies of the replaced files are kept under the installer cache.
 - Details expands the live log; the progress bar reports real install stages.
+- The window checks GitHub releases once on open and offers Get newer
+  installer when a newer published release exists; it never downloads or
+  installs anything by itself, and works fully offline.
+- TheLongDrive-Roadworthy.exe --check-updates checks for a newer release
 - TheLongDrive-Roadworthy.exe --status       reports installed vs bundled build
 - TheLongDrive-Roadworthy.exe --update       update an older install offline
 - TheLongDrive-Roadworthy.exe --restore      removes only the newest pass

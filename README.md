@@ -160,7 +160,9 @@ A multiplayer and performance patch for **The Long Drive**.
    release/build, updates recognized older installs (the legacy release version may be unknown) automatically (the candidate
    is fully built and verified before the previous patch is touched, with
    recovery copies kept), and refuses to replace a newer release unless you pass
-   `--allow-downgrade`. It builds the patch from the embedded sources
+   `--allow-downgrade`. It also checks GitHub releases on open for a newer published
+   version (read-only; offline works fine, `--check-updates` for the CLI). It
+   builds the patch from the embedded sources
    against your own `Assembly-CSharp.dll`, and verifies it before swapping it in.
 4. The host and every joining player must run the same build.
 
