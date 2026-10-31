@@ -13,6 +13,14 @@ INSTALL
 
 RESTORE
 - Run the EXE again and click Restore original, or run "Restore Original.cmd".
+- The window shows the installed release/build next to the bundled one and
+  offers Install Roadworthy, Update to v0.1.3, Up to date, or Newer version
+  installed. Recognized older installs (the legacy release version may be unknown) update automatically: the new build is
+  fully built and verified before any previous patch is touched, and recovery
+  copies of the replaced files are kept under the installer cache.
+- Details expands the live log; the progress bar reports real install stages.
+- TheLongDrive-Roadworthy.exe --status       reports installed vs bundled build
+- TheLongDrive-Roadworthy.exe --update       update an older install offline
 - TheLongDrive-Roadworthy.exe --restore      removes only the newest pass
 - TheLongDrive-Roadworthy.exe --restore-all  returns to the original game
 - Tampered backups or receipts are refused; nothing is overwritten.

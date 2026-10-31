@@ -53,7 +53,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--game-dir", default=None,
                         help="Game folder to copy from (default: TLD_GAME_DIR or the single detected Steam install)")
+    parser.add_argument("--release-dir", default=None,
+                        help="Release folder under test (default: release/TheLongDrive-Roadworthy)")
     args = parser.parse_args()
+    release = Path(args.release_dir).resolve() if args.release_dir else RELEASE
     if args.game_dir:
         real = Path(args.game_dir).expanduser().resolve()
     else:
@@ -63,8 +66,11 @@ def main():
         real = games[0]
     managed = real / "TheLongDrive_Data" / "Managed"
     installed_hash = digest(managed / "Assembly-CSharp.dll")
+    managed_before = {p.name: digest(p) for p in managed.iterdir()
+                      if p.is_file() and (p.name.startswith("Assembly-CSharp") or p.name == "Tld.Multiplayer.dll"
+                                          or p.name.startswith("tldmp-"))}
     original_file = find_vanilla(managed)
-    release_files = sorted(path.name for path in RELEASE.iterdir() if path.is_file())
+    release_files = sorted(path.name for path in release.iterdir() if path.is_file())
     assert release_files == EXPECTED_RELEASE_FILES, release_files
 
     # Run copied EXEs and managed fixtures from a local temporary directory.
@@ -83,7 +89,7 @@ def main():
     (fake / "TheLongDrive.exe").write_text("Disposable detection marker. Never executed.")
 
     exe = isolated / EXE_NAME
-    shutil.copy2(RELEASE / EXE_NAME, exe)
+    shutil.copy2(release / EXE_NAME, exe)
     assert sorted(p.name for p in isolated.iterdir()) == [exe.name]
     env = os.environ.copy()
     for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
@@ -108,6 +114,32 @@ def main():
 
         output = run(common, isolated, env, log)
         assert "already installed" in output and digest(fake_managed / "Assembly-CSharp.dll") == patched_hash
+
+        # A verified older install without release metadata upgrades, not refuses.
+        for name in ("tldmp-v3-receipt.json", "tldmp-v4-receipt.json"):
+            receipt_path = fake_managed / name
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+            receipt.pop("roadworthyVersion", None)
+            receipt.pop("installerPayloadSha256", None)
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        run(common, isolated, env, log)
+        v3_receipt = json.loads((fake_managed / "tldmp-v3-receipt.json").read_text(encoding="utf-8-sig"))
+        v4_receipt = json.loads((fake_managed / "tldmp-v4-receipt.json").read_text(encoding="utf-8-sig"))
+        assert v3_receipt["roadworthyVersion"] and v4_receipt["roadworthyVersion"]
+        assert v3_receipt["installerPayloadSha256"] == v4_receipt["installerPayloadSha256"]
+        assert v3_receipt["sourceSignature"] == expected_signature
+        assert digest(fake_managed / "Assembly-CSharp.dll") == v4_receipt["patchedSha256"]
+
+        # Same release but a different bundled build still runs the update.
+        v3_receipt["installerPayloadSha256"] = "A" * 64
+        (fake_managed / "tldmp-v3-receipt.json").write_text(json.dumps(v3_receipt), encoding="utf-8")
+        run(common, isolated, env, log)
+        v3_receipt = json.loads((fake_managed / "tldmp-v3-receipt.json").read_text(encoding="utf-8-sig"))
+        v4_receipt = json.loads((fake_managed / "tldmp-v4-receipt.json").read_text(encoding="utf-8-sig"))
+        assert v3_receipt["installerPayloadSha256"] != "A" * 64
+        assert v3_receipt["installerPayloadSha256"] == v4_receipt["installerPayloadSha256"]
+        assert v3_receipt["sourceSignature"] == expected_signature
+        assert digest(fake_managed / "Assembly-CSharp.dll") == v4_receipt["patchedSha256"]
 
         backup = fake_managed / "Assembly-CSharp.tldmp-v4-original.bin"
         good_backup = backup.read_bytes()
@@ -140,15 +172,19 @@ def main():
         py_alone = case / "py-alone"
         py_alone.mkdir()
         script = py_alone / PY_NAME
-        shutil.copy2(RELEASE / PY_NAME, script)
+        shutil.copy2(release / PY_NAME, script)
         run([sys.executable, str(script), "--gui-self-test"], py_alone, env, log)
         run([sys.executable, str(script), "--test-only", "--no-pause", "--game-dir", str(fake),
              "--cache-dir", str(case / "py-cache")], py_alone, env, log)
         assert digest(fake_managed / "Assembly-CSharp.dll") == ORIGINAL_SHA256
     assert digest(managed / "Assembly-CSharp.dll") == installed_hash
+    managed_after = {p.name: digest(p) for p in managed.iterdir()
+                     if p.is_file() and (p.name.startswith("Assembly-CSharp") or p.name == "Tld.Multiplayer.dll"
+                                         or p.name.startswith("tldmp-"))}
+    assert managed_after == managed_before, "real Managed files changed during the disposable smoke test"
     for name in ("packaging/singleplayer/PatchV4.cs", "Build-Patch.ps1", "Manage-Stability.ps1", ".tools/cecil.zip"):
         assert (ROOT / name).is_file(), name
-    assert "# // not a virus" in (RELEASE / PY_NAME).read_text(encoding="utf-8")
+    assert "# // not a virus" in (release / PY_NAME).read_text(encoding="utf-8")
     print("PASS: standalone EXE install/v3+v4/repeat/restore/restore-all/refusal/detection, standalone Python test-only; real game unchanged.")
     print("Log:", case / "test.log")
 

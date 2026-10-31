@@ -4,6 +4,10 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ## v0.1.3
 
+- Installer detects the installed release/build, updates recognized older installs
+  (legacy release version may be unknown) with an offline verified build (recovery copies kept), blocks
+  downgrades over newer releases, adds a separate Restore original, real stage
+  progress, and a dark UI with collapsible details.
 - Missing-item repairs reach other players more reliably.
 - Vehicle updates better tolerate packet loss.
 - Smoother remote cars and faster updates after impacts.

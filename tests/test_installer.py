@@ -229,14 +229,44 @@ class SandboxPatchTests(unittest.TestCase):
             "patchedSha256": digest(self.v3_bytes),
             "runtimeSha256": digest(helper),
         })
+        self.helper_bytes = helper
+        self.vanilla_bytes = self.local["vanilla"].read_bytes()
+        self.candidate_v3 = Path(self.tmp.name) / "cand-v3.dll"
+        self.candidate_v3.write_bytes(self.v3_bytes)
+        self.candidate_helper = Path(self.tmp.name) / "cand-helper.dll"
+        self.candidate_helper.write_bytes(helper)
+        self.candidate_manifest = Path(self.tmp.name) / "manifest.json"
+        write_json(self.candidate_manifest, {"version": 3, "originalSha256": ORIGINAL_SHA256,
+                                             "patched": str(self.candidate_v3), "patchedSha256": digest(self.v3_bytes),
+                                             "runtime": str(self.candidate_helper), "runtimeSha256": digest(helper)})
+
+    def fake_ps(self, work, log, script, game, *arguments):
+        managed = managed_of(game)
+        if arguments == ("-Action", "Restore"):
+            (managed / "Assembly-CSharp.dll").write_bytes(self.vanilla_bytes)
+            helper = managed / "Tld.Multiplayer.dll"
+            if helper.exists():
+                helper.unlink()
+            return
+        if arguments[:2] == ("-Action", "Install"):
+            assert (managed / "Assembly-CSharp.dll").read_bytes() == self.vanilla_bytes
+            (managed / "Assembly-CSharp.dll").write_bytes(self.v3_bytes)
+            (managed / "Tld.Multiplayer.dll").write_bytes(self.helper_bytes)
+            (managed / "Assembly-CSharp.tldmp-v3-original.bin").write_bytes(self.vanilla_bytes)
+            write_json(managed / "tldmp-v3-receipt.json", {
+                "version": 3, "originalSha256": ORIGINAL_SHA256,
+                "patchedSha256": digest(self.v3_bytes), "runtimeSha256": digest(self.helper_bytes)})
+            return
+        raise AssertionError(f"unexpected PowerShell call {script} {arguments}")
 
     def cli(self, *arguments, preflight=True, run_ps=None):
         argv = ["--no-pause", "--game-dir", str(self.game), "--cache-dir", str(self.cache), *arguments]
-        patches = [mock.patch.object(installer, "payload_bytes", return_value=self.payload)]
+        patches = [mock.patch.object(installer, "payload_bytes", return_value=self.payload),
+                   mock.patch.object(installer, "PAYLOAD_SHA256", "F" * 64),
+                   mock.patch.object(installer, "build_multiplayer", return_value=self.candidate_manifest),
+                   mock.patch.object(installer, "run_ps", side_effect=run_ps or self.fake_ps)]
         if preflight:
             patches.append(mock.patch.object(installer, "preflight"))
-        if run_ps is not None:
-            patches.append(mock.patch.object(installer, "run_ps", side_effect=run_ps))
         with contextlib.ExitStack() as stack:
             for patch in patches:
                 stack.enter_context(patch)
@@ -317,6 +347,214 @@ class SandboxPatchTests(unittest.TestCase):
         live = (self.managed / "Assembly-CSharp.dll").read_bytes()
         self.assertEqual(self.cli(), 1)
         self.assertEqual((self.managed / "Assembly-CSharp.dll").read_bytes(), live)
+
+
+class UpdateTests(V4StateTests):
+    """Update lifecycle on synthetic byte fixtures: real state/restore/apply
+    helpers; candidate builds and PowerShell calls stubbed."""
+
+    NEWV3, NEWHELPER, NEWV4 = b"newv3", b"newhelper", b"newv4"
+    FAKE_PAYLOAD = "F" * 64
+
+    def setUp(self):
+        super().setUp()
+        self.cache = Path(tempfile.mkdtemp(prefix="tld-upd-"))
+        self.addCleanup(shutil.rmtree, self.cache, True)
+        self.payload_patch = mock.patch.object(installer, "PAYLOAD_SHA256", self.FAKE_PAYLOAD)
+        self.payload_patch.start(); self.addCleanup(self.payload_patch.stop)
+        self.calls = []
+        self.candidate_v3 = self.cache / "cand-v3.dll"
+        self.candidate_v3.write_bytes(self.NEWV3)
+        self.candidate_helper = self.cache / "cand-helper.dll"
+        self.candidate_helper.write_bytes(self.NEWHELPER)
+        self.manifest = self.cache / "manifest.json"
+        write_json(self.manifest, {"version": 3, "originalSha256": digest(VANILLA),
+                                   "patched": str(self.candidate_v3), "patchedSha256": digest(self.NEWV3),
+                                   "runtime": str(self.candidate_helper), "runtimeSha256": digest(self.NEWHELPER)})
+
+    def stamp(self, receipt, version=None, build=None):
+        if version is not None:
+            receipt["roadworthyVersion"] = version
+        if build is not None:
+            receipt["installerPayloadSha256"] = build
+        return receipt
+
+    def fake_ps(self, work, log, script, game, *arguments):
+        self.calls.append((script, arguments))
+        managed = managed_of(game)
+        if arguments == ("-Action", "Restore"):
+            (managed / "Assembly-CSharp.dll").write_bytes(VANILLA)
+            helper = managed / "Tld.Multiplayer.dll"
+            if helper.exists():
+                helper.unlink()
+            return
+        if arguments[:2] == ("-Action", "Install"):
+            assert (managed / "Assembly-CSharp.dll").read_bytes() == VANILLA
+            (managed / "Assembly-CSharp.dll").write_bytes(self.NEWV3)
+            (managed / "Tld.Multiplayer.dll").write_bytes(self.NEWHELPER)
+            (managed / "Assembly-CSharp.tldmp-v3-original.bin").write_bytes(VANILLA)
+            write_json(managed / "tldmp-v3-receipt.json", {
+                "version": 3, "originalSha256": digest(VANILLA),
+                "patchedSha256": digest(self.NEWV3), "runtimeSha256": digest(self.NEWHELPER)})
+            return
+        raise AssertionError(f"unexpected PowerShell call {script} {arguments}")
+
+    def cli(self, *arguments, build_mp=None, build_sp=None, run_ps=None, progress=None):
+        argv = ["--no-pause", "--game-dir", str(self.game), "--cache-dir", str(self.cache), *arguments]
+        patches = [mock.patch.object(installer, "payload_bytes", return_value=test_payload()),
+                   mock.patch.object(installer, "preflight"),
+                   mock.patch.object(installer, "build_multiplayer",
+                                     side_effect=build_mp or (lambda work, log, game: self.manifest)),
+                   mock.patch.object(installer, "build_singleplayer",
+                                     side_effect=build_sp or self.fake_v4_build),
+                   mock.patch.object(installer, "run_ps", side_effect=run_ps or self.fake_ps)]
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            return installer.main_cli(argv, progress=progress)
+
+    def fake_v4_build(self, v3_file, baseline, managed, work, log):
+        output = Path(work) / "cand-v4.dll"
+        output.write_bytes(self.NEWV4)
+        return output, [{"member": "fake"}]
+
+    def managed_hashes(self):
+        return {p.name: digest(p.read_bytes()) for p in self.managed.iterdir() if p.is_file()}
+
+    def test_oldv4_upgrades_restoring_only_after_both_builds(self):
+        self.install_v4()
+        built = []
+        self.assertEqual(self.cli(build_mp=lambda *a: (built.append("v3"), self.manifest)[1],
+                                  build_sp=lambda *a: (built.append("v4"), self.fake_v4_build(*a))[1]), 0)
+        self.assertEqual(built, ["v3", "v4"])                                # BOTH verified before first restore
+        self.assertEqual(self.calls[0][1], ("-Action", "Restore"))
+        self.assertEqual(self.calls[1][1][:2], ("-Action", "Install"))
+        self.assertEqual(installer.installed_state(self.game), "v4")
+        self.assertEqual((self.managed / "Assembly-CSharp.dll").read_bytes(), self.NEWV4)
+        receipt = read_json(self.managed / "tldmp-v3-receipt.json")
+        self.assertEqual(receipt["roadworthyVersion"], installer.VERSION)
+        self.assertEqual(receipt["installerPayloadSha256"], self.FAKE_PAYLOAD)
+
+    def test_oldv3_and_v1_upgrade(self):
+        self.install_v3()
+        self.assertEqual(self.cli(), 0)
+        self.assertEqual((self.managed / "Assembly-CSharp.dll").read_bytes(), self.NEWV4)
+        # v1 fixture: legacy receipt format
+        self.install_v3()  # reset managed then convert to v1
+        (self.managed / "Assembly-CSharp.dll").write_bytes(b"oldv1")
+        (self.managed / "Assembly-CSharp.tldmp-v1-original.bin").write_bytes(VANILLA)
+        for f in ("tldmp-v3-receipt.json", "Tld.Multiplayer.dll", "Assembly-CSharp.tldmp-v3-original.bin",
+                  "tldmp-v4-receipt.json", "Assembly-CSharp.tldmp-v4-original.bin"):
+            (self.managed / f).unlink()
+        write_json(self.managed / "tldmp-v1-receipt.json", {"version": 1, "originalSha256": digest(VANILLA),
+                                                            "patchedSha256": digest(b"oldv1")})
+        self.calls.clear()
+        self.assertEqual(self.cli(), 0)
+        self.assertEqual(installer.installed_state(self.game), "v4")
+
+    def test_current_is_noop_after_integrity(self):
+        self.install_v4()
+        for name in ("tldmp-v3-receipt.json", "tldmp-v4-receipt.json"):
+            write_json(self.managed / name, self.stamp(read_json(self.managed / name), installer.VERSION, self.FAKE_PAYLOAD))
+        before = self.managed_hashes()
+        self.assertEqual(self.cli(run_ps=lambda *a: self.fail("no PowerShell on a current install")), 0)
+        self.assertEqual(self.managed_hashes(), before)
+
+    def test_newer_refused_unless_opted_in(self):
+        self.install_v4()
+        write_json(self.managed / "tldmp-v3-receipt.json",
+                   self.stamp(read_json(self.managed / "tldmp-v3-receipt.json"), "9.9.9", self.FAKE_PAYLOAD))
+        before = self.managed_hashes()
+        self.assertEqual(self.cli(run_ps=lambda *a: self.fail("no PowerShell on refused downgrade")), 1)
+        self.assertEqual(self.managed_hashes(), before)
+        self.assertEqual(self.cli("--allow-downgrade"), 0)
+        self.assertEqual(installer.installed_state(self.game), "v4")
+
+    def test_same_version_different_payload_updates(self):
+        self.install_v4()
+        write_json(self.managed / "tldmp-v3-receipt.json",
+                   self.stamp(read_json(self.managed / "tldmp-v3-receipt.json"), installer.VERSION, "A" * 64))
+        self.assertEqual(self.cli(), 0)
+
+    def test_malformed_version_is_unknown_metadata(self):
+        self.install_v4()
+        write_json(self.managed / "tldmp-v3-receipt.json",
+                   self.stamp(read_json(self.managed / "tldmp-v3-receipt.json"), "0.1.x", self.FAKE_PAYLOAD))
+        info = installer.installation_info(self.game)
+        self.assertIsNone(info["version"])
+        self.assertEqual(info["relation"], "current")                       # payload still proves the build
+        self.assertEqual(self.cli(run_ps=lambda *a: self.fail("current build needs no update")), 0)
+
+    def test_candidate_v4_build_failure_preserves_old_chain(self):
+        self.install_v4()
+        before = self.managed_hashes()
+        self.assertEqual(self.cli(build_sp=lambda *a: (_ for _ in ()).throw(installer.InstallerError("v4 build"))), 1)
+        self.assertEqual(self.managed_hashes(), before)
+
+    def test_current_metadata_but_tampered_backup_refuses(self):
+        self.install_v4()
+        for name in ("tldmp-v3-receipt.json", "tldmp-v4-receipt.json"):
+            write_json(self.managed / name, self.stamp(read_json(self.managed / name), installer.VERSION, self.FAKE_PAYLOAD))
+        (self.managed / "Assembly-CSharp.tldmp-v4-original.bin").write_bytes(b"tampered")
+        before = self.managed_hashes()
+        self.assertEqual(self.cli(run_ps=lambda *a: self.fail("tamper must refuse")), 1)
+        self.assertEqual(self.managed_hashes(), before)
+
+    def test_candidate_build_failure_preserves_everything(self):
+        self.install_v4()
+        before = self.managed_hashes()
+        self.assertEqual(self.cli(build_mp=lambda *a: (_ for _ in ()).throw(installer.InstallerError("build failed"))), 1)
+        self.assertEqual(self.managed_hashes(), before)
+
+    def test_staged_candidate_tamper_before_restore_refused(self):
+        self.install_v3()
+        before = self.managed_hashes()
+        def tamper(v3_file, baseline, managed, work, log):
+            self.candidate_v3.write_bytes(b"corrupted")
+            return self.fake_v4_build(v3_file, baseline, managed, work, log)
+        self.assertEqual(self.cli(build_sp=tamper), 1)
+        self.assertEqual(self.managed_hashes(), before)
+
+    def test_prepared_baseline_mismatch_rejected(self):
+        self.install_v3()
+        def wrong_install(work, log, script, game, *arguments):
+            if arguments[:2] == ("-Action", "Install"):
+                managed = managed_of(game)
+                (managed / "Assembly-CSharp.dll").write_bytes(b"differentv3")
+                (managed / "Tld.Multiplayer.dll").write_bytes(self.NEWHELPER)
+                (managed / "Assembly-CSharp.tldmp-v3-original.bin").write_bytes(VANILLA)
+                write_json(managed / "tldmp-v3-receipt.json", {"version": 3, "originalSha256": digest(VANILLA),
+                                                               "patchedSha256": digest(b"differentv3"),
+                                                               "runtimeSha256": digest(self.NEWHELPER)})
+                return
+            self.fake_ps(work, log, script, game, *arguments)
+        self.assertEqual(self.cli(run_ps=wrong_install), 1)
+
+    def test_restore_of_v3_returns_to_vanilla(self):
+        self.install_v3()
+        self.assertEqual(self.cli("--restore"), 0)
+        self.assertEqual(installer.installed_state(self.game), "original")
+        self.assertFalse((self.managed / "Tld.Multiplayer.dll").exists())
+
+    def test_status_is_read_only(self):
+        self.install_v4()
+        before = self.managed_hashes()
+        self.assertEqual(self.cli("--status", run_ps=lambda *a: self.fail("status touched PowerShell")), 0)
+        self.assertEqual(self.managed_hashes(), before)
+
+    def test_progress_monotonic_and_failure_stays_below_100(self):
+        self.install_v4()
+        seen = []
+        self.assertEqual(self.cli(progress=lambda p, s: seen.append(p)), 0)
+        self.assertEqual(seen, sorted(seen))
+        self.assertEqual(seen[-1], 100)
+        self.install_v4()
+        seen.clear()
+        self.assertEqual(self.cli(build_mp=lambda *a: (_ for _ in ()).throw(installer.InstallerError("boom")),
+                                  progress=lambda p, s: seen.append(p)), 1)
+        self.assertLess(seen[-1], 100)
+        rollback = list(self.cache.glob("rollback-*"))
+        self.assertTrue(rollback and (rollback[0] / "MANIFEST.json").is_file())
 
 
 if __name__ == "__main__":

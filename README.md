@@ -156,7 +156,11 @@ A multiplayer and performance patch for **The Long Drive**.
 1. Requirements: Windows 10/11 x64 with .NET Framework 4.x (built in on current Windows).
 2. Close the game.
 3. Run `TheLongDrive-Roadworthy.exe` from the release and click the button.
-   The installer finds your Steam install, builds the patch from the embedded sources
+   The installer finds your Steam install, shows the installed and bundled
+   release/build, updates recognized older installs (the legacy release version may be unknown) automatically (the candidate
+   is fully built and verified before the previous patch is touched, with
+   recovery copies kept), and refuses to replace a newer release unless you pass
+   `--allow-downgrade`. It builds the patch from the embedded sources
    against your own `Assembly-CSharp.dll`, and verifies it before swapping it in.
 4. The host and every joining player must run the same build.
 

@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 
@@ -285,6 +286,61 @@ def installed_state(game: Path) -> str:
     )
 
 
+def _version_tuple(value) -> tuple | None:
+    """Strict numeric X.Y.Z only; anything else is an unknown version."""
+    if not isinstance(value, str):
+        return None
+    parts = value.split(".")
+    if len(parts) != 3 or any(not re.fullmatch(r"[0-9]+", part) for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def installation_info(game: Path) -> dict:
+    """Recognised state plus release/build metadata and its relation to this
+    installer. Always runs the full installed_state integrity chain first;
+    missing or malformed metadata only downgrades the reported version, never
+    the validation."""
+    managed = managed_dir(game)
+    state = installed_state(game)
+    info = {"state": state, "version": None, "build": None, "relation": "original"}
+    if state == "original":
+        return info
+    receipt = None
+    if state in ("v3", "v4"):
+        receipt = read_json(managed / "tldmp-v3-receipt.json")
+    elif state == "v1":
+        legacy = managed / "tldmp-v1-receipt.json"
+        receipt = read_json(legacy) if legacy.is_file() else None
+    if isinstance(receipt, dict):
+        if _version_tuple(receipt.get("roadworthyVersion")) is not None:
+            info["version"] = receipt["roadworthyVersion"]
+        build = receipt.get("installerPayloadSha256")
+        info["build"] = build.upper() if isinstance(build, str) and valid_hash(build) else None
+        if isinstance(receipt.get("sourceSignature"), str):
+            info["sourceSignature"] = receipt["sourceSignature"]
+    installed = _version_tuple(info["version"])
+    bundled = _version_tuple(VERSION)
+    if installed is not None and bundled is not None and installed > bundled:
+        info["relation"] = "newer"
+    elif state == "v4" and info["build"] == PAYLOAD_SHA256:
+        info["relation"] = "current"
+    elif state == "v1":
+        info["relation"] = "legacy"
+    else:
+        info["relation"] = "update"
+    return info
+
+
+def stamp_metadata(receipt_path: Path) -> None:
+    """Record this installer's release/build identity on a receipt we own,
+    preserving every existing field."""
+    receipt = read_json(receipt_path)
+    receipt["roadworthyVersion"] = VERSION
+    receipt["installerPayloadSha256"] = PAYLOAD_SHA256
+    write_json(receipt_path, receipt)
+
+
 def choose_game(explicit: str | None) -> Path:
     if explicit:
         game = Path(explicit).expanduser().resolve()
@@ -530,8 +586,9 @@ def build_multiplayer(work: Path, log, game: Path) -> Path:
     return output / "manifest.json"
 
 
-def apply_singleplayer(game: Path, work: Path, log) -> str:
-    """Apply v4 to a copy of the installed multiplayer assembly, verify, then swap."""
+def apply_singleplayer(game: Path, work: Path, log, prepared=None) -> str:
+    """Apply v4 to a copy of the installed multiplayer assembly, verify, then swap.
+    prepared supplies the output, edits, verified hash and target v3 baseline."""
     managed = managed_dir(game)
     assembly = game_assembly(game)
     v3 = verified_v3(game)
@@ -539,7 +596,19 @@ def apply_singleplayer(game: Path, work: Path, log) -> str:
     runtime = receipt_hash(v3, "runtimeSha256")
     if sha256(assembly) != baseline:
         raise InstallerError("The installed multiplayer assembly does not match tldmp-v3-receipt.json. Restore and reinstall the multiplayer patch.")
-    output, edits = build_singleplayer(assembly, baseline, managed, work, log)
+    if prepared is not None:
+        # A verified candidate built earlier: refuse to install it if the file
+        # changed since verification or it targets a different v3 baseline.
+        output = prepared["output"]
+        edits = prepared["edits"]
+        if not output.is_file() or not isinstance(edits, list) or not edits:
+            raise InstallerError("The prepared single-player candidate is missing.")
+        if sha256(output) != prepared["sha256"]:
+            raise InstallerError("The prepared single-player candidate changed after verification.")
+        if prepared["baseline"] != baseline:
+            raise InstallerError("The prepared single-player candidate does not match the installed multiplayer build.")
+    else:
+        output, edits = build_singleplayer(assembly, baseline, managed, work, log)
     patched = sha256(output)
     backup = managed / V4_BACKUP
     if backup.is_file():
@@ -643,7 +712,33 @@ def restore_multiplayer(work: Path, log, state: str, game: Path) -> None:
     clear_multiplayer_files(game)
 
 
-def main_cli(argv=None) -> int:
+def snapshot_managed(game: Path, cache: Path) -> Path:
+    """Keep the verified installed chain so a failed update can be recovered
+    by hand. Copies only known patch files plus a hash manifest, never saves."""
+    managed = managed_dir(game)
+    folder = Path(tempfile.mkdtemp(prefix="rollback-", dir=cache))
+    manifest = {}
+    for name in ("Assembly-CSharp.dll", "Tld.Multiplayer.dll", "tldmp-v1-receipt.json", "tldmp-v3-receipt.json",
+                 "tldmp-v4-receipt.json", "Assembly-CSharp.tldmp-v1-original.bin",
+                 "Assembly-CSharp.tldmp-v3-original.bin", V4_BACKUP):
+        source = managed / name
+        if source.is_file():
+            shutil.copyfile(source, folder / name)
+            manifest[name] = sha256(folder / name)
+    write_json(folder / "MANIFEST.json", {"createdUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                        "game": str(game), "files": manifest})
+    return folder
+
+
+def main_cli(argv=None, progress=None) -> int:
+    def emit(percent: int, phase: str) -> None:
+        if progress is not None:
+            try:
+                progress(percent, phase)
+            except Exception:
+                pass
+        print(f"[{percent:>3}%] {phase}", flush=True)
+
     parser = argparse.ArgumentParser(description=f"{APP_TITLE} installer (multiplayer + single-player). No arguments opens the GUI.")
     parser.add_argument("--game-dir", help="Override Steam game detection")
     action = parser.add_mutually_exclusive_group()
@@ -652,6 +747,8 @@ def main_cli(argv=None) -> int:
     action.add_argument("--test-only", action="store_true", help="Build and verify the patch without changing the game")
     action.add_argument("--status", action="store_true", help="Inspect installation without changing files")
     action.add_argument("--list", action="store_true", help="List detected Steam installations")
+    action.add_argument("--update", action="store_true", help="Update an older recognized install to this bundled build")
+    parser.add_argument("--allow-downgrade", action="store_true", help="Permit replacing a newer recognized Roadworthy release")
     parser.add_argument("--no-pause", action="store_true", help="Exit without waiting for Enter")
     parser.add_argument("--cache-dir", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -665,49 +762,119 @@ def main_cli(argv=None) -> int:
                 print(game)
             return 0
         game = choose_game(args.game_dir)
+        emit(0, "Checking the current installation")
         state = installed_state(game)
-        print(f"Game: {game}\nCurrent installation: {state}", flush=True)
+        info = installation_info(game)
+        shown_build = (info.get("build") or info.get("sourceSignature") or "unknown")[:12]
+        print(f"Game: {game}\nCurrent installation: {state} (release {info['version'] or 'unknown'}, build {shown_build})\nBundled release: {VERSION} (payload {PAYLOAD_SHA256[:12]})", flush=True)
         if args.status:
+            emit(100, "Inspection complete")
             return 0
         restoring = args.restore or args.restore_all
         if restoring and state == "original":
-            print("Original game already installed.")
-            return 0
-        if not restoring and not args.test_only and state == "v4":
-            print("This build is already installed (multiplayer v3 + single-player v4). "
-                  "Use --restore to undo the single-player pass, or --restore-all for the original game.")
-            return 0
+            print("Original game already installed."); emit(100, "Nothing to restore"); return 0
+        if not restoring and not args.test_only:
+            if info["relation"] == "current":
+                print("This bundled build is already installed (multiplayer v3 + single-player v4).")
+                emit(100, "Already up to date"); return 0
+            if info["relation"] == "newer" and not args.allow_downgrade:
+                raise InstallerError(f"A newer Roadworthy release ({info['version']}) is installed. It will not be replaced automatically; rerun with --allow-downgrade only if you mean it.")
         preflight(game, need_compiler=not restoring)
+        emit(5, "Preflight checks complete")
         cache = Path(args.cache_dir).expanduser().resolve() if args.cache_dir else Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "TheLongDrive-Roadworthy"
         work = cache / ("src-" + PAYLOAD_SHA256[:16].lower())
         with installer_lock(cache):
             extract_payload(work)
+            emit(10, "Bundled sources extracted")
             logs = cache / "logs"
             logs.mkdir(parents=True, exist_ok=True)
             log_path = logs / (time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}.log")
             print(f"Sources and builds: {work}\nLog: {log_path}", flush=True)
             with log_path.open("w", encoding="utf-8") as log:
+                # The lock is held: re-validate before trusting earlier reads.
+                state = installed_state(game)
+                info = installation_info(game)
+                if not restoring and not args.test_only and info["relation"] == "newer" and not args.allow_downgrade:
+                    raise InstallerError("A newer Roadworthy release is installed; refusing to downgrade.")
                 if restoring:
+                    # --restore of v4 removes the newest pass only; every other
+                    # --restore (and always --restore-all) returns to vanilla.
+                    entered = state
+                    if entered == "v4":
+                        restore_singleplayer(game, log)
+                        state = "v3"
+                        emit(55, "Single-player pass removed")
+                    else:
+                        emit(55, "No single-player pass present")
+                    want_vanilla = args.restore_all or entered != "v4"
+                    if want_vanilla and state in ("v1", "v3"):
+                        restore_multiplayer(work, log, state, game)
+                        state = "original"
+                        emit(90, "Multiplayer patch removed")
+                        print("Original game restored. Saves unchanged.")
+                    else:
+                        emit(90, "Multiplayer patch kept" if state != "original" else "Original game already installed")
+                    expected = "original" if want_vanilla else "v3"
+                    if installed_state(game) != expected:
+                        raise InstallerError(f"Restore finished in the '{installed_state(game)}' state instead of '{expected}'.")
+                    emit(100, "Verified installation restored")
+                elif args.test_only:
+                    manifest = read_json(build_multiplayer(work, log, game))
+                    emit(40, "v3 candidate built and verified")
+                    build_singleplayer(Path(manifest["patched"]), manifest["patchedSha256"].upper(), managed_dir(game), work, log)
+                    emit(90, "v4 candidate built and verified")
+                    emit(100, "All build and verification checks passed")
+                    print("Build and verification passed. The game installation and saves were not changed.")
+                else:
+                    # Verify both candidates before anything touches the old chain.
+                    manifest = build_multiplayer(work, log, game)
+                    manifest_data = read_json(manifest)
+                    candidate_v3 = Path(manifest_data["patched"])
+                    candidate_v3_hash = sha256(candidate_v3)
+                    candidate_runtime = Path(manifest_data["runtime"])
+                    baseline_v3 = manifest_data.get("patchedSha256", "")
+                    runtime_hash = manifest_data.get("runtimeSha256", "")
+                    if (not isinstance(baseline_v3, str) or baseline_v3.upper() != candidate_v3_hash
+                            or not valid_hash(runtime_hash) or sha256(candidate_runtime) != runtime_hash.upper()
+                            or manifest_data.get("originalSha256") != ORIGINAL_SHA256):
+                        raise InstallerError("The v3 build manifest failed its integrity check.")
+                    emit(40, "v3 candidate built and verified")
+                    managed = managed_dir(game)
+                    v4_output, v4_edits = build_singleplayer(candidate_v3, baseline_v3.upper(), managed, work, log)
+                    prepared_v4 = {"output": v4_output, "edits": v4_edits,
+                                   "sha256": sha256(v4_output), "baseline": baseline_v3.upper()}
+                    emit(65, "v4 candidate built and verified")
+                    # Freeze: the staged candidates must be byte-identical to
+                    # what the verifiers saw before the first restore runs.
+                    if (sha256(candidate_v3) != candidate_v3_hash
+                            or sha256(candidate_runtime) != runtime_hash.upper()
+                            or sha256(v4_output) != prepared_v4["sha256"]):
+                        raise InstallerError("A verified candidate changed on disk. Refusing to touch the installed chain.")
+                    state = installed_state(game)
+                    info = installation_info(game)
+                    if info["relation"] == "newer" and not args.allow_downgrade:
+                        raise InstallerError("A newer Roadworthy release is installed; refusing to downgrade.")
+                    rollback = snapshot_managed(game, cache)
+                    print(f"Recovery copies of the previous chain: {rollback}", flush=True)
+                    preflight(game, need_compiler=False)
+                    # Manage-Stability Install only replaces the original
+                    # assembly, so unwind the old patch to vanilla first.
                     if state == "v4":
                         restore_singleplayer(game, log)
                         state = "v3"
-                    if args.restore_all or state == "v1":
+                    if state in ("v1", "v3"):
                         restore_multiplayer(work, log, state, game)
-                        print("Original game restored. Saves unchanged.")
-                    else:
-                        print("Newest pass removed. Run with --restore-all to return to the original game.")
-                elif args.test_only:
-                    manifest = read_json(build_multiplayer(work, log, game))
-                    build_singleplayer(Path(manifest["patched"]), manifest["patchedSha256"].upper(), managed_dir(game), work, log)
-                    print("Build and verification passed. The game installation and saves were not changed.")
-                else:
-                    if state in ("original", "v1"):
-                        manifest = build_multiplayer(work, log, game)
-                        if state == "v1":
-                            restore_multiplayer(work, log, state, game)
-                        run_ps(work, log, "Manage-Stability.ps1", game, "-Action", "Install", "-ManifestPath", str(manifest))
-                        state = "v3"
-                    apply_singleplayer(game, work, log)
+                        state = "original"
+                    emit(70, "Previous patch restored to the original game" if state == "original" else "Original game already installed")
+                    run_ps(work, log, "Manage-Stability.ps1", game, "-Action", "Install", "-ManifestPath", str(manifest))
+                    emit(85, "Candidate multiplayer build installed")
+                    apply_singleplayer(game, work, log, prepared=prepared_v4)
+                    emit(95, "Candidate single-player pass installed")
+                    if installed_state(game) != "v4":
+                        raise InstallerError("Post-install verification did not find the installed v4 chain.")
+                    stamp_metadata(managed / "tldmp-v3-receipt.json")
+                    stamp_metadata(managed / V4_RECEIPT)
+                    emit(100, "Installed chain verified and stamped")
                     print("Done. Multiplayer v3 and the single-player pass are installed with verified backups. Saves unchanged.")
         return 0
     except (InstallerError, OSError, ValueError, zipfile.BadZipFile) as exc:
@@ -736,203 +903,329 @@ def build_gui(root):
     import queue
     import threading
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import filedialog, ttk
 
-    title = APP_TITLE
-    root.title(title)
-    root.geometry("520x285")
-    root.resizable(False, False)
+    BG, PANEL, INPUT, TEXT, MUTED, ACCENT, ERROR = "#141819", "#20262d", "#0e1217", "#edf0f2", "#9da9b5", "#edb85c", "#e47b70"
+    root.title(APP_TITLE)
+    root.geometry("680x400"); root.minsize(620, 380)
+    root.configure(bg=BG)
     root.option_add("*Font", "{Segoe UI} 9")
     style = ttk.Style(root)
-    if "vista" in style.theme_names():
-        style.theme_use("vista")
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+    style.configure(".", background=BG, foreground=TEXT, fieldbackground=INPUT, font="{Segoe UI} 9")
+    style.configure("TFrame", background=BG)
+    style.configure("Card.TFrame", background=PANEL)
+    style.configure("TLabel", background=BG, foreground=TEXT)
+    style.configure("Card.TLabel", background=PANEL, foreground=TEXT)
+    style.configure("Muted.TLabel", background=BG, foreground=MUTED)
+    style.configure("Error.TLabel", background=BG, foreground=ERROR)
+    style.configure("CardMuted.TLabel", background=PANEL, foreground=MUTED)
+    style.configure("Header.TLabel", background=BG, foreground=TEXT, font=("Bahnschrift", 20, "bold"))
+    style.configure("Accent.TButton", background=ACCENT, foreground="#141819", padding=6)
+    style.map("Accent.TButton", background=[("disabled", "#3a3f45"), ("active", "#f5c96e")], foreground=[("disabled", MUTED)])
+    style.configure("TButton", background=PANEL, foreground=TEXT, padding=6)
+    style.map("TButton", background=[("disabled", "#171c20"), ("active", "#2a323b")], foreground=[("disabled", MUTED)])
+    style.configure("TCombobox", fieldbackground=INPUT, background=PANEL, foreground=TEXT, arrowcolor=TEXT, padding=4)
+    style.map("TCombobox", fieldbackground=[("readonly", INPUT), ("disabled", "#171c20")], foreground=[("readonly", TEXT), ("disabled", MUTED)])
+    style.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=INPUT, bordercolor=BG, lightcolor=ACCENT, darkcolor=ACCENT)
+    root.option_add("*TCombobox*Listbox.background", INPUT)
+    root.option_add("*TCombobox*Listbox.foreground", TEXT)
+    try:
+        if os.name == "nt":
+            import ctypes
+            root.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+            value = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), 4)
+    except Exception:
+        pass
+
     content = ttk.Frame(root, padding=16)
     content.pack(fill="both", expand=True)
-    ttk.Label(content, text=title, font=("Segoe UI", 12, "bold")).pack(anchor="w")
-    subtitle = ttk.Label(content, text=f"Multiplayer + single-player for beta {BETA}")
-    subtitle.pack(anchor="w", pady=(3, 12))
+    ttk.Label(content, text=APP_TITLE, style="Header.TLabel").pack(anchor="w")
+    subtitle = ttk.Label(content, text=f"Multiplayer + single-player for beta {BETA}", style="Muted.TLabel")
+    subtitle.pack(anchor="w", pady=(2, 2))
+    ttk.Label(content, text="Experimental build - the host and every joining player must install the same build.",
+              style="Muted.TLabel", wraplength=640).pack(anchor="w", pady=(0, 8))
+    cards = ttk.Frame(content)
+    cards.pack(fill="x", pady=(0, 10))
+    installed = tk.StringVar(value="unknown")
+    installed_build = tk.StringVar(value="")
+    bundled = tk.StringVar(value=f"Roadworthy v{VERSION}")
+    bundled_build = tk.StringVar(value=f"build {PAYLOAD_SHA256[:12]}")
+    for i, (caption, var, bvar) in enumerate((("Installed", installed, installed_build), ("Bundled", bundled, bundled_build))):
+        card = ttk.Frame(cards, style="Card.TFrame", padding=8)
+        card.grid(row=0, column=i, sticky="nsew", padx=(0, 8) if i == 0 else (0, 0))
+        cards.columnconfigure(i, weight=1)
+        ttk.Label(card, text=caption, style="CardMuted.TLabel").pack(anchor="w")
+        ttk.Label(card, textvariable=var, style="Card.TLabel", font=("Segoe UI", 11, "bold"), wraplength=290).pack(anchor="w")
+        ttk.Label(card, textvariable=bvar, style="CardMuted.TLabel", wraplength=290).pack(anchor="w")
     ttk.Label(content, text="Game folder").pack(anchor="w")
+    folder = ttk.Frame(content)
+    folder.pack(fill="x", pady=(3, 0))
     path = tk.StringVar()
-    entry = ttk.Combobox(content, textvariable=path)
-    entry.pack(fill="x", pady=(3, 0))
-    status = tk.StringVar(value="Looking for your Steam installation…")
-    ttk.Label(content, textvariable=status, wraplength=480).pack(anchor="w", pady=(10, 9))
-    primary = ttk.Button(content, text="Patch game", state="disabled")
-    primary.pack(fill="x")
-    progress = ttk.Progressbar(content, mode="indeterminate", length=480)
-    progress.pack(fill="x", pady=(9, 8))
-    ttk.Label(content, text="Experimental · Host and all players need the same build.", foreground="#666666").pack(anchor="w")
-    log = tk.Text(content, height=6, wrap="word", relief="solid", borderwidth=1,
-                  font=("Consolas", 8), state="disabled", background="#f7f8fa")
+    entry = ttk.Combobox(folder, textvariable=path)
+    entry.pack(side="left", fill="x", expand=True)
+    browse = ttk.Button(folder, text="Browse", command=lambda: None if busy[0] else path.set(filedialog.askdirectory() or path.get()))
+    browse.pack(side="left", padx=(6, 0))
+    status = tk.StringVar(value="Looking for your Steam installation...")
+    ttk.Label(content, textvariable=status, wraplength=640).pack(anchor="w", pady=(10, 6))
+    progress_value = tk.IntVar(value=0)
+    progress = ttk.Progressbar(content, mode="determinate", maximum=100, variable=progress_value)
+    progress.pack(fill="x")
+    phase = tk.StringVar(value="")
+    phase_label = ttk.Label(content, textvariable=phase, style="Muted.TLabel")
+    phase_label.pack(anchor="w", pady=(2, 8))
+    log = tk.Text(content, height=8, state="disabled", bg=INPUT, fg=TEXT, insertbackground=TEXT,
+                  relief="flat", wrap="word", font=("Consolas", 8))
+    buttons = ttk.Frame(content)
+    buttons.pack(fill="x", pady=(10, 0))
+    primary = ttk.Button(buttons, text="Install Roadworthy", style="Accent.TButton", state="disabled")
+    primary.pack(side="left", fill="x", expand=True)
+    restore = ttk.Button(buttons, text="Restore original", state="disabled")
+    restore.pack(side="left", padx=(8, 0))
+    details = ttk.Button(buttons, text="Details \u25b8", width=9)
+    details.pack(side="left", padx=(8, 0))
+
     events = queue.Queue()
     busy = [False]
-    action_state = [None]
-    controls = [entry, primary]
     revision = [0]
-    check_timer = [None]
-    poll_timer = [None]
+    state = ["unknown"]
+    info = [None]
+    debounce = [None]
+    poll_id = [None]
+    details_on = [False]
+    sized = [False]
+    controls = [entry, primary, restore, browse]
 
-    class Writer:
+    def show_details(on=True):
+        if on == details_on[0]:
+            return
+        details_on[0] = on
+        details.configure(text="Details \u25be" if on else "Details \u25b8")
+        if on:
+            log.pack(fill="both", expand=True, before=buttons)
+            root.minsize(620, 520)
+            if not sized[0] and root.winfo_height() < 520:
+                root.geometry("680x560")
+        else:
+            log.pack_forget()
+            root.minsize(620, 380)
+            if not sized[0] and root.winfo_height() > 480:
+                root.geometry("680x400")
+
+    def track_resize(event):
+        if event.widget is root and details_on[0] and (root.winfo_width() != 680 or root.winfo_height() not in (400, 560)):
+            sized[0] = True
+
+    details.configure(command=lambda: show_details(not details_on[0]))
+    root.bind("<Configure>", track_resize)
+
+    class Output(io.TextIOBase):
         def write(self, text):
-            if text:
-                events.put(("log", text))
+            events.put(("log", text))
             return len(text)
         def flush(self):
             pass
-        def isatty(self):
-            return False
 
-    def check_state(notice=""):
-        revision[0] += 1
-        token = revision[0]
-        if check_timer[0] is not None:
-            root.after_cancel(check_timer[0])
-            check_timer[0] = None
-        action_state[0] = None
-        primary.configure(state="disabled")
-        selected = path.get().strip()
-        if not selected:
-            status.set("Paste the game folder path if automatic detection misses it.")
+    def apply_state():
+        if busy[0]:
+            primary.configure(state="disabled"); restore.configure(state="disabled")
             return
-        status.set(notice or "Checking game files…")
-
-        def inspect():
-            check_timer[0] = None
-            def work():
-                try:
-                    state = installed_state(Path(selected).expanduser().resolve())
-                    events.put(("state", (token, selected, state, "", notice)))
-                except Exception as error:
-                    events.put(("state", (token, selected, None, str(error), notice)))
-            threading.Thread(target=work, daemon=True).start()
-        check_timer[0] = root.after(150, inspect)
+        inf = info[0]
+        if inf is None:
+            primary.configure(text="Install Roadworthy", state="disabled")
+            restore.configure(state="disabled")
+            return
+        rel = {"original": "Install Roadworthy", "legacy": f"Update to v{VERSION}", "update": f"Update to v{VERSION}",
+               "current": "Up to date", "newer": "Newer version installed"}
+        primary.configure(text=rel.get(inf["relation"], "Install Roadworthy"),
+                          state="normal" if inf["relation"] in ("original", "legacy", "update") else "disabled")
+        restore.configure(state="normal" if inf["state"] != "original" else "disabled")
 
     def set_busy(value):
         busy[0] = value
         entry.configure(state="disabled" if value else "normal")
-        primary.configure(state="disabled")
+        browse.configure(state="disabled" if value else "normal")
         if value:
-            progress.start(12)
+            primary.configure(state="disabled"); restore.configure(state="disabled")
         else:
-            progress.stop()
+            apply_state()
 
-    def run():
-        if busy[0] or action_state[0] is None:
+    def check_state(notice=""):
+        revision[0] += 1
+        token = revision[0]
+        info[0] = None; state[0] = "unknown"
+        apply_state()
+        folder_path = path.get().strip()
+        if not folder_path:
+            status.set("Paste the game folder path if automatic detection misses it.")
             return
-        action = "patch" if action_state[0] == "original" else "restore"
-        selected = path.get().strip()
-        set_busy(True)
-        status.set("Preparing, checking and installing…" if action == "patch" else "Restoring original game files…")
-        log.pack_forget()
-        root.geometry("520x285")
-        log.configure(state="normal")
-        log.delete("1.0", "end")
-        log.configure(state="disabled")
-
-        def work():
-            args = ["--game-dir", selected, "--no-pause"]
-            if action == "restore":
-                args.append("--restore-all")
+        status.set(notice or "Checking game files...")
+        def inspect():
             try:
-                with contextlib.redirect_stdout(Writer()), contextlib.redirect_stderr(Writer()):
-                    code = main_cli(args)
-                events.put(("done", (action, code)))
-            except Exception as error:
-                events.put(("log", str(error) + "\n"))
-                events.put(("done", (action, 1)))
+                game = choose_game(folder_path)
+                st = installed_state(game)
+                inf = installation_info(game)
+                events.put(("info", token, st, inf, notice))
+            except InstallerError as exc:
+                events.put(("invalid", token, str(exc), notice))
+            except Exception as exc:
+                events.put(("invalid", token, f"{type(exc).__name__}: {exc}", notice))
+        threading.Thread(target=inspect, daemon=True).start()
+
+    def run(action=None):
+        if busy[0] or info[0] is None:
+            return
+        if action == "restore":
+            if info[0]["state"] == "original":
+                return
+        elif info[0]["relation"] not in ("original", "legacy", "update"):
+            return
+        if debounce[0] is not None:
+            try: root.after_cancel(debounce[0])
+            except Exception: pass
+            debounce[0] = None
+        act = action or "install"
+        argv = ["--game-dir", path.get().strip(), "--no-pause"]
+        if action == "restore":
+            argv.append("--restore-all")
+        set_busy(True)
+        progress_value.set(0)
+        phase.set("Starting...")
+        status.set("Restoring original game files..." if act == "restore" else "Preparing, checking and installing...")
+        def work():
+            import contextlib
+            def on_progress(percent, stage):
+                events.put(("progress", percent, stage))
+            with contextlib.redirect_stdout(Output()), contextlib.redirect_stderr(Output()):
+                try:
+                    code = main_cli(argv, progress=on_progress)
+                except Exception as exc:
+                    code = 1
+                    print(f"Stopped: {exc}", flush=True)
+            events.put(("done", act, code))
         threading.Thread(target=work, daemon=True).start()
-    primary.configure(command=run)
-    path.trace_add("write", lambda *args: check_state() if not busy[0] else None)
+
+    primary.configure(command=lambda: run())
+    restore.configure(command=lambda: run("restore"))
 
     def detect():
-        try:
-            games = discover_games()
-            supported = []
-            for game in games:
-                try:
-                    installed_state(game)
-                    supported.append(str(game))
-                except (InstallerError, OSError, ValueError):
-                    pass
-            events.put(("games", (games, supported)))
-        except Exception as error:
-            events.put(("detect_error", str(error)))
-    threading.Thread(target=detect, daemon=True).start()
+        revision[0] += 1
+        token = revision[0]
+        def scan():
+            try:
+                games = [str(game) for game in discover_games()]
+                events.put(("detected", token, games))
+            except Exception:
+                events.put(("detected", token, []))
+        threading.Thread(target=scan, daemon=True).start()
+
+    def pump_log(text):
+        log.configure(state="normal")
+        log.insert("end", text)
+        log.see("end")
+        log.configure(state="disabled")
 
     def poll():
         try:
             while True:
-                kind, value = events.get_nowait()
+                event = events.get_nowait()
+                kind = event[0]
                 if kind == "log":
-                    log.configure(state="normal")
-                    log.insert("end", re.sub(r"\x1b\[[0-9;]*m", "", value))
-                    log.see("end")
-                    log.configure(state="disabled")
-                elif kind == "games":
-                    games, supported = value
-                    entry.configure(values=[str(g) for g in games])
-                    if not busy[0] and not path.get():
-                        if supported or games:
-                            path.set((supported or [str(g) for g in games])[0])
-                        else:
-                            status.set("Paste the game folder path if automatic detection misses it.")
-                elif kind == "detect_error":
-                    if not path.get():
+                    pump_log(event[1]); continue
+                if kind == "progress":
+                    progress_value.set(event[1]); phase.set(f"{event[1]}% - {event[2]}")
+                    phase_label.configure(style="Muted.TLabel"); continue
+                if kind in ("info", "invalid") and busy[0]:
+                    continue  # an operation is in flight; its done event rechecks
+                if kind in ("detected", "info", "invalid") and event[1] != revision[0]:
+                    continue  # stale scan for a path the user already changed
+                if kind == "detected":
+                    games = event[2]
+                    entry.configure(values=games)
+                    if games and not path.get().strip():
+                        path.set(games[0])
+                    if not path.get().strip():
                         status.set("Automatic detection failed. Paste your game folder path.")
-                elif kind == "state":
-                    token, selected, state, error, notice = value
-                    if busy[0] or token != revision[0] or selected != path.get().strip():
-                        continue
-                    action_state[0] = state
-                    if error:
-                        status.set("Cannot use this installation. Check the folder and original files.")
-                        log.configure(state="normal")
-                        log.delete("1.0", "end")
-                        log.insert("end", error)
-                        log.configure(state="disabled")
-                        log.pack(fill="both", expand=True, pady=(9, 0))
-                        root.geometry("520x405")
                     else:
-                        primary.configure(text="Patch game" if state == "original" else "Restore original", state="normal")
-                        detected = "Original game detected." if state == "original" else (
-                            "Multiplayer + single-player patch detected." if state == "v4" else "Patched game detected.")
-                        status.set(notice or detected)
-                        if not notice:
-                            log.pack_forget()
-                            root.geometry("520x285")
+                        check_state()
+                elif kind == "info":
+                    st, inf = event[2], event[3]
+                    notice = event[4] if len(event) > 4 else ""
+                    state[0] = st; info[0] = inf
+                    if st == "original":
+                        installed.set("Original game"); installed_build.set("")
+                    else:
+                        installed.set(f"Roadworthy v{inf['version']}" if inf.get("version") else "Legacy / version unknown")
+                        installed_build.set("build " + ((inf.get("build") or inf.get("sourceSignature") or "unknown")[:12]))
+                    status.set(notice or {"original": "Original game found.", "legacy": "An older patch format is installed and can be updated.",
+                                "update": "A previous build is installed and can be updated.",
+                                "current": "This bundled build is already installed.",
+                                "newer": "A newer Roadworthy release is installed and will not be replaced."}.get(inf["relation"], "Cannot use this installation."))
+                    if not busy[0]:
+                        apply_state()
+                elif kind == "invalid":
+                    state[0] = "unknown"; info[0] = None
+                    installed.set("unknown"); installed_build.set("")
+                    notice = event[3] if len(event) > 3 else ""
+                    status.set(notice or "Cannot use this installation. Check the folder and original files.")
+                    pump_log(f"Stopped: {event[2]}\n")
+                    show_details()
+                    apply_state()
                 elif kind == "done":
-                    action, code = value
+                    act, code = event[1], event[2]
                     set_busy(False)
-                    if code:
-                        status.set("Stopped — see the details below.")
-                        log.pack(fill="both", expand=True, pady=(9, 0))
-                        root.geometry("520x405")
-                        check_state("Stopped — see the details below.")
+                    if code != 0:
+                        phase.set(f"failed at {progress_value.get()}%")
+                        phase_label.configure(style="Error.TLabel")
+                        show_details()
+                        check_state("Stopped - see the details below.")
                     else:
-                        check_state("Patch installed." if action == "patch" else "Original game restored.")
+                        check_state("Patch installed." if act != "restore" else "Original game restored.")
         except queue.Empty:
             pass
         if root.winfo_exists():
-            poll_timer[0] = root.after(60, poll)
+            poll_id[0] = root.after(50, poll)
+
+    def destroyed(event):
+        if event.widget is root:
+            for holder in (debounce, poll_id):
+                if holder[0] is not None:
+                    try: root.after_cancel(holder[0])
+                    except Exception: pass
+                    holder[0] = None
 
     def close():
         if busy[0]:
             status.set("Please let the current operation finish before closing.")
-        else:
-            root.destroy()
+            return
+        root.destroy()
+
+    def on_path_change(*args):
+        if busy[0]:
+            return
+        revision[0] += 1
+        state[0] = "unknown"; info[0] = None
+        installed.set("unknown"); installed_build.set("")
+        apply_state()
+        if debounce[0] is not None:
+            try: root.after_cancel(debounce[0])
+            except Exception: pass
+        debounce[0] = root.after(400, check_state)
+
+    path.trace_add("write", on_path_change)
     root.protocol("WM_DELETE_WINDOW", close)
-    def destroyed(event):
-        if event.widget is root:
-            for timer in (check_timer[0], poll_timer[0]):
-                if timer is not None:
-                    try:
-                        root.after_cancel(timer)
-                    except tk.TclError:
-                        pass
-    root.bind("<Destroy>", destroyed, add="+")
-    poll_timer[0] = root.after(60, poll)
+    root.bind("<Destroy>", destroyed)
+    detect()
+    poll()
     return {"path": path, "status": status, "run": run, "busy": busy, "controls": controls,
-            "log": log, "primary": primary, "subtitle": subtitle, "state": action_state}
+            "log": log, "primary": primary, "restore": restore, "progress": progress,
+            "progress_value": progress_value, "phase": phase, "state": state, "info": info,
+            "installed": installed, "installed_build": installed_build,
+            "bundled": bundled, "bundled_build": bundled_build, "subtitle": subtitle,
+            "details": details, "details_on": details_on, "show_details": show_details}
 
 
 def run_gui():
@@ -994,27 +1287,40 @@ def gui_self_test():
     root.withdraw()
     set_window_icon(root)
     release = threading.Event()
-    saved_cli, saved_discovery, saved_state = globals()["main_cli"], globals()["discover_games"], globals()["installed_state"]
+    saved_cli, saved_discovery, saved_state, saved_info, saved_choose = (globals()["main_cli"], globals()["discover_games"],
+                                                           globals()["installed_state"], globals()["installation_info"], globals()["choose_game"])
     fixture_state = ["original"]
     calls = []
 
-    def fake_cli(args):
+    def fake_cli(args, progress=None):
         calls.append(args)
         print("GUI fixture only — no installation.")
+        if progress:
+            progress(0, "checking"); progress(40, "v3 candidate verified")
         release.wait(5)
         fixture_state[0] = "original" if "--restore-all" in args else "v4"
+        if progress:
+            progress(100, "done")
         return 0
+
+    def fake_info(game):
+        st = fixture_state[0]
+        return {"state": st, "version": VERSION if st == "v4" else None,
+                "build": PAYLOAD_SHA256 if st == "v4" else None,
+                "relation": "current" if st == "v4" else "original"}
     try:
         globals()["main_cli"] = fake_cli
         globals()["discover_games"] = lambda: []
         globals()["installed_state"] = lambda game: fixture_state[0]
+        globals()["installation_info"] = fake_info
+        globals()["choose_game"] = lambda p: Path(p)
         ui = build_gui(root)
         ui["path"].set("GUI fixture only")
         deadline = time.monotonic() + 3
-        while ui["state"][0] is None and time.monotonic() < deadline:
+        while ui["state"][0] != "original" and time.monotonic() < deadline:
             root.update()
             time.sleep(.01)
-        if root.title() != APP_TITLE or ui["primary"]["text"] != "Patch game":
+        if root.title() != APP_TITLE or ui["primary"]["text"] != "Install Roadworthy":
             raise InstallerError("GUI title or original-state action is incorrect.")
         ui["run"]()
         responsive = []
@@ -1030,9 +1336,9 @@ def gui_self_test():
         while (ui["busy"][0] or ui["state"][0] != "v4") and time.monotonic() < deadline:
             root.update()
             time.sleep(.01)
-        if ui["busy"][0] or ui["primary"]["text"] != "Restore original":
+        if ui["busy"][0] or str(ui["restore"]["state"]) != "normal" or str(ui["primary"]["state"]) != "disabled":
             raise InstallerError("GUI did not finish the simulated operation.")
-        ui["run"]()
+        ui["run"]("restore")
         deadline = time.monotonic() + 3
         while (ui["busy"][0] or ui["state"][0] != "original") and time.monotonic() < deadline:
             root.update()
@@ -1042,8 +1348,8 @@ def gui_self_test():
     finally:
         release.set()
         root.destroy()
-        globals()["main_cli"], globals()["discover_games"], globals()["installed_state"] = saved_cli, saved_discovery, saved_state
-    print("PASS: bundled Tk GUI, embedded icon, embedded title/beta, responsive worker and Patch/Restore-all action. No game files accessed.")
+        globals()["main_cli"], globals()["discover_games"], globals()["installed_state"], globals()["installation_info"], globals()["choose_game"] = (saved_cli, saved_discovery, saved_state, saved_info, saved_choose)
+    print("PASS: bundled Tk GUI, embedded icon, embedded title/beta, responsive worker and Install/Restore-all action. No game files accessed.")
     return 0
 
 
