@@ -10,9 +10,12 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Fix loopback vehicle snapshot admission and test motion over impaired localhost connections.
 - Preserve attachment replay order across changing parents and improve queue and vehicle-part diagnostics.
 - Send client-spawned items as bounded reliable batches with creation before state and host acknowledgement.
+- Retry unconfirmed spawns without duplicating acknowledged items.
+- Protect new client items and saved items from premature removal.
 - Bound missing-item state by messages, bytes, and replay work per frame, with bounded recovery requests.
 - Cancel queued state on item deletion and reconcile changed attachment slots through native mounting routines.
 - Record item recovery and transport health on both host and clients every five seconds.
+- Log receive-queue delays, vehicle part slots and saved car colors.
 - Update the game, lobby, installer, and release labels to v0.1.3 Roadworthy.
 
 ## v0.1.2
