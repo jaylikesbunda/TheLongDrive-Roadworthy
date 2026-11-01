@@ -14,6 +14,99 @@ using Mono.Cecil.Cil;
 public static class PatchStability
 {
     static ModuleDefinition module;static TypeDefinition bridge;
+    // Slot order is independently checked against the runtime labels by VerifyStability.
+    static readonly string[] SystemTimingSpecs = {
+        "fpscontroller.Update/0:4",
+        "fpscontroller.RayStuff/0:4",
+        "fpscontroller.Move/0:1",
+        "fpscontroller.PickedUpForceAdd/0:5",
+        "fpscontroller.usePickedUpStuff/2:2",
+        "fpscontroller.UseUsable/0:1",
+        "fpscontroller.Pickup/1:1",
+        "fpscontroller.Drop/1:2",
+        "fpscontroller.LateUpdate/0:1",
+        "pickupable.FixedUpdate/0:2",
+        "pickupable.OnCollisionEnter/1:2",
+        "breakablescript.OnCollisionEnter/1:4",
+        "breakablescript.OnTriggerEnter/1:2",
+        "breakablescript.Break/0:2",
+        "attachablescript.CollisionUpd/1:1",
+        "carscript.OnCollisionEnter/1:3",
+        "tubescript.OnCollisionEnter/1:1",
+        "mountStuff.Update/0:2",
+        "mountStuff.Scan/0:1",
+        "mountStuff.QuickFreeze/1:1",
+        "mountStuff.FreezeUpd/0:1",
+        "mountStuff.FreezeUpdVehicle/0:1",
+        "mountStuff.CheckStored/0:1",
+        "mountStuff.Unstore/0:1",
+        "mountStuff.MassUpd/0:1",
+        "mainscript.PlayClipAtPoint/7:1",
+        "savedatascript.SaveToDictionary/2:4",
+        "savedatascript.SpawnItem/1:3",
+        "savedatascript.InitAfterSpawn/2:1",
+        "savedatascript.LoadStuff/3:5",
+        "savedatascript.SaveToData/1:1",
+        "savedatascript.LoadPlayerStuff/0:1",
+        "savedatascript.SetDataFromSave/0:1",
+        "tosaveitemscript.SyncAll/0:2",
+        "tosaveitemscript.ForcePosUpd/3:1",
+        "tosaveitemscript.DistFreezeRB/0:1",
+        "tosaveitemscript.PreDestroy/0:3",
+        "tosaveitemscript.FInit/0:1",
+        "itemPlaceRemoveScript.PlaceOne/2:1",
+        "itemPlaceRemoveScript.RemoveStuff/0:1",
+        "fixedSpawnScript.FStart/0:1",
+        "newRandomStuffSpawnScript.Spawn/0:4",
+        "partslotscript.FStart/0:1",
+        "partslotscript.Craft/1:2",
+        "partslotscript.UnCraft/0:1",
+        "massScript.Upd/0:2",
+        "newSaveScreenScript.AutoSave/0:1",
+        "newSaveScreenScript.Save/4:1",
+        "headlightscript.Update/0:4",
+        "tankscript.Upd/1:1",
+        "fpscontroller.InventoryStuff/0:5",
+        "fpscontroller.GetLook/0:3",
+        "fpscontroller.DrawRays/0:1",
+        "newSaveScreenScript.ReadSave/1:1",
+        "newSaveScreenScript.ReadFiles/0:1"
+    };
+    static void AddSystemTimings()
+    {
+        var begin = Hook("NativeSystemBegin"); var end = Hook("NativeSystemEnd");
+        foreach(var hook in new[]{begin,end})
+            if(hook.ReturnType.FullName!="System.Void" || hook.Parameters.Count!=1 ||
+                hook.Parameters[0].ParameterType.FullName!="System.Int32")
+                throw new Exception("System timing hooks must be void(int).");
+        int sites=0;
+        for(int index=0;index<SystemTimingSpecs.Length;index++)
+        {
+            string[] spec=SystemTimingSpecs[index].Split(':');
+            int dot=spec[0].LastIndexOf('.'),slash=spec[0].LastIndexOf('/');
+            var m=Method(spec[0].Substring(0,dot),spec[0].Substring(dot+1,slash-dot-1),Int32.Parse(spec[0].Substring(slash+1)));
+            var returns=m.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray();
+            if(returns.Length!=Int32.Parse(spec[1]))throw new Exception("System timing native return count changed: "+spec[0]+" found="+returns.Length);
+            int slot=54+index;var il=m.Body.GetILProcessor();var first=m.Body.Instructions[0];
+            il.InsertBefore(first,Instruction.Create(OpCodes.Ldc_I4,slot));
+            il.InsertBefore(first,Instruction.Create(OpCodes.Call,begin));
+            foreach(var ret in returns)
+            {
+                // A native non-void result stays on the stack below the slot.
+                var load=Instruction.Create(OpCodes.Ldc_I4,slot);
+                il.InsertBefore(ret,load);il.InsertBefore(ret,Instruction.Create(OpCodes.Call,end));
+                RedirectRetBranches(m,ret,load);MoveExceptionEndBoundaries(m,ret,load);
+            }
+            foreach(var i in m.Body.Instructions)
+                if(i.OpCode.OperandType==OperandType.ShortInlineBrTarget)
+                {
+                    string field=i.OpCode.Code.ToString();
+                    i.OpCode=(OpCode)typeof(OpCodes).GetField(field.Substring(0,field.Length-2)).GetValue(null);
+                }
+            sites+=1+returns.Length;
+        }
+        Console.WriteLine("Added opt-in system timings: methods="+SystemTimingSpecs.Length+" sites="+sites);
+    }
     static TypeReference Signature(TypeReference t)
     {
         if(t is ArrayType)return new ArrayType(Signature(((ArrayType)t).ElementType));
@@ -41,6 +134,15 @@ public static class PatchStability
     }
     static void Loads(ILProcessor il,MethodDefinition m,Instruction first,int[] args)
     {foreach(int a in args)il.InsertBefore(first,a==-1?Instruction.Create(OpCodes.Ldarg_0):Instruction.Create(OpCodes.Ldarg,m.Parameters[a]));}
+    static void GuardAtReturn(MethodDefinition m,string hook)
+    {
+        var returns=m.Body.Instructions.Where(x=>x.OpCode==OpCodes.Ret).ToArray();
+        if(returns.Length!=1)throw new Exception("Storage guard requires one return.");
+        var il=m.Body.GetILProcessor();var first=m.Body.Instructions[0];
+        il.InsertBefore(first,Instruction.Create(OpCodes.Ldarg_0));
+        il.InsertBefore(first,Instruction.Create(OpCodes.Call,Hook(hook)));
+        il.InsertBefore(first,Instruction.Create(OpCodes.Brfalse,returns[0]));
+    }
     static void Guard(MethodDefinition m,string name,params int[] args)
     {
         var il=m.Body.GetILProcessor();var first=m.Body.Instructions[0];Loads(il,m,first,args);il.InsertBefore(first,Instruction.Create(OpCodes.Call,Hook(name)));il.InsertBefore(first,Instruction.Create(OpCodes.Brtrue,first));
@@ -954,10 +1056,13 @@ public static class PatchStability
                     Observe(Method("poiScript","SpawnStuff",1,"poiClass"),"NativePoiStuffBegin","NativePoiStuffEnd",2,new int[0],new int[0]);
                     Observe(Method("poiScript","ItemSpawn",0),"NativePoiItemsBegin","NativePoiItemsEnd",1,new int[0],new int[0]);
                     Observe(Method("poiScript","FixedSpawn",0),"NativePoiFixedBegin","NativePoiFixedEnd",1,new int[0],new int[0]);
+                    Replace(Method("massScript","Mass",0),"MassWithoutArray",-1);
                     Observe(Method("poiGenScript","RemovePoi",1,"poiClass"),"NativePoiRemoveBegin","NativePoiRemoveEnd",2,new int[0],new int[0]);
                     Guard(Method("objGenScript/categoryClass","UpdChunksNeeded",0),"CategoryChunks",-1);
                     Guard(Method("objGenScript/categoryClass","UpdGen",1),"CategoryGen",-1,0);
                     OptimizeCategoryCleanup();
+                    GuardAtReturn(Method("mountStuff","Scan",0),"StorageScanGate");
+                    GuardAtReturn(Method("mountStuff","FreezeUpd",0),"StorageFreezeGate");
                     Entry(Method("mainscript","Update",0),"NativeMainBegin");
                     AfterReturns(Method("mainscript","Update",0),"NativeMainEnd",3);
                     Entry(Method("mapSettingScript","Update",0),"NativeMapBegin");
@@ -1030,6 +1135,13 @@ public static class PatchStability
                     // Split the wheel Update into its two stock calls for the optimisation pass.
                     Observe(Method("wheelgraphicsscript","Graphics",0),"NativeWheelGraphicsBegin","NativeWheelGraphicsEnd",3,new int[0],new int[0]);
                     Observe(Method("wheelgraphicsscript","WheelSize",0),"NativeWheelSizeBegin","NativeWheelSizeEnd",1,new int[0],new int[0]);
+                    foreach(var pair in new[]{new[]{"radius","WheelRadiusIfChanged","2"},new[]{"mass","WheelMassIfChanged","4"},new[]{"forwardFriction","WheelForwardIfChanged","4"},new[]{"sidewaysFriction","WheelSidewaysIfChanged","4"}})
+                    {
+                        var calls=Method("wheelgraphicsscript","WheelSize",0).Body.Instructions.Where(i=>i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.WheelCollider" && ((MethodReference)i.Operand).Name=="set_"+pair[0]).ToArray();
+                        if(calls.Length!=Int32.Parse(pair[2]))throw new Exception("Unexpected wheel setter count: "+pair[0]);
+                        foreach(var call in calls){call.OpCode=OpCodes.Call;call.Operand=Hook(pair[1]);}
+                    }
+
                     Observe(Method("syncScript","Update",0),"NativeBehaviorSyncBegin","NativeBehaviorSyncEnd",1,new int[0],new int[0]);
                     // Floating-origin shift timing only; no behaviour change.
                     Observe(Method("mainscript","VisszaRakas",0),"NativeVisszaRakasBegin","NativeVisszaRakasEnd",2,new int[0],new int[0]);
@@ -1082,7 +1194,8 @@ public static class PatchStability
                     }
                     // Native profiler seam observers add no gameplay control or state.
                     // Noises.Noise remains the only changed method without a bridge call.
-                    if(hooked!=103 || sites!=212)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    if(hooked!=105 || sites!=229)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    AddSystemTimings();
                     game.Write(args[2]);Console.WriteLine("Built native-restore assembly: "+args[2]+" ("+hooked+" hooked methods, "+sites+" bridge call sites)");
                 }
             }
@@ -1090,5 +1203,4 @@ public static class PatchStability
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
     }
 }
-
 

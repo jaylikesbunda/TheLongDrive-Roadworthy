@@ -52,12 +52,12 @@ class CheckUpdatesTests(unittest.TestCase):
             return app.check_updates(), calls
 
     def test_numeric_max_wins_including_prerelease(self):
-        result, _ = self.check([release("v0.1.9"), release("v0.1.10"), release("0.1.2")])
-        self.assertEqual(result["version"], "0.1.10")
+        result, _ = self.check([release("v0.2.9"), release("v0.2.10"), release("0.1.2")])
+        self.assertEqual(result["version"], "0.2.10")
         self.assertTrue(result["newer"])
         self.assertTrue(result["url"].startswith(app.RELEASE_PAGE))
         self.assertNotIn("evil.example", result["url"])
-        self.assertEqual(result["url"], app.RELEASE_PAGE + "v0.1.10")
+        self.assertEqual(result["url"], app.RELEASE_PAGE + "v0.2.10")
 
     def test_older_and_equal_are_not_newer(self):
         result, _ = self.check([release("v0.1.2"), release("v0.0.9")])

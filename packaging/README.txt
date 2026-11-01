@@ -1,4 +1,4 @@
-THE LONG DRIVE: ROADWORTHY v0.1.3 (EXPERIMENTAL)
+THE LONG DRIVE: ROADWORTHY v0.2.0 (EXPERIMENTAL)
 Multiplayer and performance patch for The Long Drive, beta 2024.11.26b_test only.
 See CHANGELOG.txt for what changed.
 
@@ -14,7 +14,7 @@ INSTALL
 RESTORE
 - Run the EXE again and click Restore original, or run "Restore Original.cmd".
 - The window shows the installed release/build next to the bundled one and
-  offers Install Roadworthy, Update to v0.1.3, Up to date, or Newer version
+  offers Install Roadworthy, Update to v0.2.0, Up to date, or Newer version
   installed. Recognized older installs (the legacy release version may be unknown) update automatically: the new build is
   fully built and verified before any previous patch is touched, and recovery
   copies of the replaced files are kept under the installer cache.

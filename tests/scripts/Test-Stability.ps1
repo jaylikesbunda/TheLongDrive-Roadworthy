@@ -3,7 +3,7 @@ param([string]$GameDirectory='')
 $ErrorActionPreference='Stop'
 $repoRoot=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Push-Location $repoRoot
-try { & python -m unittest tests.test_starting_stop tests.test_loading_overlay; if ($LASTEXITCODE -ne 0) { throw 'Starting-stop or loading-overlay regression tests failed.' } } finally { Pop-Location }
+try { & python -m unittest tests.test_starting_stop tests.test_loading_overlay tests.test_storage_optimizations; if ($LASTEXITCODE -ne 0) { throw 'Starting-stop or loading-overlay regression tests failed.' } } finally { Pop-Location }
 . (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tools\Resolve-GameDirectory.ps1')
 $GameDirectory=Resolve-GameDirectory $GameDirectory
 & (Join-Path $PSScriptRoot 'Test-Offline.ps1') -GameDirectory $GameDirectory
@@ -255,6 +255,10 @@ $patched=Join-Path $run 'Assembly-CSharp.dll'
 Run $patcher @($baseline.patched,$runtime,$patched,$managed)
 & (Test-ExePath $verifier) $baseline.patched $patched 2>&1 | Tee-Object -FilePath $results -Append
 if ($LASTEXITCODE -ne 0) { throw 'V3 hook verification failed.' }
+$systemTimingTests=Join-Path $run 'SystemTimingInstrumentationTests.exe'
+Run $csc @('/nologo','/optimize+',"/out:$systemTimingTests","/reference:$cecil",(Join-Path $repoRoot 'tests\SystemTimingInstrumentationTests.cs'))
+& (Test-ExePath $systemTimingTests) $baseline.patched $patched $runtime (Test-ExePath $verifier) (Join-Path $run 'system-timing-mutations') $managed 2>&1 | Tee-Object -FilePath $results -Append
+if($LASTEXITCODE -ne 0){throw 'System timing instrumentation regression failed.'}
 & (Join-Path $PSScriptRoot 'Test-RoadCallbackInstrumentation.ps1') -BaselineAssembly $baseline.patched -CandidateAssembly $patched -CecilPath $cecil -BuildDirectory (Join-Path $env:TEMP ('opencode\road-callback-'+(Split-Path $baseRun -Leaf))) 2>&1 | Tee-Object -FilePath $results -Append
 if($LASTEXITCODE -ne 0){throw 'Road callback instrumentation regression failed.'}
 & (Join-Path $PSScriptRoot 'Test-RandomFlyerKinematicGuard.ps1') -OriginalAssembly $baseline.patched -CandidateAssembly $patched -Runtime $runtime -ManagedDirectory $managed -BuildDirectory (Join-Path $env:TEMP ('opencode\flyer-guard-'+(Split-Path $baseRun -Leaf))) 2>&1 | Tee-Object -FilePath $results -Append

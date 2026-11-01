@@ -484,8 +484,8 @@ class GuiTests(TkCase):
             def slow_check():
                 calls.append(1)
                 hold.wait(3)
-                return {"version": "0.1.3", "tag": "v0.1.3", "newer": False,
-                        "url": app.RELEASE_PAGE + "v0.1.3"}
+                return {"version": "0.2.0", "tag": "v0.2.0", "newer": False,
+                        "url": app.RELEASE_PAGE + "v0.2.0"}
             with mock.patch.object(app, "discover_games", return_value=[]), \
                  mock.patch.object(app, "check_updates", side_effect=slow_check), \
                  mock.patch.object(app, "choose_game", side_effect=lambda p_: Path(p_)), \

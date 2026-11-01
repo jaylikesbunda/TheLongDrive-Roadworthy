@@ -2,8 +2,17 @@
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
+## v0.2.0
+
+- Mass checks create less temporary garbage.
+- Wheels skip unchanged physics settings each frame.
+- Storage checks reuse buffers and compare nearby props more efficiently.
+- Game, lobby and installer labels now show v0.2.0 Roadworthy.
+
 ## v0.1.3
 
+- Opt-in performance logs cover 55 more game methods, retain worst-call and
+  worst-frame costs, and rank observed self time to help diagnose hitches.
 - Installer checks GitHub releases for a newer published version on open and
   via --check-updates (read-only, never downloads by itself).
 - Installer detects the installed release/build, updates recognized older installs

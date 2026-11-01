@@ -166,6 +166,23 @@ static class SlowFrameDiagnosticsTests
         Check(Has(report, "Map total=10.00ms selfObs=0.00ms"), "Observed child spans must never produce negative self time.");
     }
 
+    static void SelfRankingExposesExpensiveLeaf()
+    {
+        var d = new SlowFrameDiagnostics(new string[]{"Root","Middle","Leaf"},
+            new string[]{"Update"},16);
+        d.Begin(1,0,0);d.Begin(1,1,10);d.Begin(1,2,20);
+        d.End(1,2,230);d.End(1,1,240);d.End(1,0,300);
+        d.AddPhase(1,0,0,300);d.CompleteFrame(1,1);
+        string report=d.ReportAndReset(1000);
+        Check(Has(report,"nativeTop[Root total=300.00ms"),"Inclusive ranking must retain the parent total.");
+        Check(Has(report,"nativeSelfTop[Leaf total=210.00ms selfObs=210.00ms"),
+            "Observed-self ranking must expose the expensive leaf before its parents.");
+        Check(Has(report,"Root total=300.00ms selfObs=70.00ms"),
+            "Self time must subtract observed descendants once, not sum nested inclusive totals.");
+        Check(Has(report,"Middle total=230.00ms selfObs=20.00ms"),
+            "Nested middle self time must exclude only its observed child.");
+    }
+
     static int Main()
     {
         EnvelopeAndInclusiveScopes();
@@ -176,6 +193,7 @@ static class SlowFrameDiagnosticsTests
         CompletingPreviousFramePreservesCurrentScope();
         OverflowSuppressesOldEndsUntilNextFrame();
         SelfTimeNeverNegative();
+        SelfRankingExposesExpensiveLeaf();
         Console.WriteLine("SlowFrameDiagnosticsTests passed assertions=" + assertions);
         return 0;
     }

@@ -249,6 +249,8 @@ namespace TldMp
                 }
                 text.Append("] nativeTop[");
                 AppendNativeTop(text, row, scale);
+                text.Append("] nativeSelfTop[");
+                AppendNativeTop(text, row, scale, true);
                 text.Append(']');
             }
             text.Append("}");
@@ -267,15 +269,17 @@ namespace TldMp
             return a > b || (a == b && candidate.Id < existing.Id);
         }
 
-        void AppendNativeTop(StringBuilder text, FrameRow row, double scale)
+        void AppendNativeTop(StringBuilder text, FrameRow row, double scale, bool bySelf = false)
         {
             int count = 0;
             for (int slot = 0; slot < nativeNames.Length; slot++)
             {
                 if (row.NativeCalls[slot] == 0) continue;
-                if (count == MaxNativeReport && row.NativeTotal[slot] <= nativeTopValues[count - 1]) continue;
+                long value = bySelf ? row.NativeSelf[slot] : row.NativeTotal[slot];
+                if (bySelf && value == 0) continue;
+                if (count == MaxNativeReport && value <= nativeTopValues[count - 1]) continue;
                 int pos = count < MaxNativeReport ? count : MaxNativeReport - 1;
-                while (pos > 0 && row.NativeTotal[slot] > nativeTopValues[pos - 1])
+                while (pos > 0 && value > nativeTopValues[pos - 1])
                 {
                     if (pos < MaxNativeReport)
                     { nativeTopValues[pos] = nativeTopValues[pos - 1]; nativeTopIndices[pos] = nativeTopIndices[pos - 1]; }
@@ -283,7 +287,7 @@ namespace TldMp
                 }
                 if (pos < MaxNativeReport)
                 {
-                    nativeTopValues[pos] = row.NativeTotal[slot]; nativeTopIndices[pos] = slot;
+                    nativeTopValues[pos] = value; nativeTopIndices[pos] = slot;
                     if (count < MaxNativeReport) count++;
                 }
             }

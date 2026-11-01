@@ -59,6 +59,34 @@ class NativeScriptTimingsTests
         Check(s.Contains("terrainGenScript.Upd[0]=p50/p95=10.000/10.000ms")&&
               s.Contains("terrainGenScript.Upd[1]=p50/p95=20.000/20.000ms")&&
               s.Contains("terrainGenScript.Upd[2]=p50/p95=20.000/20.000ms"),"multiple generator labels failed");
+        Check(NativeScriptTimings.Names.Length==109 && NativeScriptTimings.ExtendedStart==54,
+            "extended timing table must match the independent native-hook allowlist");
+        Check(new System.Collections.Generic.HashSet<string>(NativeScriptTimings.Names).Count==109,
+            "system timing labels must be unique");
+        t.SetWindowFrames(4);
+        for(int i=0;i<3;i++){t.Begin(54,101,i*20);t.End(54,101,i*20+10);}
+        t.Begin(54,102,100);t.End(54,102,180);
+        s=t.ReportAndReset(1);
+        Check(s.Contains("fpscontroller.Update=p50/p95=10.000/80.000ms total=110.00ms calls=4 samples=4 perFrame=27.500ms maxCall=80.000ms peakFrame=80.000ms peakFrameId=102 maxCallsPerFrame=3"),
+            "single-call max, worst frame and busiest frame must remain separate");
+        Check(!s.Contains("mountStuff.Scan="),"inactive extended labels must not inflate logs");
+        t.Begin(108,103,0);t.End(108,103,15);
+        Check(t.ReportAndReset(1).Contains("newSaveScreenScript.ReadFiles=p50/p95=15.000/15.000ms"),
+            "last extended slot must be observed");
+        t.Begin(64,200,0);t.End(64,200,10000);
+        for(int i=0;i<600;i++){t.Begin(64,201+i,0);t.End(64,201+i,1);}
+        s=t.ReportAndReset(1);
+        Check(s.Contains("maxCall=10000.000ms peakFrame=10000.000ms peakFrameId=200"),
+            "window maxima must survive eviction from the percentile ring");
+        t.Begin(54,900,100);
+        t.ReportAndReset(1);
+        t.End(54,900,140);
+        s=t.ReportAndReset(1);
+        Check(s.Contains("fpscontroller.Update=p50/p95=40.000/40.000ms total=40.00ms calls=1"),
+            "report inside an active parent must preserve its eventual completion");
+        t.Begin(54,901,0);t.Begin(54,901,10);t.End(54,901,15);t.End(54,901,30);
+        Check(t.ReportAndReset(1).Contains("total=30.00ms calls=1 samples=1"),
+            "extended recursive scopes must keep outer-only totals and counts");
         Console.WriteLine("PASS: "+checks+" bounded native script timing assertions");
     }
 }

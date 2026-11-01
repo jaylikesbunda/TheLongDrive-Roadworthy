@@ -1326,6 +1326,8 @@ namespace TldMp
                 yield return interval;
             }
         }
+        public static void NativeSystemBegin(int slot){FrameDiagnostics.NativeBegin(slot);}
+        public static void NativeSystemEnd(int slot){FrameDiagnostics.NativeEnd(slot);}
         public static void NativeMainBegin(){RenderSwitches.MainFrame();CargoGhost.Frame();FrameDiagnostics.RegisterMainThread();FrameDiagnostics.NativeBegin(0);}
         public static void NativeMainEnd(){FrameDiagnostics.NativeEnd(0);}
         public static void NativeMapBegin(){FrameDiagnostics.RegisterMainThread();FrameDiagnostics.NativeBegin(1);}
@@ -1564,6 +1566,122 @@ namespace TldMp
         public static void NativeTerrainTileStartEnd(){FrameDiagnostics.NativeTerrainTileStartEnd();}
         public static void NativeTerrainMeshUploadBegin(){FrameDiagnostics.NativeTerrainMeshUploadBegin();}
         public static void NativeTerrainMeshUploadEnd(){FrameDiagnostics.NativeTerrainMeshUploadEnd();}
+        // Fresh hierarchy query on every call, but reuse the backing list. Nested
+        // calls get a separate list so the native summation order stays intact.
+
+        static readonly System.Reflection.FieldInfo storageSensed=typeof(mountStuff).GetField("lastSensed",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic);
+        static readonly System.Reflection.FieldInfo storageDropTime=typeof(mountStuff).GetField("neededDropTime",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic);
+        static readonly System.Reflection.FieldInfo storageParent=typeof(mountStuff).GetField("colParentTransform",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic);
+        static readonly Stack<Collider[]> storageBuffers=new Stack<Collider[]>();
+        static readonly Stack<HashSet<int>> storageSets=new Stack<HashSet<int>>();
+        static bool StorageContains(Collider[] previous,HashSet<int> membership,Collider collider)
+        {
+            if(collider!=null)return membership.Contains(collider.GetInstanceID());
+            foreach(var old in previous)if(collider==old)return true;
+            return false;
+        }
+        public static bool StorageScanGate(mountStuff mount)
+        {
+            if(storageParent==null)return true;
+            var parent=(Transform)storageParent.GetValue(mount);
+            var col=mount.col;
+            var center=parent.position+parent.TransformDirection(col.transform.localPosition+col.center);
+            var size=new Vector3(col.size.x*col.transform.localScale.x,col.size.y*col.transform.localScale.y,col.size.z*col.transform.localScale.z)*.5f;
+            var buffer=storageBuffers.Count==0?new Collider[64]:storageBuffers.Pop();
+            try
+            {
+                int count;
+                while(true)
+                {
+                    count=Physics.OverlapBoxNonAlloc(center,size,buffer,col.transform.rotation,mainscript.s.mountLayerMask);
+                    if(count<buffer.Length)break;
+                    if(buffer.Length>=4096){mount.cols=Physics.OverlapBox(center,size,col.transform.rotation,mainscript.s.mountLayerMask);return false;}
+                    buffer=new Collider[buffer.Length*2];
+                }
+                // Reuse only a byte-for-byte identical snapshot. A changed
+                // result gets its own exact-length array, preserving lastcols.
+                bool same=mount.cols!=null && mount.cols.Length==count;
+                for(int i=0;same && i<count;i++)same=object.ReferenceEquals(mount.cols[i],buffer[i]);
+                if(!same){var snapshot=new Collider[count];Array.Copy(buffer,snapshot,count);mount.cols=snapshot;}
+                return false;
+            }
+            finally{Array.Clear(buffer,0,buffer.Length);if(storageBuffers.Count<4)storageBuffers.Push(buffer);}
+        }
+        public static bool StorageFreezeGate(mountStuff mount)
+        {
+            if(storageSensed==null || storageDropTime==null)return true;
+
+		storageSensed.SetValue(mount,Time.time);
+		mount.lastcols = mount.cols;
+		mount.Scan();
+            var previous=mount.lastcols;
+            var membership=storageSets.Count==0?new HashSet<int>():storageSets.Pop();
+            try
+            {
+            if(previous!=null)foreach(var c in previous)if(c!=null)membership.Add(c.GetInstanceID());
+		for (int i = 0; i < mount.cols.Length; i++)
+		{
+            bool flag=StorageContains(previous,membership,mount.cols[i]);
+			if (!flag || (!(mount.cols[i].transform.root != mount.transform.root) && !(mount.cols[i].GetComponentInParent<tosaveitemscript>() != mount.parentTosave)))
+			{
+				continue;
+			}
+			if (mount.sType == mountStuff.storageType.trunk)
+			{
+				carscript componentInParent = mount.cols[i].GetComponentInParent<carscript>();
+				if (componentInParent != null && componentInParent != mount.GetComponentInParent<carscript>())
+				{
+					componentInParent.Lock(_lock: true);
+					if (!mount.storedcars.Contains(componentInParent))
+					{
+						mount.storedcars.Add(componentInParent);
+					}
+				}
+			}
+			layerScript component = mount.cols[i].GetComponent<layerScript>();
+			pickupable pickupable2;
+			if (component != null)
+			{
+				pickupable2 = component.p;
+				if (pickupable2 == null)
+				{
+					pickupable2 = component.GetComponentInParent<pickupable>();
+					pickupable2 = component.p;
+				}
+			}
+			else
+			{
+				pickupable2 = mount.cols[i].GetComponent<pickupable>();
+			}
+			if (pickupable2 != null && pickupable2.tosave != null && !pickupable2.dontMount && !pickupable2.pickedUp && pickupable2.physlock == null && !pickupable2.CheckDontMountTillPickup() && (pickupable2.tosave.attachable == null || (pickupable2.tosave.attachable != null && !pickupable2.crafted)) && (pickupable2.tosave.attachable == null || (pickupable2.tosave.attachable != null && !pickupable2.tosave.attachable.attached)) && (!syncScript.IsConnected() || (syncScript.IsConnected() && pickupable2.tosave != null && !pickupable2.tosave.mppickedup && !pickupable2.tosave.mpequipped && !pickupable2.tosave.mpstored && !pickupable2.tosave.mpweared)) && Time.time - pickupable2.DroppedTime >= (float)storageDropTime.GetValue(null))
+			{
+				AutoStoreGate(mount,pickupable2,false);
+			}
+		}
+	
+            return false;
+            }
+            finally{membership.Clear();if(storageSets.Count<4)storageSets.Push(membership);}
+        }
+        static readonly Stack<List<massScript>> massLists = new Stack<List<massScript>>();
+        public static void WheelRadiusIfChanged(WheelCollider wheel,float value){if(wheel.radius!=value)wheel.radius=value;}
+        public static void WheelMassIfChanged(WheelCollider wheel,float value){if(wheel.mass!=value)wheel.mass=value;}
+        static bool SameWheelFriction(WheelFrictionCurve a,WheelFrictionCurve b)
+        {return a.extremumSlip==b.extremumSlip && a.extremumValue==b.extremumValue && a.asymptoteSlip==b.asymptoteSlip && a.asymptoteValue==b.asymptoteValue && a.stiffness==b.stiffness;}
+        public static void WheelForwardIfChanged(WheelCollider wheel,WheelFrictionCurve value){if(!SameWheelFriction(wheel.forwardFriction,value))wheel.forwardFriction=value;}
+        public static void WheelSidewaysIfChanged(WheelCollider wheel,WheelFrictionCurve value){if(!SameWheelFriction(wheel.sidewaysFriction,value))wheel.sidewaysFriction=value;}
+        public static float MassWithoutArray(massScript item)
+        {
+            var list=massLists.Count==0?new List<massScript>():massLists.Pop();
+            try
+            {
+                item.GetComponentsInChildren<massScript>(false,list);
+                float total=0f;
+                for(int i=0;i<list.Count;i++)total+=list[i].OwnPlusMass();
+                return total;
+            }
+            finally{list.Clear();if(massLists.Count<8)massLists.Push(list);}
+        }
         public static void NativeRoadInstantiateBegin(){FrameDiagnostics.NativeRoadInstantiateBegin();}
         public static void NativeRoadInstantiateEnd(){FrameDiagnostics.NativeRoadInstantiateEnd();}
         public static void NativeRoadInitBegin(){FrameDiagnostics.NativeRoadInitBegin();}
@@ -1696,4 +1814,3 @@ namespace TldMp
         }
     }
 }
-

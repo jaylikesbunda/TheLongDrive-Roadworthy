@@ -9,6 +9,138 @@ using Mono.Cecil.Cil;
 // pristine IL with no StableGameBridge call site left behind.
 public static class VerifyStability
 {
+    // Independent allowlist: strip only these diagnostic brackets before the
+    // original gameplay-scope verifier runs, including its removed-hook checks.
+    static readonly string[] SystemTimingSpecs = {
+        "fpscontroller.Update/0:4",
+        "fpscontroller.RayStuff/0:4",
+        "fpscontroller.Move/0:1",
+        "fpscontroller.PickedUpForceAdd/0:5",
+        "fpscontroller.usePickedUpStuff/2:2",
+        "fpscontroller.UseUsable/0:1",
+        "fpscontroller.Pickup/1:1",
+        "fpscontroller.Drop/1:2",
+        "fpscontroller.LateUpdate/0:1",
+        "pickupable.FixedUpdate/0:2",
+        "pickupable.OnCollisionEnter/1:2",
+        "breakablescript.OnCollisionEnter/1:4",
+        "breakablescript.OnTriggerEnter/1:2",
+        "breakablescript.Break/0:2",
+        "attachablescript.CollisionUpd/1:1",
+        "carscript.OnCollisionEnter/1:3",
+        "tubescript.OnCollisionEnter/1:1",
+        "mountStuff.Update/0:2",
+        "mountStuff.Scan/0:1",
+        "mountStuff.QuickFreeze/1:1",
+        "mountStuff.FreezeUpd/0:1",
+        "mountStuff.FreezeUpdVehicle/0:1",
+        "mountStuff.CheckStored/0:1",
+        "mountStuff.Unstore/0:1",
+        "mountStuff.MassUpd/0:1",
+        "mainscript.PlayClipAtPoint/7:1",
+        "savedatascript.SaveToDictionary/2:4",
+        "savedatascript.SpawnItem/1:3",
+        "savedatascript.InitAfterSpawn/2:1",
+        "savedatascript.LoadStuff/3:5",
+        "savedatascript.SaveToData/1:1",
+        "savedatascript.LoadPlayerStuff/0:1",
+        "savedatascript.SetDataFromSave/0:1",
+        "tosaveitemscript.SyncAll/0:2",
+        "tosaveitemscript.ForcePosUpd/3:1",
+        "tosaveitemscript.DistFreezeRB/0:1",
+        "tosaveitemscript.PreDestroy/0:3",
+        "tosaveitemscript.FInit/0:1",
+        "itemPlaceRemoveScript.PlaceOne/2:1",
+        "itemPlaceRemoveScript.RemoveStuff/0:1",
+        "fixedSpawnScript.FStart/0:1",
+        "newRandomStuffSpawnScript.Spawn/0:4",
+        "partslotscript.FStart/0:1",
+        "partslotscript.Craft/1:2",
+        "partslotscript.UnCraft/0:1",
+        "massScript.Upd/0:2",
+        "newSaveScreenScript.AutoSave/0:1",
+        "newSaveScreenScript.Save/4:1",
+        "headlightscript.Update/0:4",
+        "tankscript.Upd/1:1",
+        "fpscontroller.InventoryStuff/0:5",
+        "fpscontroller.GetLook/0:3",
+        "fpscontroller.DrawRays/0:1",
+        "newSaveScreenScript.ReadSave/1:1",
+        "newSaveScreenScript.ReadFiles/0:1"
+    };
+    static bool IsSystemTiming(Instruction i)
+    {
+        var call=i.Operand as MethodReference;
+        return call!=null && call.DeclaringType.FullName=="TldMp.StableGameBridge" &&
+            (call.Name=="NativeSystemBegin" || call.Name=="NativeSystemEnd");
+    }
+    static void StripSystemTimings(Dictionary<string,TypeDefinition> before,
+        Dictionary<string,TypeDefinition> after,TypeDefinition bridge,ModuleDefinition runtime)
+    {
+        var table=runtime.GetTypes().Single(t=>t.FullName=="TldMp.NativeScriptTimings");
+        var initializer=table.Methods.Single(m=>m.Name==".cctor");
+        var labelStore=initializer.Body.Instructions.Single(i=>i.OpCode==OpCodes.Stsfld &&
+            i.Operand is FieldReference && ((FieldReference)i.Operand).Name=="Names");
+        var labels=initializer.Body.Instructions.TakeWhile(i=>i!=labelStore)
+            .Where(i=>i.OpCode==OpCodes.Ldstr).Select(i=>(string)i.Operand).ToArray();
+        if(labels.Length!=54+SystemTimingSpecs.Length)throw new Exception("System timing label count mismatch.");
+        int stripped=0;
+        for(int index=0;index<SystemTimingSpecs.Length;index++)
+        {
+            string[] spec=SystemTimingSpecs[index].Split(':');int slot=54+index;
+            if(labels[slot]!=spec[0].Substring(0,spec[0].LastIndexOf('/')))
+                throw new Exception("System timing label/slot mismatch: "+spec[0]);
+            var native=Find(before,spec[0]);var patched=Find(after,spec[0]);
+            int expected=Int32.Parse(spec[1]);
+            var returns=patched.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray();
+            var oldReturns=native.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray();
+            if(returns.Length!=expected || oldReturns.Length!=expected)
+                throw new Exception("System timing return count changed: "+spec[0]);
+            var instructions=patched.Body.Instructions;
+            var entry=instructions[0];var begin=instructions[1];
+            CheckSystemTimingHook(entry,begin,slot,"NativeSystemBegin",bridge);
+            if(instructions.Count(IsSystemTiming)!=expected+1)
+                throw new Exception("Extra/missing system timing calls: "+spec[0]);
+            foreach(var i in instructions)
+            {
+                var targets=i.Operand as Instruction[];
+                if(returns.Contains(i.Operand as Instruction) || i.Operand==begin ||
+                    (targets!=null && targets.Any(t=>returns.Contains(t) || t==begin)))
+                    throw new Exception("Branch bypasses system timing bracket: "+spec[0]);
+            }
+            for(int n=0;n<returns.Length;n++)
+            {
+                var ret=returns[n];var end=ret.Previous;var load=end.Previous;
+                CheckSystemTimingHook(load,end,slot,"NativeSystemEnd",bridge);
+                if(instructions.Any(i=>i.Operand==end ||
+                    (i.Operand is Instruction[] && ((Instruction[])i.Operand).Contains(end))))
+                    throw new Exception("Branch bypasses system timing slot load: "+spec[0]);
+                VerifyAndRestoreExceptionEnd(native,patched,oldReturns[n],load,ret);
+                RedirectBranches(patched,load,ret);
+                instructions.Remove(load);instructions.Remove(end);stripped++;
+            }
+            if(instructions.Any(i=>i.Operand==entry ||
+                (i.Operand is Instruction[] && ((Instruction[])i.Operand).Contains(entry))))
+                throw new Exception("Native branch unexpectedly enters system timing prefix.");
+            instructions.Remove(entry);instructions.Remove(begin);stripped++;
+        }
+        if(after.Values.SelectMany(t=>t.Methods).Where(m=>m.HasBody)
+            .Any(m=>m.Body.Instructions.Any(IsSystemTiming)))
+            throw new Exception("System timing hook outside the allowlist.");
+        Console.WriteLine("PASS: "+SystemTimingSpecs.Length+" system timing methods, "+stripped+
+            " checked brackets; labels, return values, branches and exception ends preserved.");
+    }
+    static void CheckSystemTimingHook(Instruction load,Instruction call,int slot,string name,TypeDefinition bridge)
+    {
+        if(load==null || call==null || load.OpCode!=OpCodes.Ldc_I4 || !(load.Operand is int) ||
+            (int)load.Operand!=slot || call.OpCode!=OpCodes.Call || !IsSystemTiming(call) ||
+            ((MethodReference)call.Operand).Name!=name)
+            throw new Exception("Invalid system timing bracket: "+name+" slot="+slot);
+        var hook=BridgeDefinition(bridge,(MethodReference)call.Operand);
+        if(hook.ReturnType.FullName!="System.Void" || hook.Parameters.Count!=1 ||
+            hook.Parameters[0].ParameterType.FullName!="System.Int32")
+            throw new Exception("Invalid system timing hook signature.");
+    }
     static TypeReference LoadedType(MethodDefinition method,int argument)
     {
         if(argument==-1)
@@ -170,6 +302,13 @@ public static class VerifyStability
     {
         if(value==null || value.Length==0 || value=="-")return new int[0];
         return value.Split(',').Select(Int32.Parse).ToArray();
+    }
+    static void StripStorageGuard(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge,string name)
+    {
+        var ins=patched.Body.Instructions;
+        if(ins.Count<4 || ins[0].OpCode!=OpCodes.Ldarg_0 || !IsBridge(ins[1]) || ((MethodReference)ins[1].Operand).Name!=name || ins[2].OpCode!=OpCodes.Brfalse || ins[2].Operand!=ins.Last(x=>x.OpCode==OpCodes.Ret))throw new Exception("Invalid storage guard.");
+        ValidateHook(native,(MethodReference)ins[1].Operand,bridge,new[]{-1},false,"System.Boolean");
+        ins.RemoveAt(0);ins.RemoveAt(0);ins.RemoveAt(0);
     }
     static void StripGuard(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge,string name,int[] loads)
     {
@@ -717,6 +856,7 @@ public static class VerifyStability
                 if(added.Length!=1 || added[0]!="Tld.Multiplayer")throw new Exception("Unexpected dependency set.");
                 var before=VerifyPatch.AllTypes(original.MainModule.Types).ToDictionary(t=>t.FullName);var after=VerifyPatch.AllTypes(patched.MainModule.Types).ToDictionary(t=>t.FullName);
                 if(!before.Keys.OrderBy(x=>x).SequenceEqual(after.Keys.OrderBy(x=>x)))throw new Exception("Changed type layout.");
+                StripSystemTimings(before,after,bridge,runtime.MainModule);
                 // Exactly the kept native methods. Anything else that differs is a
                 // regression back toward a removed gameplay hook.
                 var expected=new Dictionary<string,string>{
@@ -732,6 +872,7 @@ public static class VerifyStability
                     {"syncScript.ItemPosLocal/5","W:WrapNativeLocalPose:0,1,2"},
                     {"syncScript.UpdAttachable/12","W:WrapNativeAttachment:0,1,2,3,4,7"},
                     {"syncScript.SyncStuff/0","R:SyncItems:-1"},
+                    {"massScript.Mass/0","R:MassWithoutArray:-1"},
                     {"SteamP2PNetworkingUnderTheHoodScript.SendBytes/2","R:RouteBroadcast:0,1"},
                     {"SteamP2PNetworkingUnderTheHoodScript.SendBytesToTarget/3","R:RouteTarget:0,1,2"},
                     {"SteamP2PNetworkingUnderTheHoodScript.ReadMessage/0","R:ReadBudgeted:-1"},
@@ -767,6 +908,7 @@ public static class VerifyStability
                     {"syncScript.UpdItemParent/2","IC:3:GetPlayerWithScript"},
                     {"syncScript.RecAskItemData/2","RM:"},
                     {"mountStuff.FreezeUpd/0","AS:"},
+                    {"mountStuff.Scan/0","GS:StorageScanGate:"},
                     {"pickupable.PhysLock/1","E:NativeBeforePhysLock:-1,0"},
                     {"pickupable.JustUnPhysicsLock/0","E:NativeBeforeUnPhysicsLock:-1"},
                     {"poiScript.SpawnStuff/1","O:NativePoiStuffBegin:NativePoiStuffEnd:2:-:-"},
@@ -803,7 +945,7 @@ public static class VerifyStability
                     {"usablescript.Update/0","O:NativeBehaviorUsablesBegin:NativeBehaviorUsablesEnd:1:-:-"},
                     {"wheelgraphicsscript.Update/0","O:NativeBehaviorWheelGraphicsBegin:NativeBehaviorWheelGraphicsEnd:1:-:-"},
                     {"wheelgraphicsscript.Graphics/0","O:NativeWheelGraphicsBegin:NativeWheelGraphicsEnd:3:-:-"},
-                    {"wheelgraphicsscript.WheelSize/0","O:NativeWheelSizeBegin:NativeWheelSizeEnd:1:-:-"},
+                    {"wheelgraphicsscript.WheelSize/0","WK:NativeWheelSizeBegin:NativeWheelSizeEnd:1:-:-"},
                     {"syncScript.Update/0","O:NativeBehaviorSyncBegin:NativeBehaviorSyncEnd:1:-:-"},
                     {"mainscript.VisszaRakas/0","O:NativeVisszaRakasBegin:NativeVisszaRakasEnd:2:-:-"},
                     {"randomFlyer.Upd/0","F:NoteFlyerKinematicSkipped:"},
@@ -910,7 +1052,7 @@ public static class VerifyStability
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(seatExit))throw new Exception("Seat-exit observers changed stock method body.");
                             continue;
                         }
-                        string[] bits=rule.Split(':');string mode=bits[0],name=bits[1];int[] loads=(mode=="T" || mode=="O" || mode=="GT" || mode=="X" || mode=="P" || mode=="OS" || mode=="Y" || mode=="F" || mode=="BOV" || mode=="OB" || mode=="OVY" || mode=="M" || mode=="K" || mode=="CB" || mode=="IC" || mode=="RM" || mode=="AS" || mode=="OV" || mode=="OW" || mode=="SW" || mode=="SW2" || mode=="OM" || mode=="RX" || bits[2]=="")?new int[0]:bits[2].Split(',').Select(Int32.Parse).ToArray();
+                        string[] bits=rule.Split(':');string mode=bits[0],name=bits[1];int[] loads=(mode=="T" || mode=="O" || mode=="GT" || mode=="X" || mode=="P" || mode=="OS" || mode=="Y" || mode=="F" || mode=="BOV" || mode=="OB" || mode=="OVY" || mode=="M" || mode=="K" || mode=="CB" || mode=="IC" || mode=="RM" || mode=="AS" || mode=="OV" || mode=="OW" || mode=="WK" || mode=="SW" || mode=="SW2" || mode=="OM" || mode=="RX" || bits[2]=="")?new int[0]:bits[2].Split(',').Select(Int32.Parse).ToArray();
                         var instructions=bm.Body.Instructions;
                         if(mode=="BOV")
                         {
@@ -978,13 +1120,29 @@ public static class VerifyStability
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Ask/remove edit changed stock method body: "+key);
                             continue;
                         }
+                        if(mode=="GS")
+                        {
+                            StripStorageGuard(am,bm,bridge,name);
+                            if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Storage scan native fallback changed.");
+                            continue;
+                        }
                         if(mode=="AS")
                         {
+                            StripStorageGuard(am,bm,bridge,"StorageFreezeGate");
                             // Exactly one FreezeUpd Store call swapped for the guest gate.
                             if(bits.Length!=2 || bits[1]!="")throw new Exception("Bad auto-store rule: "+key);
                             StripCallSwap(am,bm,bridge,"AutoStoreGate",1,
                                 "mountStuff","Store",2,"System.Void","mountStuff","pickupable","System.Boolean");
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Auto-store gate changed stock method body: "+key);
+                            continue;
+                        }
+                        if(mode=="WK")
+                        {
+                            StripEntry(am,bm,bridge,bits[1],ParseLoads(bits[4]));
+                            StripReturns(am,bm,bridge,bits[2],Int32.Parse(bits[3]),ParseLoads(bits[5]));
+                            foreach(var wheelPair in new[]{new[]{"radius","WheelRadiusIfChanged","2","System.Single"},new[]{"mass","WheelMassIfChanged","4","System.Single"},new[]{"forwardFriction","WheelForwardIfChanged","4","UnityEngine.WheelFrictionCurve"},new[]{"sidewaysFriction","WheelSidewaysIfChanged","4","UnityEngine.WheelFrictionCurve"}})
+                                StripCallSwap(am,bm,bridge,wheelPair[1],Int32.Parse(wheelPair[2]),"UnityEngine.WheelCollider","set_"+wheelPair[0],1,"System.Void","UnityEngine.WheelCollider",wheelPair[3]);
+                            if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Wheel writes changed native calculations.");
                             continue;
                         }
                         if(mode=="OW")
@@ -1274,7 +1432,7 @@ public static class VerifyStability
                 // Bus-ground diagnostics add two entry observers (AddPoi, poiScript.FStart): two methods, two sites.
                 // The terrain-align fix swaps two Transform.localPosition reads in poiGenScript.alignClass's constructor: one method, two sites.
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
-                if(bridgeUsers.Count!=103 || hookSites!=212)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                if(bridgeUsers.Count!=105 || hookSites!=229)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }
@@ -1282,6 +1440,5 @@ public static class VerifyStability
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
     }
 }
-
 
 

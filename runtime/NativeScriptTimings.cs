@@ -10,7 +10,7 @@ namespace TldMp
     // total/calls only (no percentile ring) for very hot, tiny operations.
     public sealed class NativeScriptTimings
     {
-        const int Slots = 54;
+        internal const int ExtendedStart = 54;
         const int AggregateSlots = 2;
         const int Capacity = 512;
         const int MaxDepth = 8;
@@ -70,8 +70,64 @@ namespace TldMp
             "behaviour.syncScript",
             "mainscript.VisszaRakas",
             "wheelgraphicsscript.Graphics",
-            "wheelgraphicsscript.WheelSize"
+            "wheelgraphicsscript.WheelSize",
+            "fpscontroller.Update",
+            "fpscontroller.RayStuff",
+            "fpscontroller.Move",
+            "fpscontroller.PickedUpForceAdd",
+            "fpscontroller.usePickedUpStuff",
+            "fpscontroller.UseUsable",
+            "fpscontroller.Pickup",
+            "fpscontroller.Drop",
+            "fpscontroller.LateUpdate",
+            "pickupable.FixedUpdate",
+            "pickupable.OnCollisionEnter",
+            "breakablescript.OnCollisionEnter",
+            "breakablescript.OnTriggerEnter",
+            "breakablescript.Break",
+            "attachablescript.CollisionUpd",
+            "carscript.OnCollisionEnter",
+            "tubescript.OnCollisionEnter",
+            "mountStuff.Update",
+            "mountStuff.Scan",
+            "mountStuff.QuickFreeze",
+            "mountStuff.FreezeUpd",
+            "mountStuff.FreezeUpdVehicle",
+            "mountStuff.CheckStored",
+            "mountStuff.Unstore",
+            "mountStuff.MassUpd",
+            "mainscript.PlayClipAtPoint",
+            "savedatascript.SaveToDictionary",
+            "savedatascript.SpawnItem",
+            "savedatascript.InitAfterSpawn",
+            "savedatascript.LoadStuff",
+            "savedatascript.SaveToData",
+            "savedatascript.LoadPlayerStuff",
+            "savedatascript.SetDataFromSave",
+            "tosaveitemscript.SyncAll",
+            "tosaveitemscript.ForcePosUpd",
+            "tosaveitemscript.DistFreezeRB",
+            "tosaveitemscript.PreDestroy",
+            "tosaveitemscript.FInit",
+            "itemPlaceRemoveScript.PlaceOne",
+            "itemPlaceRemoveScript.RemoveStuff",
+            "fixedSpawnScript.FStart",
+            "newRandomStuffSpawnScript.Spawn",
+            "partslotscript.FStart",
+            "partslotscript.Craft",
+            "partslotscript.UnCraft",
+            "massScript.Upd",
+            "newSaveScreenScript.AutoSave",
+            "newSaveScreenScript.Save",
+            "headlightscript.Update",
+            "tankscript.Upd",
+            "fpscontroller.InventoryStuff",
+            "fpscontroller.GetLook",
+            "fpscontroller.DrawRays",
+            "newSaveScreenScript.ReadSave",
+            "newSaveScreenScript.ReadFiles"
         };
+        static readonly int Slots = Names.Length;
 
         static readonly string[] AggregateNames = new string[]
         {
@@ -84,6 +140,13 @@ namespace TldMp
         // recorded sample; deeper entries only balance nested/recursive calls.
         readonly long[,] starts = new long[Slots, MaxDepth];
         readonly long[] total = new long[Slots];
+        readonly long[] maximum = new long[Slots];
+        readonly long[] frameTotal = new long[Slots];
+        readonly long[] peakFrame = new long[Slots];
+        readonly int[] totalFrame = new int[Slots];
+        readonly int[] frameCalls = new int[Slots];
+        readonly int[] maxFrameCalls = new int[Slots];
+        readonly int[] peakFrameId = new int[Slots];
         readonly int[] frame = new int[Slots];
         readonly int[] depth = new int[Slots];
         readonly int[] at = new int[Slots];
@@ -147,6 +210,21 @@ namespace TldMp
             if (count[slot] < Capacity) count[slot]++;
             calls[slot]++;
             total[slot] += elapsed;
+            if (elapsed > maximum[slot]) maximum[slot] = elapsed;
+            if (frameCalls[slot] == 0 || totalFrame[slot] != currentFrame)
+            {
+                totalFrame[slot] = currentFrame;
+                frameTotal[slot] = 0;
+                frameCalls[slot] = 0;
+            }
+            frameTotal[slot] += elapsed;
+            frameCalls[slot]++;
+            if (frameCalls[slot] > maxFrameCalls[slot]) maxFrameCalls[slot] = frameCalls[slot];
+            if (frameTotal[slot] > peakFrame[slot])
+            {
+                peakFrame[slot] = frameTotal[slot];
+                peakFrameId[slot] = currentFrame;
+            }
         }
 
         public void AddAggregate(int slot, long ticks)
@@ -159,9 +237,12 @@ namespace TldMp
         public string ReportAndReset(double millisecondsPerTick)
         {
             var text = new StringBuilder("nativeScriptTimings{inclusive, nested labels overlap; frames=");
-            text.Append(windowFrames).Append("; ");
+            text.Append(windowFrames)
+                .Append("; samples=last512 outer completions; inactiveExtended=omitted; ");
             for (int slot = 0; slot < Slots; slot++)
             {
+                // Extended labels report only activity, not fifty idle rows.
+                if (slot >= ExtendedStart && count[slot] == 0 && discarded[slot] == 0) continue;
                 if (slot != 0) text.Append("; ");
                 text.Append(Names[slot]).Append("=");
                 int n = count[slot];
@@ -178,13 +259,18 @@ namespace TldMp
                         .Append("ms calls=").Append(calls[slot])
                         .Append(" samples=").Append(n)
                         .Append(" perFrame=").Append((total[slot] * millisecondsPerTick / windowFrames).ToString("F3", CultureInfo.InvariantCulture))
-                        .Append("ms");
+                        .Append("ms maxCall=").Append((maximum[slot] * millisecondsPerTick).ToString("F3", CultureInfo.InvariantCulture))
+                        .Append("ms peakFrame=").Append((peakFrame[slot] * millisecondsPerTick).ToString("F3", CultureInfo.InvariantCulture))
+                        .Append("ms peakFrameId=").Append(peakFrameId[slot])
+                        .Append(" maxCallsPerFrame=").Append(maxFrameCalls[slot]);
                 }
                 text.Append(" incomplete=").Append(discarded[slot]);
                 count[slot] = at[slot] = calls[slot] = discarded[slot] = 0;
                 total[slot] = 0;
-                depth[slot] = 0;
-                overflow[slot] = false;
+                maximum[slot] = frameTotal[slot] = peakFrame[slot] = 0;
+                frameCalls[slot] = maxFrameCalls[slot] = peakFrameId[slot] = 0;
+                // A report can run inside an observed parent. Keep its start;
+                // the completion belongs to the window in which it returns.
             }
             for (int slot = 0; slot < AggregateSlots; slot++)
             {

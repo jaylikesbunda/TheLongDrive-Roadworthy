@@ -2,7 +2,7 @@
 
 A multiplayer and performance patch for **The Long Drive**.
 
-**v0.1.3 experimental** | Windows | Game build `2024.11.26b_test`
+**v0.2.0 experimental** | Windows | Game build `2024.11.26b_test`
 
 ## What does this patch do?
 
@@ -26,7 +26,7 @@ A multiplayer and performance patch for **The Long Drive**.
 - Save/Load buttons and confirmations line up in fixed spots.
 - Steering wheel setup no longer shows the settings tab behind it.
 - Multiplayer window, lobby list and dialogs stay inside the window.
-- The version label reads v0.1.3 Roadworthy.
+- The version label reads v0.2.0 Roadworthy.
 - Roadworthy lobbies show their patch version in the lobby browser.
 
 ### Joining and world loading
@@ -91,6 +91,9 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Performance and streaming
 
+- Mass checks create less temporary garbage.
+- Wheels skip unchanged physics settings each frame.
+- Storage checks reuse buffers and compare nearby props more efficiently.
 - Test clients on the same PC no longer disconnect just because a burst of updates arrives faster than the game reads them.
 - A flood of network updates no longer freezes the game.
 - Roads update faster when two players are nearby.
@@ -151,6 +154,40 @@ A multiplayer and performance patch for **The Long Drive**.
 
 </details>
 
+## Performance Diagnostics
+
+Performance diagnostics are opt-in. Set `TLD_MP_DIAGNOSTICS=1` before launching,
+or create an empty `tldmp-diagnostics.on` beside `TheLongDrive.exe`, then restart.
+Remove the flag/unset the variable and restart to disable them. No physics,
+collision, rendering-quality or network-rate settings are changed by profiling.
+
+The five-second reports cover 109 system timing labels, including player input
+and interaction, collision callbacks, impact-audio creation, break/debris work,
+storage scans, item spawning/loading/removal, part mounting, mass recalculation,
+autosaves, headlights, fluids, world streaming and the existing vehicle/AI/render
+systems. Inactive extended labels are omitted rather than printed as zero cost.
+
+- `total`, `calls`, and `perFrame` cover completed outer calls in the window.
+- `p50/p95` use the last 512 outer completions, not all calls or all frames.
+- `maxCall` retains the worst call in the whole window, even after ring eviction.
+- `peakFrame` and `peakFrameId` identify the heaviest frame for that label;
+  `maxCallsPerFrame` independently identifies burst volume within the window.
+- `fps-slow` reports the worst observed frames, their physics-step counts,
+  `nativeTop` inclusive costs, and `nativeSelfTop` costs after subtracting only
+  observed descendants. Never add nested inclusive totals together.
+- Timers observe synchronous main-thread work, not the lifetime of a coroutine
+  or worker job. `incomplete`/`incompleteScopes` indicate discarded/unbalanced
+  observations, not measured zero-cost calls.
+
+For a useful capture, wait until loading completes, idle for 15 seconds, then
+reproduce one problem at a time (prop collisions, driving, storage, or streaming)
+for 30-60 seconds. Note the approximate time and action, wait five seconds for
+the report, and press F11 to create a feedback bundle. In multiplayer capture
+both host and guest, identifying which machine stalled.
+
+Diagnostics add CPU/logging overhead: use them to locate expensive paths, then
+compare repeatable before/after runs with diagnostics disabled to judge FPS.
+
 ## Install
 
 1. Requirements: Windows 10/11 x64 with .NET Framework 4.x (built in on current Windows).
@@ -207,7 +244,7 @@ python packaging/build_release.py
 
 GitHub Actions builds and tests the installer and ZIP on pushes. To create a GitHub
 prerelease, manually run the release workflow and enter the version tag matching
-`packaging/build_release.py` (for example, `v0.1.3`). The workflow attaches the ZIP
+`packaging/build_release.py` (for example, `v0.2.0`). The workflow attaches the ZIP
 and changelog after the build job succeeds. Gameplay tests requiring
 the installed game are not run by GitHub Actions.
 

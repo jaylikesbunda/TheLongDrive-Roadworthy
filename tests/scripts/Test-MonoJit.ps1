@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory=$true)][string]$GameDirectory,
     [Parameter(Mandatory=$true)][string]$BuildDirectory,
     [string]$RejectedAssembly='',
-    [int]$ExpectedCandidateMethods=106,
+    # 106 existing selections plus 55 observers, minus RayStuff/FreezeUpd/
+    # RemoveStuff which already belonged to the selected hook set.
+    [int]$ExpectedCandidateMethods=159,
     [int]$ExpectedControlMethods=6
 )
 $ErrorActionPreference='Stop'
@@ -63,4 +65,3 @@ Probe $CandidateAssembly 'candidate' $false
 if($RejectedAssembly -ne ''){Probe $RejectedAssembly 'malformed-eh-negative-control' $true}
 # Missing Unity internal-call messages in these isolated logs are expected:
 # the compiler runs without Unity initialization and never invokes those calls.
-
