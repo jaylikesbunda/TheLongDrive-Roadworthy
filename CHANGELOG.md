@@ -7,6 +7,9 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Mass checks create less temporary garbage.
 - Wheels skip unchanged physics settings each frame.
 - Storage checks reuse buffers and compare nearby props more efficiently.
+- Spawn lists create less scratch garbage; prefab creation still happens atomically, can hitch, and no hitch reduction is measured yet.
+- Saves and joins see a consistent snapshot of construction work.
+- Guest spawns larger than one packet deliver reliably; acknowledgement commits only after completed relationship verification.
 - Game, lobby and installer labels now show v0.2.0 Roadworthy.
 
 ## v0.1.3

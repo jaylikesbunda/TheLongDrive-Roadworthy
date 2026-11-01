@@ -108,6 +108,7 @@ namespace TldMp
             text.Append(" dropped=").Append(core.Dropped).Append(" overflow=").Append(core.Overflow);
             text.Append(' ').Append(StableGameBridge.TakeItemSettleSummary());
             text.Append(' ').Append(StableGameBridge.TakeFarPlaceSummary());
+            text.Append(' ').Append(StableGameBridge.TakeSpawnWireSummary());
             text.Append(' ').Append(StableGameBridge.TakeTerrainWorkerSummary());
             text.Append(' ').Append(StableGameBridge.TakeCarSmoothSummary());
             text.Append(' ').Append(CargoGhost.Summary());

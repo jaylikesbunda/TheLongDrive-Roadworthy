@@ -44,6 +44,10 @@ public class poiGenScript {public bool isActiveAndEnabled=true,placeStartHouse,s
 public class itemPlaceRemoveScript {public static itemPlaceRemoveScript s=new itemPlaceRemoveScript();public float itemSpawnDist=100;}
 public static class Time {public static float realtimeSinceStartup;}
 public static class Debug {public static void Log(string s){}public static void LogWarning(string s){}}
+public static class StableGameBridge {
+public static bool GetConstructionFailureForPoi(poiGenScript.poiClass poi,out string reason){reason=null;return false;}
+public static bool VerifyPendingSpawnConstruction(out string reason){reason=null;return true;}
+}
 public static class Adapter {
 static bool hasGround;
 static void SetSupport(bool v){Physics.supportHits=v?new[]{new RaycastHit{normal=new Vector3{y=1},collider=new Collider()}}:new RaycastHit[0];}

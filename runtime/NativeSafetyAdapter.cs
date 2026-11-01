@@ -36,6 +36,7 @@ namespace TldMp
         {
             // The same IDs and even the same Unity objects can survive a
             // resnapshot. Retire retries from the previous world baseline.
+            ResetConstruction();
             if(safetyWorld!=0)attachmentSafety.BeginSession(safetyWorld);
         }
         static void RestoreSpawnBody()

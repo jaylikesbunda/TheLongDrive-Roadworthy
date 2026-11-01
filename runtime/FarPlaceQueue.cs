@@ -119,51 +119,44 @@ namespace TldMp
             return FarPlaceTiming.MustPlaceNow(featureState == 2, map != null && map.firstRun, loading, dontAsk, hasPlayer);
         }
 
-        static readonly FarPlaceQueuePolicy policy = new FarPlaceQueuePolicy();
-        static readonly System.Diagnostics.Stopwatch drainWatch = new System.Diagnostics.Stopwatch();
-        static readonly Func<double> drainElapsed = delegate { return drainWatch.Elapsed.TotalMilliseconds; };
-        static bool loggedError;
-
-        public static void Enqueue(uint id)
+        internal static SpawnAdmission Admit(uint id)
         {
-            policy.Enqueue(id);
+            StableGameBridge.EnsureWorldGeneration();
+            var identity = NativeSpawnAdapter.FarPlaceIdentity(StableGameBridge.SpawnWorldGeneration, id);
+            var status = StableGameBridge.Construction.Preflight(identity);
+            if (status != SpawnAdmission.Admitted) return status;
+            int resolvedIndex = -1;
+            var unit = new SpawnUnit(
+                delegate { return Valid(id, out resolvedIndex); },
+                delegate { itemPlaceRemoveScript.s.PlaceOne(id, resolvedIndex); });
+            var job = NativeSpawnAdapter.FarPlaceJob(identity, unit);
+            string reason;
+            return StableGameBridge.Construction.TryAdmit(job, out reason);
         }
 
         // Called once per frame from the bridge driver.
         public static void Drain()
         {
-            if (policy.Count == 0) return;
-            if (!WorldReady())
-            {
-                policy.Clear();
-                return;
-            }
-            drainWatch.Reset();
-            drainWatch.Start();
-            policy.Drain(BudgetMs, drainElapsed, TryPlace);
-            drainWatch.Stop();
+            StableGameBridge.EnsureWorldGeneration();
+            if (!WorldReady()) return;
+            StableGameBridge.Construction.BeginFrame(UnityEngine.Time.frameCount);
+            StableGameBridge.Construction.Drain(BudgetMs);
         }
 
         // Places everything queued now, with no budget. Used before a world capture.
         public static void FlushAll()
         {
-            if (policy.Count == 0) return;
-            if (!WorldReady())
-            {
-                policy.Clear();
-                return;
-            }
-            policy.Drain(double.PositiveInfinity, drainElapsed, TryPlace);
+            StableGameBridge.Construction.CompletePendingConstruction("far-place flush", "items");
         }
 
         public static void Clear()
         {
-            policy.Clear();
+            StableGameBridge.Construction.CancelUnstarted(NativeSpawnAdapter.SourceFarPlace);
         }
 
         public static string TakeSummary()
         {
-            return policy.TakeSummary();
+            return StableGameBridge.Construction.TakeSummary();
         }
 
         static bool WorldReady()
@@ -189,27 +182,6 @@ namespace TldMp
                     return true;
             }
             return false;
-        }
-
-        static bool TryPlace(uint id)
-        {
-            int index;
-            if (!Valid(id, out index)) return false;
-            try
-            {
-                itemPlaceRemoveScript.s.PlaceOne(id, index);
-                return true;
-            }
-            catch (Exception e)
-            {
-                if (!loggedError)
-                {
-                    loggedError = true;
-                    UnityEngine.Debug.Log("[TLD MP far place] PlaceOne failed for id " + id.ToString(CultureInfo.InvariantCulture) +
-                        ": " + e.GetType().Name + ": " + e.Message);
-                }
-                return false;
-            }
         }
     }
 }

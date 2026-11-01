@@ -640,6 +640,36 @@ public static class PatchStability
     // single PlaceOne call (result popped) is routed to EnqueueFarPlace, which
     // records the id; the bridge drains the queue over frames with revalidation.
     // The call swap keeps the stack identical: this, uint id, int index -> result.
+    static void OptimizeFixedSpawnLists()
+    {
+        var method=Method("fixedSpawnScript","FStart",0);
+        RequireFixedSpawnShape(method);
+        Replace(method,"FixedSpawnFStart",-1);
+    }
+    internal static void RequireFixedSpawnShape(MethodDefinition method)
+    {
+        var queries=method.Body.Instructions.Where(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt)&&i.Operand is GenericInstanceMethod &&
+            ((GenericInstanceMethod)i.Operand).Name=="GetComponentsInChildren").ToArray();
+        if(queries.Length!=3)throw new Exception("Fixed spawn FStart: expected three component queries, found "+queries.Length);
+        string[] expected={"UnityEngine.Rigidbody","tosaveitemscript","randomTypeSelector"};
+        for(int i=0;i<3;i++)
+        {
+            var generic=(GenericInstanceMethod)queries[i].Operand;
+            if(generic.GenericArguments.Count!=1 || generic.GenericArguments[0].FullName!=expected[i] || generic.Parameters.Count!=0)
+                throw new Exception("Fixed spawn FStart: query "+i+" shape changed: "+generic.FullName);
+        }
+        var freezes=method.Body.Instructions.Where(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt)&&i.Operand is MethodReference &&
+            ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.Rigidbody" && ((MethodReference)i.Operand).Name=="set_isKinematic").ToArray();
+        if(freezes.Length!=1)throw new Exception("Fixed spawn FStart: expected one kinematic setter, found "+freezes.Length);
+        var activations=method.Body.Instructions.Where(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt)&&i.Operand is MethodReference &&
+            ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.GameObject" && ((MethodReference)i.Operand).Name=="SetActive").ToArray();
+        if(activations.Length!=1)throw new Exception("Fixed spawn FStart: expected one starting-car activation, found "+activations.Length);
+        var fstarts=method.Body.Instructions.Where(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt)&&i.Operand is MethodReference &&
+            ((MethodReference)i.Operand).Name=="FStart" && ((MethodReference)i.Operand).Parameters.Count==0).ToArray();
+        if(fstarts.Length!=2)throw new Exception("Fixed spawn FStart: expected two child FStart calls, found "+fstarts.Length);
+        var returns=method.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray();
+        if(returns.Length!=1)throw new Exception("Fixed spawn FStart: expected one return, found "+returns.Length);
+    }
     static void OptimizeItemPlaceSpread()
     {
         var method=Method("itemPlaceRemoveScript","PlaceStuff",0);
@@ -1056,6 +1086,13 @@ public static class PatchStability
                     Observe(Method("poiScript","SpawnStuff",1,"poiClass"),"NativePoiStuffBegin","NativePoiStuffEnd",2,new int[0],new int[0]);
                     Observe(Method("poiScript","ItemSpawn",0),"NativePoiItemsBegin","NativePoiItemsEnd",1,new int[0],new int[0]);
                     Observe(Method("poiScript","FixedSpawn",0),"NativePoiFixedBegin","NativePoiFixedEnd",1,new int[0],new int[0]);
+                    BracketCalls(Method("poiScript","FixedSpawn",0),"UnityEngine.Object","Instantiate",4,1,"NativePoiFixedInstantiateBegin","NativePoiFixedInstantiateEnd");
+                    Entry(Method("savedatascript","SaveToData",1),"BeforeNativeSaveData");
+                    Entry(Method("newSaveScreenScript","Save",4),"BeforeNativeSaveScreen");
+                    Entry(Method("kaposztaleves","SaveSelected",0),"BeforeNativeExport");
+                    Entry(Method("savedatascript","SaveToDictionary",2),"RequireConstructionSettled");
+                    Entry(Method("savedatascript","SetDataFromSave",0),"ResetConstruction");
+                    OptimizeFixedSpawnLists();
                     Replace(Method("massScript","Mass",0),"MassWithoutArray",-1);
                     Observe(Method("poiGenScript","RemovePoi",1,"poiClass"),"NativePoiRemoveBegin","NativePoiRemoveEnd",2,new int[0],new int[0]);
                     Guard(Method("objGenScript/categoryClass","UpdChunksNeeded",0),"CategoryChunks",-1);
@@ -1194,7 +1231,7 @@ public static class PatchStability
                     }
                     // Native profiler seam observers add no gameplay control or state.
                     // Noises.Noise remains the only changed method without a bridge call.
-                    if(hooked!=105 || sites!=229)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    if(hooked!=111 || sites!=237)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
                     AddSystemTimings();
                     game.Write(args[2]);Console.WriteLine("Built native-restore assembly: "+args[2]+" ("+hooked+" hooked methods, "+sites+" bridge call sites)");
                 }

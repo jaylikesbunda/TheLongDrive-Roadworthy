@@ -8,7 +8,7 @@ param(
     [string]$RejectedAssembly='',
     # 106 existing selections plus 55 observers, minus RayStuff/FreezeUpd/
     # RemoveStuff which already belonged to the selected hook set.
-    [int]$ExpectedCandidateMethods=159,
+    [int]$ExpectedCandidateMethods=160,
     [int]$ExpectedControlMethods=6
 )
 $ErrorActionPreference='Stop'

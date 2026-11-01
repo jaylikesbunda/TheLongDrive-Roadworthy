@@ -34,7 +34,7 @@ namespace TldMp
     // Session, handshake, liveness, world-manifest transfer and join journal.
     // There is no ownership/lease/epoch authority here: native gameplay bytes are
     // relayed as opaque transport payloads and native handlers decide everything.
-    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18, Spawn=19, SpawnAck=20 }
+    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18, Spawn=19, SpawnAck=20, SpawnChunk=21, SpawnChunkAck=22 }
 
     public sealed class StableMessage
     {
@@ -52,7 +52,7 @@ namespace TldMp
             {
                 if(r.ReadByte()!=254 || r.ReadUInt32()!=0x33444C54 || r.ReadByte()!=3) return null;
                 var m=new StableMessage { Op=(StableOp)r.ReadByte(),Lobby=r.ReadUInt64(),Session=r.ReadUInt64(),Origin=r.ReadUInt64(),Epoch=r.ReadUInt64(),Sequence=r.ReadUInt64(),WorldRevision=r.ReadUInt64(),Key=r.ReadString() };
-                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.SpawnAck) return null;
+                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.SpawnChunkAck) return null;
                 m.Data=r.ReadBytes(n);return m;
             }} catch(Exception e) { if(e is IOException || e is ArgumentException || e is OverflowException) return null;throw; }
         }
@@ -68,6 +68,10 @@ namespace TldMp
         public ulong Session;public bool Ready,Syncing;public uint First,Last;
         public double Seen;public ulong Transfer;public List<Entry> Journal=new List<Entry>();public int JournalBytes;
         public bool JournalOverflowNoticed;
+        public StableNode.SpawnIn SpawnIn;
+        public readonly Dictionary<ulong,StableNode.SpawnDone> SpawnDone=new Dictionary<ulong,StableNode.SpawnDone>();
+        public readonly Queue<ulong> SpawnDoneOrder=new Queue<ulong>();
+        public ulong SpawnDoneWatermark;
     }
     public sealed class StableNode
     {
@@ -98,10 +102,163 @@ namespace TldMp
         public Action<uint,bool> CarBloodReceived;
         public Func<ulong,ulong,byte[],bool> SpawnReceived;
         public Action<ulong> SpawnAcknowledged;
+        public Action<ulong,int> SpawnProgress;
+        public const int MaxSpawnBytes=16*1024*1024,SpawnChunkPayload=48000;
+        public sealed class SpawnIn { public ulong Transaction;public int Total;public byte[] Hash;public byte[] Bytes;public int Received;public bool Verified,SettledRejected; }
+        public sealed class SpawnDone { public int Total;public byte[] Hash; }
+        const int MaxSpawnDone=16;
+        sealed class SpawnOut { public ulong Transaction;public byte[] Bytes;public byte[] Hash;public int Total;public int Next;public int ExpectedAck;public bool AwaitingFinal; }
+        SpawnOut spawnOut;
+        ulong spawnSmallPending;byte[] spawnSmallBytes;
+        public int SpawnIncomingHigh;
+        int spawnIncomingBytes;
+        public int SpawnIncomingBytes { get { return spawnIncomingBytes; } }
         public bool SendSpawn(ulong sequence,byte[] bytes)
         {
-            if(IsHost || !Ready || bytes==null || bytes.Length>58000)return false;
-            var m=Message(StableOp.Spawn,"",bytes);m.Sequence=sequence;Emit(Host,m,true);return true;
+            if(IsHost || !Ready || sequence==0 || bytes==null)return false;
+            if(bytes.Length<=58000)
+            {
+                if(spawnOut!=null)return false;
+                if(spawnSmallPending!=0)
+                {
+                    if(sequence!=spawnSmallPending || !ReferenceEquals(bytes,spawnSmallBytes))return false;
+                    var retry=Message(StableOp.Spawn,"",bytes);retry.Sequence=sequence;retry.Epoch=Session;
+                    Emit(Host,retry,true);return true;
+                }
+                var m=Message(StableOp.Spawn,"",bytes);m.Sequence=sequence;m.Epoch=Session;
+                spawnSmallPending=sequence;spawnSmallBytes=bytes;
+                Emit(Host,m,true);return true;
+            }
+            if(spawnSmallPending!=0)return false;
+            if(bytes.Length>MaxSpawnBytes)return false;
+            if(spawnOut!=null)
+            {
+                if(spawnOut.Transaction!=sequence || !ReferenceEquals(spawnOut.Bytes,bytes))return false;
+                EmitSpawnChunk(spawnOut.AwaitingFinal);return true;
+            }
+            byte[] hash;using(var sha=SHA256.Create())hash=sha.ComputeHash(bytes);
+            spawnOut=new SpawnOut {Transaction=sequence,Bytes=bytes,Hash=hash,Total=bytes.Length};
+            EmitSpawnChunk(false);return true;
+        }
+        void EmitSpawnChunk(bool lastAgain)
+        {
+            var t=spawnOut;if(t==null||t.Total==0)return;
+            int offset=lastAgain?((t.Total-1)/SpawnChunkPayload)*SpawnChunkPayload:t.Next;
+            int n=Math.Min(SpawnChunkPayload,t.Total-offset);
+            var payload=new byte[40+n];
+            Buffer.BlockCopy(BitConverter.GetBytes(t.Total),0,payload,0,4);
+            Buffer.BlockCopy(BitConverter.GetBytes(offset),0,payload,4,4);
+            Buffer.BlockCopy(t.Hash,0,payload,8,32);
+            Buffer.BlockCopy(t.Bytes,offset,payload,40,n);
+            var m=Message(StableOp.SpawnChunk,"",payload);m.Sequence=t.Transaction;m.Epoch=Session;
+            t.ExpectedAck=offset+n;
+            Emit(Host,m,true);
+        }
+        void AckSpawnChunk(StableMessage m)
+        {
+            if(!Ready || m.Origin!=Host || m.Epoch!=Session || m.Data.Length!=4)return;
+            var t=spawnOut;if(t==null || t.Transaction!=m.Sequence)return;
+            int next=BitConverter.ToInt32(m.Data,0);
+            if(next!=t.ExpectedAck)return;
+            if(t.AwaitingFinal)return;
+            t.Next=next;
+            if(SpawnProgress!=null)SpawnProgress(t.Transaction,t.Next);
+            if(t.Next<t.Total){EmitSpawnChunk(false);return;}
+            t.AwaitingFinal=true;
+        }
+        void EmitSpawnChunkAck(ulong peer,StablePeer p,ulong transaction,int next)
+        {
+            var ack=Message(StableOp.SpawnChunkAck,"",BitConverter.GetBytes(next));ack.Sequence=transaction;ack.Epoch=p.Session;Emit(peer,ack,true);
+        }
+        void EmitSpawnAck(ulong peer,StablePeer p,ulong transaction)
+        {
+            var ack=Message(StableOp.SpawnAck,"",new byte[0]);ack.Sequence=transaction;ack.Epoch=p.Session;Emit(peer,ack,true);
+        }
+        static bool Equal(byte[] a,byte[] b)
+        {
+            if(a==null || b==null || a.Length!=b.Length)return false;
+            for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;
+            return true;
+        }
+        void ReleaseSpawnIn(StablePeer p)
+        {
+            if(p.SpawnIn==null)return;spawnIncomingBytes-=p.SpawnIn.Total;p.SpawnIn=null;
+        }
+        void StoreSpawnDone(StablePeer p,ulong transaction,int total,byte[] hash)
+        {
+            if(p.SpawnDone.Count>=MaxSpawnDone)
+            {
+                ulong old=p.SpawnDoneOrder.Dequeue();
+                if(p.SpawnDone.Remove(old) && Notice!=null)Notice("Spawn transaction ledger evicted seq="+old);
+            }
+            if(transaction>p.SpawnDoneWatermark)p.SpawnDoneWatermark=transaction;
+            p.SpawnDone[transaction]=new SpawnDone {Total=total,Hash=hash};p.SpawnDoneOrder.Enqueue(transaction);
+        }
+        void FinishSpawnIn(ulong sender,StablePeer p,SpawnIn t)
+        {
+            SpawnDone prior;
+            if(p.SpawnDone.TryGetValue(t.Transaction,out prior)){ReleaseSpawnIn(p);EmitSpawnAck(sender,p,t.Transaction);return;}
+            if(!t.Verified)
+            {
+                byte[] hash;using(var sha=SHA256.Create())hash=sha.ComputeHash(t.Bytes);
+                if(!Equal(hash,t.Hash)){ReleaseSpawnIn(p);TraceJoin("SpawnChunk checksum mismatch seq="+t.Transaction);return;}
+                t.Verified=true;
+            }
+            if(SpawnReceived!=null && SpawnReceived(sender,t.Transaction,t.Bytes))
+            {
+                StoreSpawnDone(p,t.Transaction,t.Total,t.Hash);
+                ReleaseSpawnIn(p);
+                EmitSpawnAck(sender,p,t.Transaction);
+            }
+            else t.SettledRejected=true;
+        }
+        void ReceiveSpawnChunk(ulong sender,StablePeer p,StableMessage m)
+        {
+            var d=m.Data;if(!p.Ready || m.Origin!=sender || m.Epoch!=p.Session || m.Sequence==0 || d==null || d.Length<40)return;
+            int total=BitConverter.ToInt32(d,0),offset=BitConverter.ToInt32(d,4);
+            if(total<1 || total>MaxSpawnBytes || offset<0 || offset>total || offset%SpawnChunkPayload!=0)return;
+            int expected=Math.Min(SpawnChunkPayload,total-offset);
+            if(expected<=0 || d.Length!=40+expected)return;
+            var hash=new byte[32];Buffer.BlockCopy(d,8,hash,0,32);
+            SpawnDone done;
+            if(p.SpawnDone.TryGetValue(m.Sequence,out done))
+            {
+                if(done.Total!=total || !Equal(done.Hash,hash))return;
+                EmitSpawnChunkAck(sender,p,m.Sequence,offset+expected);
+                if(offset+expected==total)EmitSpawnAck(sender,p,m.Sequence);
+                return;
+            }
+            if(m.Sequence<=p.SpawnDoneWatermark)return;
+            var t=p.SpawnIn;
+            if(t!=null && t.Transaction!=m.Sequence)return;
+            if(t==null)
+            {
+                if(offset!=0 || spawnIncomingBytes+total>MaxSpawnBytes)return;
+                t=new SpawnIn {Transaction=m.Sequence,Total=total,Hash=hash,Bytes=new byte[total]};
+                p.SpawnIn=t;spawnIncomingBytes+=total;if(spawnIncomingBytes>SpawnIncomingHigh)SpawnIncomingHigh=spawnIncomingBytes;
+            }
+            else if(t.Total!=total || !Equal(t.Hash,hash))return;
+            if(t.SettledRejected)
+            {
+                int last=((t.Total-1)/SpawnChunkPayload)*SpawnChunkPayload;
+                if(offset!=last)return;
+                for(int i=0;i<expected;i++)if(t.Bytes[offset+i]!=d[40+i])return;
+                t.SettledRejected=false;
+                FinishSpawnIn(sender,p,t);
+                return;
+            }
+            if(offset==t.Received)
+            {
+                Buffer.BlockCopy(d,40,t.Bytes,offset,expected);t.Received+=expected;
+                EmitSpawnChunkAck(sender,p,m.Sequence,t.Received);
+                if(t.Received==t.Total)FinishSpawnIn(sender,p,t);
+                return;
+            }
+            if(offset<t.Received)
+            {
+                for(int i=0;i<expected;i++)if(t.Bytes[offset+i]!=d[40+i])return;
+                EmitSpawnChunkAck(sender,p,m.Sequence,t.Received);
+            }
         }
         public Action<string> Notice;
         public Action<uint> WatermarkChanged;
@@ -322,6 +479,7 @@ namespace TldMp
         {
             StablePeer p;if(!Peers.TryGetValue(peer,out p))return;
             HashSet<ulong> set;if(!retired.TryGetValue(peer,out set))retired.Add(peer,set=new HashSet<ulong>());set.Add(p.Session);
+            ReleaseSpawnIn(p);p.SpawnDone.Clear();p.SpawnDoneOrder.Clear();
             Peers.Remove(peer);if(PeerLeft!=null)PeerLeft(peer);
         }
         void Fail(string error)
@@ -330,7 +488,19 @@ namespace TldMp
             if(snapshot!=null)snapshot.Dispose();snapshot=null;
             foreach(var map in mapTransfers.Values)map.Bytes.Dispose();mapTransfers.Clear();mapRequests.Clear();mapReplies.Clear();
             mapWorldJobs.Clear();mapDecorationJobs.Clear();queuedMapReplies.Clear();mapApplyJobs.Clear();
+            foreach(var pair in Peers)ReleaseSpawnIn(pair.Value);spawnOut=null;spawnSmallPending=0;spawnSmallBytes=null;spawnIncomingBytes=0;
             joinStageArmed=false;joinTransfer=0;
+        }
+        public void ClearSpawnTransfers()
+        {
+            foreach(var pair in Peers){ReleaseSpawnIn(pair.Value);pair.Value.SpawnDone.Clear();pair.Value.SpawnDoneOrder.Clear();}
+            spawnOut=null;spawnSmallPending=0;spawnSmallBytes=null;
+        }
+        public void RetirePeersForWorldReplacement()
+        {
+            var keys=new List<ulong>(Peers.Keys);
+            foreach(var key in keys)RemovePeer(key);
+            if(keys.Count>0 && Notice!=null)Notice("peer sessions retired for world replacement; reconnect required");
         }
         void AcceptBootstrap(StableMessage m)
         {
@@ -357,10 +527,26 @@ namespace TldMp
                 if(m.Op==StableOp.Heartbeat)return;
                 if(m.Op==StableOp.Spawn)
                 {
-                    if(p.Ready && m.Sequence!=0 && SpawnReceived!=null && SpawnReceived(sender,m.Sequence,m.Data))
-                    {var ack=Message(StableOp.SpawnAck,"",new byte[0]);ack.Sequence=m.Sequence;Emit(sender,ack,true);}
+                    if(!p.Ready || m.Sequence==0 || m.Epoch!=p.Session)return;
+                    SpawnDone done;
+                    if(p.SpawnDone.TryGetValue(m.Sequence,out done))
+                    {
+                        if(done.Total!=m.Data.Length)return;
+                        byte[] h;using(var sha=SHA256.Create())h=sha.ComputeHash(m.Data);
+                        if(!Equal(done.Hash,h))return;
+                        EmitSpawnAck(sender,p,m.Sequence);return;
+                    }
+                    if(m.Sequence<=p.SpawnDoneWatermark || p.SpawnIn!=null)return;
+                    if(SpawnReceived!=null && SpawnReceived(sender,m.Sequence,m.Data))
+                    {
+                        byte[] h;using(var sha=SHA256.Create())h=sha.ComputeHash(m.Data);
+                        StoreSpawnDone(p,m.Sequence,m.Data.Length,h);
+                        EmitSpawnAck(sender,p,m.Sequence);
+                    }
                     return;
                 }
+                if(m.Op==StableOp.SpawnChunk){ReceiveSpawnChunk(sender,p,m);return;}
+                if(m.Op==StableOp.SpawnChunkAck)return;
                 if(m.Op==StableOp.CarBlood)
                 {
                     if(!p.Ready || !ValidCarBlood(m))return;
@@ -417,7 +603,18 @@ namespace TldMp
             }
             if(!Compatible || m.Session!=HostSession)return;lastHost=now;
             if(m.Op==StableOp.Heartbeat)return;
-            if(m.Op==StableOp.SpawnAck){if(Ready && m.Data.Length==0 && SpawnAcknowledged!=null)SpawnAcknowledged(m.Sequence);return;}
+            if(m.Op==StableOp.SpawnAck)
+            {
+                if(Ready && m.Origin==Host && m.Epoch==Session && m.Sequence!=0 && m.Data.Length==0)
+                {
+                    if(spawnOut!=null && spawnOut.Transaction==m.Sequence)spawnOut=null;
+                    if(m.Sequence==spawnSmallPending){spawnSmallPending=0;spawnSmallBytes=null;}
+                    if(SpawnAcknowledged!=null)SpawnAcknowledged(m.Sequence);
+                }
+                return;
+            }
+            if(m.Op==StableOp.SpawnChunkAck){AckSpawnChunk(m);return;}
+            if(m.Op==StableOp.SpawnChunk)return;
             if(m.Op==StableOp.CarBlood)
             {
                 if(ValidCarBlood(m) && CarBloodReceived!=null)CarBloodReceived(BitConverter.ToUInt32(m.Data,0),m.Data[4]!=0);

@@ -49,7 +49,7 @@ public static class StableCoreTests
         Check(spawnApplied==1 && spawnAcked==1,"spawn handoff or acknowledgement failed");
         spawnHost.SpawnReceived=delegate{return false;};spawnClient.SendSpawn(2,new byte[]{1});spawnLab.Pump();
         Check(spawnAcked==1,"failed host application acknowledged");
-        Check(!spawnHost.SendSpawn(1,new byte[]{1}) && !spawnClient.SendSpawn(3,new byte[58001]),"spawn sender or byte bound bypassed");
+        Check(!spawnHost.SendSpawn(1,new byte[]{1}) && !spawnClient.SendSpawn(4,new byte[StableNode.MaxSpawnBytes+1]),"spawn sender or byte bound bypassed");
 
         try
         {

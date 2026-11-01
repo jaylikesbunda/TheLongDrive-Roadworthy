@@ -110,6 +110,8 @@ A multiplayer and performance patch for **The Long Drive**.
 - Terrain and prop checks no longer redo work that has not changed.
 - Large prop requests are split up to reduce frame spikes.
 - Items loading in cause fewer visible stutters.
+- Spawn list queries create less scratch garbage. Prefab creation still happens atomically and can hitch.
+- Guest spawns larger than one packet deliver reliably; acknowledgement commits only after completed relationship verification.
 - Cheaper physics checks.
 - Large construction saves no longer slow down as they grow.
 - Distant terrain loads without stuttering.
@@ -161,7 +163,7 @@ or create an empty `tldmp-diagnostics.on` beside `TheLongDrive.exe`, then restar
 Remove the flag/unset the variable and restart to disable them. No physics,
 collision, rendering-quality or network-rate settings are changed by profiling.
 
-The five-second reports cover 109 system timing labels, including player input
+The five-second reports cover 110 system timing labels, including player input
 and interaction, collision callbacks, impact-audio creation, break/debris work,
 storage scans, item spawning/loading/removal, part mounting, mass recalculation,
 autosaves, headlights, fluids, world streaming and the existing vehicle/AI/render

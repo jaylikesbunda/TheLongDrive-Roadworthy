@@ -125,7 +125,8 @@ namespace TldMp
             "fpscontroller.GetLook",
             "fpscontroller.DrawRays",
             "newSaveScreenScript.ReadSave",
-            "newSaveScreenScript.ReadFiles"
+            "newSaveScreenScript.ReadFiles",
+            "poiScript.FixedSpawn.Instantiate"
         };
         static readonly int Slots = Names.Length;
 

@@ -83,7 +83,7 @@ public static class VerifyStability
             i.Operand is FieldReference && ((FieldReference)i.Operand).Name=="Names");
         var labels=initializer.Body.Instructions.TakeWhile(i=>i!=labelStore)
             .Where(i=>i.OpCode==OpCodes.Ldstr).Select(i=>(string)i.Operand).ToArray();
-        if(labels.Length!=54+SystemTimingSpecs.Length)throw new Exception("System timing label count mismatch.");
+        if(labels.Length!=55+SystemTimingSpecs.Length)throw new Exception("System timing label count mismatch.");
         int stripped=0;
         for(int index=0;index<SystemTimingSpecs.Length;index++)
         {
@@ -832,6 +832,35 @@ public static class VerifyStability
         patched.Body.Variables.RemoveAt(patched.Body.Variables.Count-1);
         if(VerifyPatch.Fingerprint(native)!=VerifyPatch.Fingerprint(patched))throw new Exception("Flyer kinematic edit changed native RHS, timers, rotation, or other stock IL.");
     }
+    static void StripFixedSpawnReplacement(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge)
+    {
+        var queries=native.Body.Instructions.Where(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt)&&i.Operand is GenericInstanceMethod &&
+            ((GenericInstanceMethod)i.Operand).Name=="GetComponentsInChildren").ToArray();
+        if(queries.Length!=3)throw new Exception("Fixed spawn pristine body lost its three component queries: "+native.FullName);
+        string[] expected={"UnityEngine.Rigidbody","tosaveitemscript","randomTypeSelector"};
+        for(int i=0;i<3;i++)
+        {
+            var generic=(GenericInstanceMethod)queries[i].Operand;
+            if(generic.GenericArguments.Count!=1 || generic.GenericArguments[0].FullName!=expected[i] || generic.Parameters.Count!=0)
+                throw new Exception("Fixed spawn pristine query "+i+" changed: "+native.FullName);
+        }
+        var freezes=native.Body.Instructions.Count(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt)&&i.Operand is MethodReference &&
+            ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.Rigidbody" && ((MethodReference)i.Operand).Name=="set_isKinematic");
+        var activations=native.Body.Instructions.Count(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt)&&i.Operand is MethodReference &&
+            ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.GameObject" && ((MethodReference)i.Operand).Name=="SetActive");
+        var fstarts=native.Body.Instructions.Count(i=>(i.OpCode==OpCodes.Call||i.OpCode==OpCodes.Callvirt)&&i.Operand is MethodReference &&
+            ((MethodReference)i.Operand).Name=="FStart" && ((MethodReference)i.Operand).Parameters.Count==0);
+        var returns=native.Body.Instructions.Count(i=>i.OpCode==OpCodes.Ret);
+        if(freezes!=1 || activations!=1 || fstarts!=2 || returns!=1)
+            throw new Exception("Fixed spawn pristine body shape changed: "+native.FullName);
+        var list=patched.Body.Instructions;
+        if(list.Count!=3 || list[0].OpCode!=OpCodes.Ldarg_0 || !IsBridge(list[1]) || ((MethodReference)list[1].Operand).Name!="FixedSpawnFStart" || list[2].OpCode!=OpCodes.Ret)
+            throw new Exception("Fixed spawn replacement body changed: "+native.FullName);
+        var definition=BridgeDefinition(bridge,(MethodReference)list[1].Operand);
+        if(definition.ReturnType.FullName!="System.Void" || definition.Parameters.Count!=1 ||
+            definition.Parameters[0].ParameterType.FullName!="fixedSpawnScript")
+            throw new Exception("Fixed spawn helper signature changed.");
+    }
     static MethodDefinition Find(Dictionary<string,TypeDefinition> types,string key)
     {
         int slash=key.LastIndexOf('/');if(slash<0)throw new Exception("Bad method key: "+key);
@@ -913,7 +942,13 @@ public static class VerifyStability
                     {"pickupable.JustUnPhysicsLock/0","E:NativeBeforeUnPhysicsLock:-1"},
                     {"poiScript.SpawnStuff/1","O:NativePoiStuffBegin:NativePoiStuffEnd:2:-:-"},
                     {"poiScript.ItemSpawn/0","O:NativePoiItemsBegin:NativePoiItemsEnd:1:-:-"},
-                    {"poiScript.FixedSpawn/0","O:NativePoiFixedBegin:NativePoiFixedEnd:1:-:-"},
+                    {"poiScript.FixedSpawn/0","BOV:NativePoiFixedBegin:NativePoiFixedEnd:1:-:-:NativePoiFixedInstantiateBegin,NativePoiFixedInstantiateEnd,UnityEngine.Object,Instantiate,4,1"},
+                    {"savedatascript.SaveToData/1","E:BeforeNativeSaveData:"},
+                    {"newSaveScreenScript.Save/4","E:BeforeNativeSaveScreen:"},
+                    {"kaposztaleves.SaveSelected/0","E:BeforeNativeExport:"},
+                    {"savedatascript.SaveToDictionary/2","E:RequireConstructionSettled:"},
+                    {"savedatascript.SetDataFromSave/0","E:ResetConstruction:"},
+                    {"fixedSpawnScript.FStart/0","FS:"},
                     {"poiGenScript.RemovePoi/1","O:NativePoiRemoveBegin:NativePoiRemoveEnd:2:-:-"},
                     {"terrainGenScript.PlaceMesh/2","O:NativeTerrainPlaceMeshBegin:NativeTerrainPlaceMeshEnd:1:-:-"},
                     {"newTerrainTileScript.FStart/6","O:NativeTerrainTileStartBegin:NativeTerrainTileStartEnd:1:-:-"},
@@ -1052,7 +1087,7 @@ public static class VerifyStability
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(seatExit))throw new Exception("Seat-exit observers changed stock method body.");
                             continue;
                         }
-                        string[] bits=rule.Split(':');string mode=bits[0],name=bits[1];int[] loads=(mode=="T" || mode=="O" || mode=="GT" || mode=="X" || mode=="P" || mode=="OS" || mode=="Y" || mode=="F" || mode=="BOV" || mode=="OB" || mode=="OVY" || mode=="M" || mode=="K" || mode=="CB" || mode=="IC" || mode=="RM" || mode=="AS" || mode=="OV" || mode=="OW" || mode=="WK" || mode=="SW" || mode=="SW2" || mode=="OM" || mode=="RX" || bits[2]=="")?new int[0]:bits[2].Split(',').Select(Int32.Parse).ToArray();
+                        string[] bits=rule.Split(':');string mode=bits[0],name=bits[1];int[] loads=(mode=="T" || mode=="O" || mode=="GT" || mode=="X" || mode=="P" || mode=="OS" || mode=="Y" || mode=="F" || mode=="BOV" || mode=="OB" || mode=="OVY" || mode=="M" || mode=="K" || mode=="CB" || mode=="IC" || mode=="RM" || mode=="AS" || mode=="OV" || mode=="OW" || mode=="WK" || mode=="SW" || mode=="SW2" || mode=="OM" || mode=="RX" || mode=="FS" || bits[2]=="")?new int[0]:bits[2].Split(',').Select(Int32.Parse).ToArray();
                         var instructions=bm.Body.Instructions;
                         if(mode=="BOV")
                         {
@@ -1201,6 +1236,12 @@ public static class VerifyStability
                             if(bits.Length!=3 || bits[2]!="")throw new Exception("Bad flyer kinematic rule: "+key);
                             StripFlyerKinematicGuard(am,bm,bridge,name);
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Flyer kinematic guard changed stock behavior outside unsupported setter call: "+key);
+                            continue;
+                        }
+                        if(mode=="FS")
+                        {
+                            if(bits.Length!=2 || bits[1]!="")throw new Exception("Bad fixed-spawn replacement rule: "+key);
+                            StripFixedSpawnReplacement(am,bm,bridge);
                             continue;
                         }
                         if(mode=="X")
@@ -1432,7 +1473,7 @@ public static class VerifyStability
                 // Bus-ground diagnostics add two entry observers (AddPoi, poiScript.FStart): two methods, two sites.
                 // The terrain-align fix swaps two Transform.localPosition reads in poiGenScript.alignClass's constructor: one method, two sites.
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
-                if(bridgeUsers.Count!=105 || hookSites!=229)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                if(bridgeUsers.Count!=111 || hookSites!=237)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }

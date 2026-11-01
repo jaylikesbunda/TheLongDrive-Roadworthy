@@ -2,6 +2,16 @@ using System;
 using System.Collections.Generic;
 using TldMp;
 
+namespace TldMp
+{
+    internal static class StableGameBridge
+    {
+        internal static readonly SpawnCoordinator Construction = new SpawnCoordinator(() => 0);
+        internal static long SpawnWorldGeneration { get { return Construction.Generation; } }
+        internal static void EnsureWorldGeneration() { }
+    }
+}
+
 internal static class FarPlaceQueueTests
 {
     static int checks;

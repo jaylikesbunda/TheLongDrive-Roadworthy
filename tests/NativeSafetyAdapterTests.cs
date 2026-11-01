@@ -208,6 +208,7 @@ namespace TldMp
         static bool SpawnPointClear(fpscontroller player,UnityEngine.Vector3 at,out string blocker) { blocker=testBlocked?"wall":"none";return !testBlocked; }
         static bool FindFreeSpawn(fpscontroller player,UnityEngine.Vector3 at,out UnityEngine.Vector3 free) { free=testGroundFound?testGround:at;return testGroundFound; }
         static bool FindClearAnchor(fpscontroller player,UnityEngine.Vector3 at,out UnityEngine.Vector3 free) { free=at;return false; }
+        public static void ResetConstruction() { }
     }
 }
 

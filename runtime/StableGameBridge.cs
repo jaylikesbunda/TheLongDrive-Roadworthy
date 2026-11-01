@@ -18,7 +18,7 @@ namespace TldMp
     public static partial class StableGameBridge
     {
         static StableNode node;static Driver driver;static string fingerprint,lastError;static ContentFingerprint.Job fingerprintJob;static double fingerprintRetryAt;
-        static bool dispatching,capturing;static List<byte[]> captured;
+        static bool dispatching,capturing,captureBounded,captureOverflow;static long captureByteCount;static List<byte[]> captured;
         static readonly Dictionary<ulong,byte[]> maps=new Dictionary<ulong,byte[]>();
         static readonly Dictionary<ulong,byte[]> lastPlayers=new Dictionary<ulong,byte[]>();
         static readonly Dictionary<uint,MessageState> lastItems=new Dictionary<uint,MessageState>();
@@ -138,6 +138,7 @@ namespace TldMp
             selection.Clear();
             RoadLiveCache.Clear();RoadFarSkip.Clear();FarPlaceQueue.Clear();pendingItems.Clear();itemRecovery.Clear();TerrainWorker.Clear();poseFilter.Clear();senderClock.Clear();PlacementSkip.Clear();liveUsables.Clear();CarCargo.Clear();
             vehiclePairs.Clear();vehicleClock.Clear();ClearVehicleImpacts();RemoteCarSmoothing.Clear();dispatchVehicleMotion=null;applyingVehicleMotion=false;
+            constructionWorldSave=null;constructionWorldMap=constructionWorldData=null;string constructionResetReason;Construction.ResetWorld(NextWorldGeneration(),out constructionResetReason);
         }
         static void Ensure()
         {
@@ -173,7 +174,7 @@ namespace TldMp
             node.Trace=JoinDiagnostic;
             node.DeferMapWork=true;
             node.WatermarkChanged=delegate(uint high){if(savedatascript.s!=null && savedatascript.s.data!=null)savedatascript.s.data.lastID=Math.Max(savedatascript.s.data.lastID,high);};
-            node.PeerLeft=delegate(ulong peer){appliedSpawns.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;
+            node.PeerLeft=delegate(ulong peer){spawnLedgers.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;node.SpawnProgress=delegate(ulong transaction,int next){spawnAttempts=0;};
             StableMap.Configure(node);
             if(loopbackMode && !node.IsHost)
             {
@@ -450,7 +451,7 @@ namespace TldMp
         {
             if(bytes==null || bytes.Length==0 || bytes[0]!=254)return bytes!=null && bytes.Length>0 && bytes[0]==8;
             StableMessage message=StableMessage.Decode(bytes);
-            return message!=null && (message.Op==StableOp.MapPart || message.Op==StableOp.MapRequest || message.Op==StableOp.Begin || message.Op==StableOp.Part || message.Op==StableOp.End || message.Op==StableOp.Ack);
+            return message!=null && (message.Op==StableOp.MapPart || message.Op==StableOp.MapRequest || message.Op==StableOp.Begin || message.Op==StableOp.Part || message.Op==StableOp.End || message.Op==StableOp.Ack || message.Op==StableOp.SpawnChunk);
         }
         static void Classify(byte[] bytes,out NetDeliveryLane lane)
         {
@@ -459,7 +460,7 @@ namespace TldMp
             if(bytes[0]==254)
             {
                 StableMessage message=StableMessage.Decode(bytes);
-                lane=message!=null && (message.Op==StableOp.MapPart || message.Op==StableOp.MapRequest || message.Op==StableOp.Begin || message.Op==StableOp.Part || message.Op==StableOp.End || message.Op==StableOp.Ack)?NetDeliveryLane.Bulk:NetDeliveryLane.Critical;
+                lane=message!=null && (message.Op==StableOp.MapPart || message.Op==StableOp.MapRequest || message.Op==StableOp.Begin || message.Op==StableOp.Part || message.Op==StableOp.End || message.Op==StableOp.Ack || message.Op==StableOp.SpawnChunk)?NetDeliveryLane.Bulk:NetDeliveryLane.Critical;
                 return;
             }
             if(bytes[0]==8){lane=NetDeliveryLane.Bulk;return;}
@@ -612,7 +613,7 @@ namespace TldMp
         {
             if(!Connected || bytes==null || bytes.Length==0)return;Ensure();
             var hood=networkingScript.s.hood;
-            if(capturing){captured.Add((byte[])bytes.Clone());return;}
+            if(capturing){if(captureBounded){if(captureOverflow||captured==null||captured.Count>=65536||captureByteCount+bytes.Length>StableNode.MaxSpawnBytes)captureOverflow=true;else{captureByteCount+=bytes.Length;captured.Add((byte[])bytes.Clone());}}else captured.Add((byte[])bytes.Clone());return;}
             if(node!=null && !node.IsHost && RoutePasswordBootstrap(node.Host,bytes))return;
             if(SuppressJoiningPlayerPosition(bytes))return;
             // Suppress only the echo of a message currently being applied from
@@ -639,7 +640,7 @@ namespace TldMp
         public static void RouteTarget(CSteamID target,byte[] bytes,EP2PSend mode)
         {
             if(!Connected || bytes==null || bytes.Length==0)return;Ensure();
-            if(capturing){captured.Add((byte[])bytes.Clone());return;}
+            if(capturing){if(captureBounded){if(captureOverflow||captured==null||captured.Count>=65536||captureByteCount+bytes.Length>StableNode.MaxSpawnBytes)captureOverflow=true;else{captureByteCount+=bytes.Length;captured.Add((byte[])bytes.Clone());}}else captured.Add((byte[])bytes.Clone());return;}
             if(RoutePasswordBootstrap((ulong)target,bytes))return;
             if(SuppressJoiningPlayerPosition(bytes))return;
             if(dispatching && !RepairRequest(bytes[0]))return;
@@ -905,11 +906,34 @@ namespace TldMp
         {
             // Same receiver/arguments as the native call; null script still throws as native does.
             if(FarPlaceQueue.MustPlaceNow(script))return script.PlaceOne(id,index);
-            FarPlaceQueue.Enqueue(id);return null;
+            var admission=FarPlaceQueue.Admit(id);
+            if(admission==SpawnAdmission.CapacityRefused)
+            {
+                var identity=NativeSpawnAdapter.FarPlaceIdentity(spawnWorldGeneration,id);
+                tosaveitemscript placed=null;string atomicReason;
+                Construction.BeginFrame(UnityEngine.Time.frameCount);
+                if(Construction.RunUnadmittedAtomic(identity,delegate{placed=script.PlaceOne(id,index);},out atomicReason))return placed;
+                NoteConstructionRefusal(SpawnAdmission.CapacityRefused,atomicReason,identity);
+                return null;
+            }
+            if(admission!=SpawnAdmission.Admitted)NoteConstructionRefusal(admission,null,NativeSpawnAdapter.FarPlaceIdentity(spawnWorldGeneration,id));
+            return null;
         }
         public static string TakeFarPlaceSummary(){return FarPlaceQueue.TakeSummary();}
+        public static string TakeSpawnWireSummary()
+        {
+            int inBytes=node==null?0:node.SpawnIncomingBytes,inHigh=node==null?0:node.SpawnIncomingHigh;
+            return "spawnwire{corePending="+inBytes+" coreHigh="+inHigh+" applyPending="+spawnLedgerBytes+" applyHigh="+spawnLedgerHigh+"}";
+        }
         public static string TakeTerrainWorkerSummary(){return TerrainWorker.TakeSummary();}
-        internal static void FlushFarPlace(){FarPlaceQueue.FlushAll();}
+        internal static void FlushFarPlace(){ConstructionFence("world-capture");}
+        internal static bool GetConstructionFailureForPoi(poiGenScript.poiClass poi,out string reason)
+        {
+            reason=null;
+            if(poi==null)return false;
+            var identity=NativeSpawnAdapter.PoiIdentity(spawnWorldGeneration,poi.posID.x,poi.posID.y,poi.posID.z,poi.id,poi);
+            return Construction.FailedReason(identity,out reason);
+        }
         static bool ItemHasGround(tosaveitemscript item)
         {
             Transform self=item.transform;
@@ -1546,7 +1570,118 @@ namespace TldMp
         // stop to reach its roadside spot, or for the deadline.
         public static void SpawnStuffAfterBusPlacement(poiScript script,poiGenScript.poiClass poi)
         {
-            if(GroundDiagnostics.TryBusPlacement(script) || GroundDiagnostics.HouseSpawnReady(script))script.SpawnStuff(poi);
+            if(GroundDiagnostics.TryBusPlacement(script) || GroundDiagnostics.HouseSpawnReady(script))SpawnPoiCoordinated(script,poi);
+        }
+        internal static readonly SpawnCoordinator Construction=new SpawnCoordinator(delegate{return (double)Stopwatch.GetTimestamp()/Stopwatch.Frequency*1000.0;});
+        static long spawnWorldGeneration=1;
+        internal static long SpawnWorldGeneration{get{return spawnWorldGeneration;}}
+        static savedatascript constructionWorldSave;
+        static object constructionWorldMap,constructionWorldData;
+        static int spawnNativeCallDepth;
+        static string lastConstructionRefusal;
+        internal static void EnsureWorldGeneration()
+        {
+            var save=savedatascript.s;var map=menuhandler.s==null?null:menuhandler.s.currentMainMap;var data=save==null?null:save.data;
+            if(save==constructionWorldSave && (object)map==constructionWorldMap && (object)data==constructionWorldData)return;
+            var candidate=spawnWorldGeneration+1;
+            string reason;
+            if(!Construction.ResetWorld(candidate,out reason))throw new InvalidOperationException("[TLD MP construction] world reset blocked: "+reason);
+            if(constructionWorldSave!=null && node!=null && node.Peers.Count>0)node.RetirePeersForWorldReplacement();
+            spawnWorldGeneration=candidate;
+            constructionWorldSave=save;constructionWorldMap=map;constructionWorldData=data;
+        }
+        static long NextWorldGeneration(){return ++spawnWorldGeneration;}
+        static void NoteConstructionRefusal(SpawnAdmission status,string reason,SpawnJobKey identity)
+        {
+            var text=status+(reason==null?"":" "+reason);
+            if(text==lastConstructionRefusal)return;lastConstructionRefusal=text;
+            Debug.LogWarning("[TLD MP construction] admission refused: "+text+" source="+identity.Source+" key="+identity.Key);
+        }
+        static void SpawnPoiCoordinated(poiScript script,poiGenScript.poiClass poi)
+        {
+            EnsureWorldGeneration();
+            Construction.BeginFrame(UnityEngine.Time.frameCount);
+            var identity=NativeSpawnAdapter.PoiIdentity(spawnWorldGeneration,poi.posID.x,poi.posID.y,poi.posID.z,poi.id,poi);
+            var preflight=Construction.Preflight(identity);
+            if(preflight!=SpawnAdmission.Admitted){NoteConstructionRefusal(preflight,null,identity);return;}
+            var job=NativeSpawnAdapter.PoiJob(identity,new SpawnUnit(null,delegate{RunNativePoiSpawn(script,poi);}));
+            string reason;var admission=Construction.TryAdmit(job,out reason);
+            if(admission==SpawnAdmission.CapacityRefused)
+            {
+                string atomicReason;
+                if(!Construction.RunUnadmittedAtomic(identity,delegate{RunNativePoiSpawn(script,poi);},out atomicReason))
+                    NoteConstructionRefusal(SpawnAdmission.CapacityRefused,atomicReason,identity);
+                return;
+            }
+            if(admission!=SpawnAdmission.Admitted){NoteConstructionRefusal(admission,reason,identity);return;}
+            Construction.RunSynchronous(job);
+        }
+        static void RunNativePoiSpawn(poiScript script,poiGenScript.poiClass poi)
+        {
+            bool spawnedItems=poi.spawnedItems,spawnedFixed=poi.spawnedFixed;
+            spawnNativeCallDepth++;
+            try{script.SpawnStuff(poi);}
+            catch{poi.spawnedItems=spawnedItems;poi.spawnedFixed=spawnedFixed;throw;}
+            finally{spawnNativeCallDepth--;}
+        }
+        static void ConstructionFence(string reason)
+        {
+            if(spawnApplyDepth>0 || spawnNativeCallDepth>0)throw new InvalidOperationException("[TLD MP construction] "+reason+" inside an active construction mutation");
+            EnsureWorldGeneration();Construction.CompletePendingConstruction(reason,"read");
+            string applyReason;
+            if(!VerifyPendingSpawnConstruction(out applyReason))throw new InvalidOperationException("[TLD MP construction] "+reason+": "+applyReason);
+        }
+        public static void BeforeNativeSaveData(){ConstructionFence("savedatascript.SaveToData");}
+        public static void BeforeNativeSaveScreen(){ConstructionFence("newSaveScreenScript.Save");}
+        public static void BeforeNativeExport(){ConstructionFence("construction export");}
+        public static void RequireConstructionSettled()
+        {
+            if(spawnNativeCallDepth>0 || spawnApplyDepth>0 || Construction.MutationActive || Construction.HasFailedCurrent)
+                throw new InvalidOperationException("[TLD MP construction] savedatascript.SaveToDictionary during an uncommitted or failed construction mutation");
+        }
+        public static void ResetConstruction()
+        {
+            var candidate=spawnWorldGeneration+1;
+            string reason;
+            if(!Construction.ResetWorld(candidate,out reason))throw new InvalidOperationException("[TLD MP construction] "+reason);
+            spawnWorldGeneration=candidate;
+            if(node!=null)node.RetirePeersForWorldReplacement();
+            spawnLedgers.Clear();spawnCommitted.Clear();spawnLedgerBytes=0;
+            announcedSpawns.Clear();spawnIDs=null;spawnPayload=null;
+            if(node!=null)node.ClearSpawnTransfers();
+        }
+        static readonly Stack<List<Rigidbody>> fixedBodyLists=new Stack<List<Rigidbody>>();
+        static readonly Stack<List<tosaveitemscript>> fixedItemLists=new Stack<List<tosaveitemscript>>();
+        static readonly Stack<List<randomTypeSelector>> fixedSelectorLists=new Stack<List<randomTypeSelector>>();
+        public static void FixedSpawnFStart(fixedSpawnScript script)
+        {
+            if(script.useStartCar)
+            {
+                int startCar=(int)mainscript.s.StartCar;
+                if(startCar>=0 && startCar<script.startCars.Count && script.startCars[startCar]!=null)
+                    script.startCars[startCar].SetActive(true);
+            }
+            var bodies=fixedBodyLists.Count==0?new List<Rigidbody>():fixedBodyLists.Pop();
+            try
+            {
+                script.GetComponentsInChildren<Rigidbody>(false,bodies);
+                for(int i=0;i<bodies.Count;i++)bodies[i].isKinematic=true;
+            }
+            finally{bodies.Clear();if(fixedBodyLists.Count<8 && bodies.Capacity<=1024)fixedBodyLists.Push(bodies);}
+            var items=fixedItemLists.Count==0?new List<tosaveitemscript>():fixedItemLists.Pop();
+            try
+            {
+                script.GetComponentsInChildren<tosaveitemscript>(false,items);
+                for(int i=0;i<items.Count;i++)items[i].FStart();
+            }
+            finally{items.Clear();if(fixedItemLists.Count<8 && items.Capacity<=1024)fixedItemLists.Push(items);}
+            var selectors=fixedSelectorLists.Count==0?new List<randomTypeSelector>():fixedSelectorLists.Pop();
+            try
+            {
+                script.GetComponentsInChildren<randomTypeSelector>(false,selectors);
+                for(int i=0;i<selectors.Count;i++)selectors[i].FStart();
+            }
+            finally{selectors.Clear();if(fixedSelectorLists.Count<8 && selectors.Capacity<=1024)fixedSelectorLists.Push(selectors);}
         }
         public static void NativePoiSpawnBegin(){FrameDiagnostics.NativePoiSpawnBegin();}
         public static void NativePoiSpawnEnd(){FrameDiagnostics.NativePoiSpawnEnd();}
@@ -1556,6 +1691,8 @@ namespace TldMp
         public static void NativePoiItemsEnd(){FrameDiagnostics.NativePoiItemsEnd();}
         public static void NativePoiFixedBegin(){FrameDiagnostics.NativePoiFixedBegin();}
         public static void NativePoiFixedEnd(){FrameDiagnostics.NativePoiFixedEnd();}
+        public static void NativePoiFixedInstantiateBegin(){FrameDiagnostics.NativePoiFixedInstantiateBegin();}
+        public static void NativePoiFixedInstantiateEnd(){FrameDiagnostics.NativePoiFixedInstantiateEnd();}
         public static void NativePoiRemoveBegin(){FrameDiagnostics.NativePoiRemoveBegin();}
         public static void NativePoiRemoveEnd(){FrameDiagnostics.NativePoiRemoveEnd();}
         public static void NativeTerrainMeshBegin(terrainGenScript terrain){FrameDiagnostics.NativeTerrainMeshBegin(terrain);}
@@ -1710,14 +1847,22 @@ namespace TldMp
             void OnDestroy(){FrameDiagnostics.Shutdown();if(loopbackMode)Loopback.Stop();Reset();}
         }
         static readonly HashSet<uint> announcedSpawns=new HashSet<uint>();
-        static readonly Dictionary<ulong,ulong> appliedSpawns=new Dictionary<ulong,ulong>();
+        sealed class SpawnApplyLedger
+        {
+            public ulong Session,Sequence;public byte[] Hash;public List<byte[]> Packets;
+            public HashSet<uint> Definitions;public int NextPacket,WireBytes;public bool Completed,Published;
+            public string Failure,PendingReason;
+        }
+        static readonly Dictionary<ulong,SpawnApplyLedger> spawnLedgers=new Dictionary<ulong,SpawnApplyLedger>();
+        static readonly Dictionary<ulong,ulong> spawnCommitted=new Dictionary<ulong,ulong>();
+        static int spawnApplyDepth,spawnLedgerBytes,spawnLedgerHigh;
         static List<uint> spawnIDs;
         static byte[] spawnPayload;
         static ulong spawnSequence;
         static double nextSpawnScan,nextSpawnSend;
         static int spawnAttempts;
         static void ClearSpawnHandoff()
-        {announcedSpawns.Clear();appliedSpawns.Clear();spawnIDs=null;spawnPayload=null;spawnSequence=0;nextSpawnScan=nextSpawnSend=0;spawnAttempts=0;}
+        {announcedSpawns.Clear();spawnLedgers.Clear();spawnLedgerBytes=0;spawnIDs=null;spawnPayload=null;nextSpawnScan=nextSpawnSend=0;spawnAttempts=0;if(node!=null)node.ClearSpawnTransfers();}
         static void AckSpawn(ulong sequence)
         {
             if(spawnPayload==null || sequence!=spawnSequence)return;
@@ -1735,82 +1880,257 @@ namespace TldMp
                 spawnAttempts++;nextSpawnSend=Now+2;node.SendSpawn(spawnSequence,spawnPayload);return;
             }
             if(Now<nextSpawnScan)return;nextSpawnScan=Now+.25;
+            try{ConstructionFence("spawn-capture");}
+            catch(Exception e){Debug.LogWarning("[TLD MP spawn] capture skipped: "+e.Message);nextSpawnScan=Now+10;return;}
             var items=new List<tosaveitemscript>();
             foreach(var pair in savedatascript.s.items)
                 if(pair.Key>=node.FirstID && pair.Key<=node.LastID && !announcedSpawns.Contains(pair.Key) && pair.Value!=null && pair.Value.gameObject.activeInHierarchy)items.Add(pair.Value);
             if(items.Count==0)return;
-            if(items.Count>128){Debug.LogError("[TLD MP spawn] more than 128 unannounced items; handoff refused.");nextSpawnScan=Double.MaxValue;return;}
+            if(items.Count>8192){Debug.LogError("[TLD MP spawn] more than 8192 unannounced items ("+items.Count+"); transaction refused, will rescan.");nextSpawnScan=Now+10;return;}
             // Capture definitions first. Ordinary SyncAll suppresses these for
             // loose guest parts, so attachments alone cannot create the objects.
             var packets=new List<byte[]>();var ids=new List<uint>();
-            bool previous=capturing;var prior=captured;capturing=true;captured=packets;
+            bool previous=capturing,prevOverflow=captureOverflow,prevBounded=captureBounded;var prior=captured;long prevBytes=captureByteCount;
+            capturing=true;captureBounded=true;captureOverflow=false;captureByteCount=0;captured=packets;
+            bool overflow;
             try
             {
                 foreach(var item in items){ids.Add(item.idInSave);syncScript.s.SendItemPosGlobal(item.idInSave,item.id,mainscript.GlobalFromUnityPos(item.useThisForPos.position),item.useThisForPos.eulerAngles);}
                 foreach(var item in items)item.SyncAll();
             }
-            finally{capturing=previous;captured=prior;}
+            finally{overflow=captureOverflow;captureByteCount=prevBytes;captureOverflow=prevOverflow;captureBounded=prevBounded;capturing=previous;captured=prior;}
             using(var stream=new System.IO.MemoryStream())using(var writer=new System.IO.BinaryWriter(stream))
             {
                 // Keep only definitions and persistent state for this transaction.
                 var allowed=new HashSet<uint>(ids);var selected=new List<byte[]>();
-                foreach(var packet in packets)if(packet.Length>0 && (packet[0]==16 || PendingItemQueue.Holdable(packet[0])) && allowed.Contains(StablePackets.Item(packet)))selected.Add(packet);
-                if(selected.Count>1024)throw new InvalidOperationException("Spawn handoff packet limit exceeded.");
+                foreach(var packet in packets)
+                {
+                    if(packet.Length==0 || !allowed.Contains(StablePackets.Item(packet)))continue;
+                    if(packet[0]==16 || packet[0]==17 || PendingItemQueue.Holdable(packet[0]))selected.Add(packet);
+                }
+                if(overflow){Debug.LogError("[TLD MP spawn] capture exceeded the bounded context; transaction refused, will rescan.");nextSpawnScan=Now+10;return;}
+                if(selected.Count>65536){Debug.LogError("[TLD MP spawn] "+selected.Count+" packets exceeds 65536; transaction refused, will rescan.");nextSpawnScan=Now+10;return;}
+                long projected=8;
+                foreach(var packet in selected){projected+=4+packet.Length;if(projected>StableNode.MaxSpawnBytes)break;}
+                if(projected>StableNode.MaxSpawnBytes){Debug.LogError("[TLD MP spawn] handoff projected "+projected+" bytes exceeds 16MiB; transaction refused, will rescan.");nextSpawnScan=Now+10;return;}
                 writer.Write(ids.Count);writer.Write(selected.Count);
                 foreach(var packet in selected){writer.Write(packet.Length);writer.Write(packet);}
-                if(stream.Length>58000){Debug.LogError("[TLD MP spawn] handoff exceeds 58000 bytes; refused.");nextSpawnScan=Double.MaxValue;return;}
                 spawnPayload=stream.ToArray();spawnIDs=ids;spawnSequence++;spawnAttempts=0;nextSpawnSend=Now;
             }
             Debug.Log("[TLD MP spawn] captured transaction="+spawnSequence+" items="+ids.Count+" bytes="+spawnPayload.Length);
         }
+        static bool BytesEqual(byte[] a,byte[] b)
+        {
+            if(a==null || b==null || a.Length!=b.Length)return false;
+            for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;
+            return true;
+        }
+        static bool SpawnHashMatches(byte[] hash,byte[] bytes)
+        {
+            byte[] other;using(var sha=new System.Security.Cryptography.SHA256Managed())other=sha.ComputeHash(bytes);
+            for(int i=0;i<32;i++)if(hash[i]!=other[i])return false;
+            return true;
+        }
         static bool ApplySpawn(ulong source,ulong sequence,byte[] bytes)
         {
-            ulong prior;if(appliedSpawns.TryGetValue(source,out prior) && sequence<=prior)return true;
-            StablePeer peer;if(node==null || !node.IsHost || !node.Peers.TryGetValue(source,out peer) || bytes==null || bytes.Length>58000)return false;
+            StablePeer peer;if(node==null || !node.IsHost || !node.Peers.TryGetValue(source,out peer) || bytes==null || bytes.Length>StableNode.MaxSpawnBytes)return false;
+            SpawnApplyLedger ledger;
+            if(spawnLedgers.TryGetValue(source,out ledger))
+            {
+                if(ledger.Session==peer.Session && ledger.Sequence==sequence)
+                {
+                    if(ledger.Completed)return SpawnHashMatches(ledger.Hash,bytes);
+                    if(ledger.Failure!=null || !SpawnHashMatches(ledger.Hash,bytes))return false;
+                    return ApplySpawnLedger(source,peer,ledger);
+                }
+                ulong committed;
+                if(spawnCommitted.TryGetValue(source,out committed) && sequence<=committed && committed==ledger.Sequence && ledger.Session==peer.Session)
+                    return sequence==committed;
+                if(!ledger.Completed || ledger.Failure!=null)return false;
+                spawnLedgers.Remove(source);ReleaseLedger(ledger);
+            }
+            ulong watermark;
+            if(spawnCommitted.TryGetValue(source,out watermark) && sequence<=watermark)
+            {
+                if(sequence==watermark)return true;
+                return false;
+            }
+            if(spawnLedgerBytes+bytes.Length>StableNode.MaxSpawnBytes)return false;
+            ledger=ParseSpawnLedger(source,peer,sequence,bytes);
+            if(ledger==null)return false;
+            ledger.WireBytes=bytes.Length;
+            spawnLedgers[source]=ledger;spawnLedgerBytes+=bytes.Length;
+            if(spawnLedgerBytes>spawnLedgerHigh)spawnLedgerHigh=spawnLedgerBytes;
+            return ApplySpawnLedger(source,peer,ledger);
+        }
+        static void ReleaseLedger(SpawnApplyLedger ledger)
+        {
+            if(ledger!=null){spawnLedgerBytes=Math.Max(0,spawnLedgerBytes-ledger.WireBytes);ledger.WireBytes=0;}
+        }
+        static SpawnApplyLedger ParseSpawnLedger(ulong source,StablePeer peer,ulong sequence,byte[] bytes)
+        {
             var packets=new List<byte[]>();var definitions=new HashSet<uint>();
             try
             {
                 using(var stream=new System.IO.MemoryStream(bytes,false))using(var reader=new System.IO.BinaryReader(stream))
                 {
-                    int count=reader.ReadInt32(),length=reader.ReadInt32();if(count<1 || count>128 || length<count || length>1024)return false;
+                    int count=reader.ReadInt32(),length=reader.ReadInt32();
+                    if(count<1 || count>8192 || length<count || length>65536)return null;
                     for(int i=0;i<length;i++)
                     {
-                        int size=reader.ReadInt32();if(size<5 || size>stream.Length-stream.Position)return false;
-                        var packet=reader.ReadBytes(size);if(!StablePackets.Valid(packet) || (packet[0]!=16 && !PendingItemQueue.Holdable(packet[0])))return false;
-                        uint id=StablePackets.Item(packet);if(id<peer.First || id>peer.Last)return false;
-                        if(i<count){if(packet[0]!=16 || !definitions.Add(id))return false;}else if(!definitions.Contains(id))return false;
-                        uint parent=PendingItemQueue.Parent(packet);if(parent!=0 && !definitions.Contains(parent) && !HeldItemExists(parent))return false;
-                        if(!ValidateData(packet))return false;packets.Add(packet);
+                        int size=reader.ReadInt32();if(size<5 || size>stream.Length-stream.Position)return null;
+                        var packet=reader.ReadBytes(size);
+                        if(!StablePackets.Valid(packet))return null;
+                        byte type=packet[0];
+                        if(type!=16 && type!=17 && !PendingItemQueue.Holdable(type))return null;
+                        uint id=StablePackets.Item(packet);
+                        if(id<peer.First || id>peer.Last)return null;
+                        if(itemRecovery.Deleted(id,Now))return null;
+                        if(i<count){if(type!=16 || !definitions.Add(id))return null;}
+                        else if(!definitions.Contains(id))return null;
+                        if(!ValidateData(packet))return null;
+                        packets.Add(packet);
                     }
-                    if(stream.Position!=stream.Length)return false;
+                    if(stream.Position!=stream.Length)return null;
                 }
+            }
+            catch(Exception e){Debug.LogWarning("[TLD MP spawn] parse failed source="+source+" transaction="+sequence+" error="+e);return null;}
+            foreach(var packet in packets)
+            {
+                byte type=packet[0];uint parent=0;
+                if(type==42 && packet.Length>17 && BitConverter.ToInt32(packet,5)==1)parent=BitConverter.ToUInt32(packet,13);
+                else if(type==17 && packet.Length>9)parent=BitConverter.ToUInt32(packet,5);
+                if(parent!=0 && !definitions.Contains(parent) && !HeldItemExists(parent))return null;
+            }
+            byte[] hash;using(var sha=new System.Security.Cryptography.SHA256Managed())hash=sha.ComputeHash(bytes);
+            return new SpawnApplyLedger {Session=peer.Session,Sequence=sequence,Hash=hash,Packets=packets,Definitions=definitions};
+        }
+        static bool ApplySpawnLedger(ulong source,StablePeer peer,SpawnApplyLedger ledger)
+        {
+            spawnApplyDepth++;
+            try
+            {
                 // All input is checked before native creation. Existing IDs are
                 // updated by native UpdItem, never instantiated a second time.
-                foreach(var packet in packets)
+                while(ledger.NextPacket<ledger.Packets.Count)
                 {
-                    if(packet[0]==16)Deliver(source,packet);
-                    else
+                    var packet=ledger.Packets[ledger.NextPacket];
+                    try
                     {
-                        bool previous=dispatching;dispatching=true;
-                        try{ReplayOneHeld(new PendingItemQueue.Held {Bytes=packet,Sender=source});}
-                        finally{dispatching=previous;}
+                        if(packet[0]==16 || packet[0]==17)Deliver(source,packet);
+                        else
+                        {
+                            bool previous=dispatching;dispatching=true;
+                            bool ok;
+                            try{ok=TryReplayOneHeld(new PendingItemQueue.Held {Bytes=packet,Sender=source});}
+                            finally{dispatching=previous;}
+                            if(!ok){ledger.Failure="held replay failed at packet "+ledger.NextPacket;return false;}
+                        }
                     }
+                    catch(Exception e){ledger.Failure="native handler threw at packet "+ledger.NextPacket+": "+e.GetType().Name;return false;}
+                    ledger.NextPacket++;
                 }
-                foreach(uint id in definitions)if(!HeldItemExists(id))return false;
-                foreach(var packet in packets)if(packet[0]==42)
-                {
-                    tosaveitemscript item;if(!Find(StablePackets.Item(packet),out item) || item.attachable==null)return false;
-                    var live=new save_attachable(item.attachable,item.idInSave);
-                    if(BitConverter.ToInt32(packet,5)==0){if(item.attachable.attached)return false;continue;}
-                    if(BitConverter.ToInt32(packet,9)!=2)return false;
-                    if(!AttachmentReplayPolicy.SameSlot(packet,live.attachType,live.indexType,live.parentid,live.poigenid,live.poiid.x,live.poiid.y,live.poiid.z,live.index))return false;
-                }
-                appliedSpawns[source]=sequence;
-                foreach(var packet in packets)node.PublishNative(packet,true);
-                Debug.Log("[TLD MP spawn] applied source="+source+" transaction="+sequence+" items="+definitions.Count);
-                return true;
             }
-            catch(Exception e){Debug.LogWarning("[TLD MP spawn] apply failed source="+source+" transaction="+sequence+" error="+e);return false;}
+            finally{spawnApplyDepth--;}
+            return VerifySpawnLedger(source,ledger);
+        }
+        static bool VerifySpawnLedger(ulong source,SpawnApplyLedger ledger)
+        {
+            if(ledger.Completed)return true;
+            foreach(uint id in ledger.Definitions)if(!HeldItemExists(id)){ledger.PendingReason="definition "+id+" not materialized yet";return false;}
+            foreach(var packet in ledger.Packets)
+            {
+                if(packet[0]==42 && !VerifyAttachmentPacket(packet)){ledger.PendingReason="attachment not settled id="+StablePackets.Item(packet);return false;}
+                if(packet[0]==17 && !VerifyStoredPacket(packet)){ledger.PendingReason="storage not settled id="+StablePackets.Item(packet);return false;}
+            }
+            ledger.PendingReason=null;
+            ledger.Completed=true;
+            if(!ledger.Published)
+            {
+                ledger.Published=true;
+                foreach(var packet in ledger.Packets)node.PublishNative(packet,true);
+            }
+            ledger.Packets=null;ledger.Definitions=null;
+            ReleaseLedger(ledger);
+            spawnCommitted[source]=ledger.Sequence;
+            Debug.Log("[TLD MP spawn] applied source="+source+" transaction="+ledger.Sequence);
+            return true;
+        }
+        static bool VerifyAttachmentPacket(byte[] packet)
+        {
+            if(packet.Length<9)return false;
+            tosaveitemscript item;
+            if(!Find(StablePackets.Item(packet),out item) || item.attachable==null)return false;
+            int attachType=BitConverter.ToInt32(packet,5);
+            if(attachType==0)return !item.attachable.attached;
+            if(packet.Length<97)return false;
+            var live=new save_attachable(item.attachable,item.idInSave);
+            int indexType=BitConverter.ToInt32(packet,9);
+            if(attachType==1)
+            {
+                if(!item.attachable.attached || live.attachType!=1)return false;
+                if(live.indexType!=indexType || live.parentid!=BitConverter.ToUInt32(packet,13) || live.index!=BitConverter.ToInt32(packet,45))return false;
+                return CloseD(packet,49,live.lpos,.001);
+            }
+            if(attachType==2)
+            {
+                if(!item.attachable.attached || live.attachType!=2)return false;
+                if(live.indexType!=indexType || live.poigenid!=BitConverter.ToInt32(packet,17) ||
+                    live.poiid.x!=BitConverter.ToDouble(packet,21) || live.poiid.y!=BitConverter.ToDouble(packet,29) || live.poiid.z!=BitConverter.ToDouble(packet,37) ||
+                    live.index!=BitConverter.ToInt32(packet,45))return false;
+                return CloseD(packet,49,live.lpos,.001);
+            }
+            if(attachType==3 || attachType==4)
+            {
+                if(!item.attachable.attached || live.attachType!=4)return false;
+                return CloseD(packet,73,live.gpos,.001);
+            }
+            return false;
+        }
+        static bool CloseD(byte[] packet,int offset,UnityEngine.Vector3d live,double tolerance)
+        {
+            return Math.Abs(BitConverter.ToDouble(packet,offset)-live.x)<=tolerance &&
+                Math.Abs(BitConverter.ToDouble(packet,offset+8)-live.y)<=tolerance &&
+                Math.Abs(BitConverter.ToDouble(packet,offset+16)-live.z)<=tolerance;
+        }
+        static bool VerifyStoredPacket(byte[] packet)
+        {
+            if(packet.Length<37)return false;
+            tosaveitemscript child,parent;
+            if(!Find(StablePackets.Item(packet),out child))return false;
+            if(!Find(BitConverter.ToUInt32(packet,5),out parent))return false;
+            int index=BitConverter.ToInt32(packet,9);
+            if(index>=0)
+            {
+                if(child.P==null || child.P.physlock==null || parent.physLocks==null || index>=parent.physLocks.Count)return false;
+                var record=parent.physLocks[index];
+                if(record==null || child.P.physlock!=record)return false;
+                for(int i=0;i<record.stored.Count;i++)if(record.stored[i]!=null && record.stored[i].tosave==child)return true;
+                return false;
+            }
+            if(!child.gotSyncLocal || child.gotSyncLocalParentID!=parent.idInSave)return false;
+            if(index<=-200000)return parent.GetColliderFromIndex(-index-200000)!=null;
+            if(index<=-100000)return parent.partslotscripts!=null && -index-100000<parent.partslotscripts.Count;
+            return false;
+        }
+        internal static bool VerifyPendingSpawnConstruction(out string reason)
+        {
+            reason=null;
+            foreach(var pair in spawnLedgers)
+            {
+                var ledger=pair.Value;
+                if(ledger.Completed && ledger.Failure==null)continue;
+                StablePeer peer;
+                if(node==null || !node.Peers.TryGetValue(pair.Key,out peer) || peer.Session!=ledger.Session)
+                {reason="spawn apply ledger "+pair.Key+": peer or session replaced";return false;}
+                if(ledger.Failure!=null){reason="spawn apply failed peer="+pair.Key+" seq="+ledger.Sequence+": "+ledger.Failure;return false;}
+                if(ledger.NextPacket>0 || ledger.Packets.Count>0)
+                {
+                    if(!ApplySpawnLedger(pair.Key,peer,ledger) || !ledger.Completed)
+                    {reason="spawn apply incomplete peer="+pair.Key+" seq="+ledger.Sequence+" at="+ledger.NextPacket+"/"+ledger.Packets.Count+(ledger.Failure==null?"":" "+ledger.Failure);return false;}
+                }
+            }
+            return true;
         }
     }
 }

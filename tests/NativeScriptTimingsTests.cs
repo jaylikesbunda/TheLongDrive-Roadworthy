@@ -59,9 +59,9 @@ class NativeScriptTimingsTests
         Check(s.Contains("terrainGenScript.Upd[0]=p50/p95=10.000/10.000ms")&&
               s.Contains("terrainGenScript.Upd[1]=p50/p95=20.000/20.000ms")&&
               s.Contains("terrainGenScript.Upd[2]=p50/p95=20.000/20.000ms"),"multiple generator labels failed");
-        Check(NativeScriptTimings.Names.Length==109 && NativeScriptTimings.ExtendedStart==54,
+        Check(NativeScriptTimings.Names.Length==110 && NativeScriptTimings.ExtendedStart==54,
             "extended timing table must match the independent native-hook allowlist");
-        Check(new System.Collections.Generic.HashSet<string>(NativeScriptTimings.Names).Count==109,
+        Check(new System.Collections.Generic.HashSet<string>(NativeScriptTimings.Names).Count==110,
             "system timing labels must be unique");
         t.SetWindowFrames(4);
         for(int i=0;i<3;i++){t.Begin(54,101,i*20);t.End(54,101,i*20+10);}

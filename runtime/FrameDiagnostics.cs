@@ -191,6 +191,8 @@ namespace TldMp
         public static void NativePoiItemsEnd() { NativeEnd(33); }
         public static void NativePoiFixedBegin() { NativeBegin(34); }
         public static void NativePoiFixedEnd() { NativeEnd(34); }
+        public static void NativePoiFixedInstantiateBegin() { NativeBegin(109); }
+        public static void NativePoiFixedInstantiateEnd() { NativeEnd(109); }
         public static void NativePoiRemoveBegin() { NativeBegin(35); }
         public static void NativePoiRemoveEnd() { NativeEnd(35); }
         public static void NativeBehaviorMirrorsBegin() { NoteBehavior(0); NativeBegin(36); }

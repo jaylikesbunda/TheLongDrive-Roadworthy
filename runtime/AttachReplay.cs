@@ -69,6 +69,18 @@ namespace TldMp
             if(pendingItems.Count>0)replayDeferred++;
         }
 
+        static bool replayOneFailed;
+        static byte replayOneResult;
+        static bool TryReplayOneHeld(PendingItemQueue.Held message)
+        {
+            byte previousResult=replayOneResult;bool previousFailed=replayOneFailed;
+            replayOneResult=0;replayOneFailed=false;
+            try{ReplayOneHeld(message);}
+            catch{replayOneResult=0;replayOneFailed=true;}
+            bool ok=replayOneResult==1 && !replayOneFailed;
+            replayOneResult=previousResult;replayOneFailed=previousFailed;
+            return ok;
+        }
         static void ReplayOneHeld(PendingItemQueue.Held message)
         {
             if(networkingScript.s==null)return;
@@ -85,7 +97,8 @@ namespace TldMp
                     if(type==42 && Find(id,out item) && item.attachable!=null && item.attachable.attached)
                     {
                         var live=new save_attachable(item.attachable,id);
-                        if(AttachmentReplayPolicy.SameSlot(message.Bytes,live.attachType,live.indexType,live.parentid,live.poigenid,live.poiid.x,live.poiid.y,live.poiid.z,live.index))return;
+                        if(AttachmentReplayPolicy.SameSlot(message.Bytes,live.attachType,live.indexType,live.parentid,live.poigenid,live.poiid.x,live.poiid.y,live.poiid.z,live.index))
+                        {replayOneResult=1;return;}
                         // Native Craft adds to the new slot but does not remove
                         // an old slot's membership. For a proven ready item slot,
                         // leave the old mount through the game's own detach path.
@@ -109,9 +122,10 @@ namespace TldMp
                         }
                     }
                     networkingScript.s.ProcessMessage(new CSteamID(message.Sender),message.Bytes,(msgType)type);
+                    replayOneResult=1;
                     DiagLimited("item-replayed:"+id+":"+type,"native-item replayed id="+id+" type="+type,.25);
             }
-            catch(Exception e){UnityEngine.Debug.LogWarning("[TLD MP v3] Held item message replay failed: "+e.Message);}
+            catch(Exception e){replayOneFailed=true;UnityEngine.Debug.LogWarning("[TLD MP v3] Held item message replay failed: "+e.Message);}
             finally{NoteHandler(message.Bytes,Stopwatch.GetTimestamp()-start);DispatchType=previousType;replayingHeld=false;}
         }
 

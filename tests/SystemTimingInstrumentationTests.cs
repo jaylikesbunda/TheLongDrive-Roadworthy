@@ -82,7 +82,7 @@ static class SystemTimingInstrumentationTests
             Mutate("changed-exception-region",delegate(AssemblyDefinition a) {
                 var m=Find(a,"savedatascript","SaveToData",1);
                 m.Body.ExceptionHandlers[0].TryStart=m.Body.Instructions[0];
-            },"Unexpected edit: savedatascript.SaveToData/1");
+            },"Entry instrumentation changed stock method body");
             string badRuntime=Path.Combine(output,"bad-label-runtime.dll");
             using(var a=Read(runtime))
             {

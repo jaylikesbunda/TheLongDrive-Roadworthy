@@ -483,12 +483,24 @@ namespace TldMp
                         double x=poi.pos.x-position.x,z=poi.pos.z-position.z;
                         if(x*x+z*z>=range*range)continue;
                         blocked="nearby props";
-                        if(poi.pobj==null || !poi.pobj.gameObject.activeSelf || !poi.spawnedItems || !poi.spawnedFixed)return false;
+                        if(poi.pobj==null || !poi.pobj.gameObject.activeSelf || !poi.spawnedItems || !poi.spawnedFixed)
+                        {
+                            string constructionFailure;
+                            if(StableGameBridge.GetConstructionFailureForPoi(poi,out constructionFailure))
+                            {
+                                blocked="construction failed: "+constructionFailure;
+                                return false;
+                            }
+                            return false;
+                        }
                     }
                 }
             }
-            blocked=null;
-            return true;
+            string ledgerReason;
+            if (!StableGameBridge.VerifyPendingSpawnConstruction(out ledgerReason))
+                blocked = "peer construction incomplete: " + ledgerReason;
+            else blocked = null;
+            return blocked == null;
         }
 
         // A spawned haz02 can precede its terrain tile. Keep its bus stop pending
