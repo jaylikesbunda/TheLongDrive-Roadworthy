@@ -71,7 +71,7 @@ $notes=Join-Path $out 'PatchNotes.cs'
 $notesB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'CHANGELOG.md'))))
 Set-Content -LiteralPath $notes -Encoding UTF8 -Value ('namespace TldMp { internal static class PatchNotes { public const string ChangelogBase64="'+$notesB64+'"; } }')
 $runtime=Join-Path $out 'Tld.Multiplayer.dll'
-$references=@('UnityEngine.CoreModule.dll','UnityEngine.PhysicsModule.dll','UnityEngine.VehiclesModule.dll','UnityEngine.ParticleSystemModule.dll','UnityEngine.JSONSerializeModule.dll','com.rlabrecque.steamworks.net.dll','UnityEngine.UI.dll','UnityEngine.UIModule.dll','UnityEngine.ScreenCaptureModule.dll','netstandard.dll','System.IO.Compression.dll','Unity.TextMeshPro.dll','UnityEngine.InputLegacyModule.dll') | ForEach-Object {'/reference:'+(Join-Path $managed $_)}
+$references=@('UnityEngine.CoreModule.dll','UnityEngine.AnimationModule.dll','UnityEngine.PhysicsModule.dll','UnityEngine.ImageConversionModule.dll','UnityEngine.AudioModule.dll','UnityEngine.VehiclesModule.dll','UnityEngine.ParticleSystemModule.dll','UnityEngine.JSONSerializeModule.dll','com.rlabrecque.steamworks.net.dll','UnityEngine.UI.dll','UnityEngine.UIModule.dll','UnityEngine.ScreenCaptureModule.dll','netstandard.dll','System.IO.Compression.dll','Unity.TextMeshPro.dll','UnityEngine.InputLegacyModule.dll') | ForEach-Object {'/reference:'+(Join-Path $managed $_)}
 RunCsc (@('/nologo','/target:library','/optimize+',('/out:'+$runtime),('/reference:'+$original))+$references+$runtimeSources+@($identity,$notes))
 
 # v3: the multiplayer hooks on top of v1, checked by the independent verifier.

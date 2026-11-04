@@ -8,7 +8,8 @@ param(
     [string]$RejectedAssembly='',
     # 106 existing selections plus 55 observers, minus RayStuff/FreezeUpd/
     # RemoveStuff which already belonged to the selected hook set.
-    [int]$ExpectedCandidateMethods=160,
+    # The paired-bus RecCarVelocity guard adds one selected native method.
+    [int]$ExpectedCandidateMethods=211,
     [int]$ExpectedControlMethods=6
 )
 $ErrorActionPreference='Stop'

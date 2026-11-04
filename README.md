@@ -91,9 +91,13 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Performance and streaming
 
-- Mass checks create less temporary garbage.
-- Wheels skip unchanged physics settings each frame.
-- Storage checks reuse buffers and compare nearby props more efficiently.
+- Heavy collisions play fewer overlapping impact sounds.
+- Loose debris takes less processing time.
+- Debris pieces pass through each other.
+- Shattered pieces use simpler collisions.
+- Item weight checks use less memory.
+- Vehicle wheels use less processing time.
+- Stored items use less processing time.
 - Test clients on the same PC no longer disconnect just because a burst of updates arrives faster than the game reads them.
 - A flood of network updates no longer freezes the game.
 - Roads update faster when two players are nearby.
@@ -110,16 +114,48 @@ A multiplayer and performance patch for **The Long Drive**.
 - Terrain and prop checks no longer redo work that has not changed.
 - Large prop requests are split up to reduce frame spikes.
 - Items loading in cause fewer visible stutters.
-- Spawn list queries create less scratch garbage. Prefab creation still happens atomically and can hitch.
-- Guest spawns larger than one packet deliver reliably; acknowledgement commits only after completed relationship verification.
+- Breaking objects takes less repeated processing.
+- Spawning items uses less memory.
+- Choosing random items uses less memory.
+- Reduced the work needed to spawn starting items.
+- Objects finish spawning before saving or sharing the world.
+- Large objects spawned by guests transfer more reliably.
 - Cheaper physics checks.
 - Large construction saves no longer slow down as they grow.
 - Distant terrain loads without stuttering.
 - Less CPU spent on rocks, trees and other props when nothing near you changes.
 - Parked cars use less CPU.
 - Idle tank caps use less CPU.
+- Performance logs save without waiting for disk writes.
+- Optional logs help track down stutters.
+- Added an optional setting to test debris collisions.
 
 ### Terrain and gameplay
+
+- New worlds stay in your selected biome.
+- Grass thins out more gradually between biomes.
+- Press `;` to switch which way you pour fluids.
+- You can now drink your own piss
+- Collect and mix piss as its own yellow liquid.
+- Drinking piss hydrates less than water and slightly damages your health.
+- Peeing no longer adds alcohol to containers.
+- You get thirsty faster.
+- Sprinting uses more food and water.
+- Drinking fuel or oil can temporarily make you thirstier.
+- Your water bar pulses yellow while you are sick.
+- Cars can now damage enemy NPCs.
+- Hard car hits can now kill and ragdoll rabbits.
+- Multiplayer rabbits spawn around the host and guests, including in Steam sessions.
+- Fixed rabbits losing forward momentum while moving.
+- Reduced sand covering roads.
+- Large mountains are less likely to overlap roads.
+- Mountains that block roads try to move nearby instead of disappearing.
+- Random buildings check for steep ground before spawning.
+- Roadside buildings try nearby flatter ground.
+- New worlds have smoother ground around buildings.
+- New worlds keep more mountains beside roads without blocking them.
+- Reduced background work while driving and using fluid containers.
+- Existing saves keep their original biome setting.
 
 - Roadside buildings sit on the ground instead of the road centre line.
 - Changing view distance no longer removes the ground under you.
@@ -156,14 +192,35 @@ A multiplayer and performance patch for **The Long Drive**.
 
 </details>
 
-## Performance Diagnostics
+<details>
+<summary>Performance diagnostics</summary>
+
+Performance records write in the background to
+`%LOCALAPPDATA%\TheLongDrive-Roadworthy\diagnostics`. F11 feedback bundles include
+the current runtime log. Busy or stalled disk writes drop excess records instead
+of blocking gameplay; dropped-record counts are written to the log.
 
 Performance diagnostics are opt-in. Set `TLD_MP_DIAGNOSTICS=1` before launching,
 or create an empty `tldmp-diagnostics.on` beside `TheLongDrive.exe`, then restart.
 Remove the flag/unset the variable and restart to disable them. No physics,
 collision, rendering-quality or network-rate settings are changed by profiling.
 
-The five-second reports cover 110 system timing labels, including player input
+Debris fragments pass through other debris while remaining solid against cars,
+terrain and ordinary objects. This reduces collision work when several objects
+break together, but loose fragments no longer form solid piles with each other.
+Host and guests must use the same build. Performance and fragment behavior need
+in-game testing, including pickup, cargo and save/reload.
+
+A debris collision comparison is available for testing: an empty
+`tldmp-debris-speculative.on` beside `TheLongDrive.exe` selects Continuous
+Speculative for cactus/crate fragments and runtime slices. Remove the file and
+restart to use native collision modes. Host and guests must select the same
+mode; the compatibility check rejects different selections. Existing vehicles,
+trailers, item identities and global physics settings retain their native setup.
+Check fast impacts, ground penetration, pickup, cargo and save/reload before
+judging this experimental mode safe for normal play.
+
+The five-second reports cover 132 system timing labels, including player input
 and interaction, collision callbacks, impact-audio creation, break/debris work,
 storage scans, item spawning/loading/removal, part mounting, mass recalculation,
 autosaves, headlights, fluids, world streaming and the existing vehicle/AI/render
@@ -189,6 +246,8 @@ both host and guest, identifying which machine stalled.
 
 Diagnostics add CPU/logging overhead: use them to locate expensive paths, then
 compare repeatable before/after runs with diagnostics disabled to judge FPS.
+
+</details>
 
 ## Install
 
@@ -251,3 +310,4 @@ and changelog after the build job succeeds. Gameplay tests requiring
 the installed game are not run by GitHub Actions.
 
 </details>
+

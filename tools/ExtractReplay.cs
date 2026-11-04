@@ -55,6 +55,7 @@ public static class ExtractReplay
             if(type.IsValueType!=found.IsValueType && !(found.IsEnum && !type.IsValueType))throw new Exception("Replay value/reference layout mismatch: "+type.FullName);
             return found;
         }
+        if(type.Scope!=null&&(type.Scope.Name=="Assembly-CSharp"||type.Scope.Name=="Tld.Multiplayer"||type.Scope.Name.StartsWith("UnityEngine")))throw new Exception("Unmapped replay type: "+type.FullName);
         return target.ImportReference(type);
     }
     static MethodReference MapMethod(MethodReference method)
@@ -80,6 +81,7 @@ public static class ExtractReplay
             var mapped=new MethodReference(method.Name,MapType(method.ReturnType),MapType(method.DeclaringType)) {HasThis=method.HasThis,ExplicitThis=method.ExplicitThis,CallingConvention=method.CallingConvention};
             foreach(var p in method.Parameters)mapped.Parameters.Add(new ParameterDefinition(MapType(p.ParameterType)));return mapped;
         }
+        if(method.DeclaringType.Scope!=null&&(method.DeclaringType.Scope.Name=="Assembly-CSharp"||method.DeclaringType.Scope.Name=="Tld.Multiplayer"||method.DeclaringType.Scope.Name.StartsWith("UnityEngine")))throw new Exception("Unmapped replay method: "+method.FullName);
         return target.ImportReference(method);
     }
     static string TypeKey(TypeReference t)
@@ -108,6 +110,7 @@ public static class ExtractReplay
                 var matches=type.Fields.Where(f=>f.FullName==field.FullName).ToArray();
                 if(matches.Length!=1)throw new Exception("Missing or mismatched replay field: "+field.FullName);return matches[0];
             }
+            if(field.DeclaringType.Scope!=null&&(field.DeclaringType.Scope.Name=="Assembly-CSharp"||field.DeclaringType.Scope.Name=="Tld.Multiplayer"||field.DeclaringType.Scope.Name.StartsWith("UnityEngine")))throw new Exception("Unmapped replay field: "+field.FullName);
             return target.ImportReference(field);
         }
         if (operand is TypeReference) return MapType((TypeReference)operand);
@@ -143,19 +146,26 @@ public static class ExtractReplay
     {
         try
         {
-            if ((args.Length != 3 && args.Length!=4) || File.Exists(args[2]) || args.Length==4 && args[3]!="movement" && args[3]!="driving" && args[3]!="items" && args[3]!="cargo" && args[3]!="seat" && args[3]!="world" && args[3]!="worldnative" && args[3]!="vehicle" && args[3]!="spawnnative" && args[3]!="spawn") throw new Exception("Usage: ExtractReplay SOURCE FIXTURE NEW_OUTPUT [movement|driving|items|cargo|seat|world|worldnative|vehicle|spawnnative|spawn]");
+            if ((args.Length != 3 && args.Length!=4) || File.Exists(args[2]) || args.Length==4 && args[3]!="creature" && args[3]!="movement" && args[3]!="driving" && args[3]!="items" && args[3]!="cargo" && args[3]!="seat" && args[3]!="world" && args[3]!="worldnative" && args[3]!="vehicle" && args[3]!="spawnnative" && args[3]!="spawn" && args[3]!="rabbitai" && args[3]!="rabbitattack" && args[3]!="rabbitrags" && args[3]!="rabbitnetwork" && args[3]!="rabbitrep" && args[3]!="grass" && args[3]!="rabbitpop") throw new Exception("Usage: ExtractReplay SOURCE FIXTURE NEW_OUTPUT [creature|movement|driving|items|cargo|seat|world|worldnative|vehicle|spawnnative|spawn|rabbitai|rabbitrags|rabbitnetwork|rabbitrep|grass|rabbitpop]");
             using (var source = AssemblyDefinition.ReadAssembly(args[0]))
             using (var fixture = AssemblyDefinition.ReadAssembly(args[1]))
             {
                 target = fixture.MainModule;
                 types = AllTypes(target.Types).ToDictionary(t => t.FullName);
+                // Logging is a boundary stand-in in these gameplay replays; the
+                // asynchronous sink is exercised independently.
+                TypeDefinition replayLog;
+                if(types.TryGetValue("UnityEngine.Debug",out replayLog))types["TldMp.RoadworthyLog"]=replayLog;
                 bool movement=args.Length==4 && args[3]=="movement";
                 bool driving=args.Length==4 && args[3]=="driving";
                 bool items=args.Length==4 && args[3]=="items";
                 bool cargo=args.Length==4 && args[3]=="cargo";
                 bool seat=args.Length==4 && args[3]=="seat";
                 var rosterCore=new[]{"EnsureItemRoster","RegisterRosterItem","RegisterCar","RemoveRosterItem","RemoveIndexed","AddLoose","RemoveLoose","ObserveItemAdded"};
-                var requested = args.Length==4 && args[3]=="spawnnative"?new Dictionary<string,string[]> {
+                var requested = args.Length==4 && args[3]=="creature"?new Dictionary<string,string[]> {{"movecreaturescript",new[]{"Move"}}}:args.Length==4 && args[3]=="rabbitrags"?new Dictionary<string,string[]> {{"syncScript",new[]{"RecRagdoll"}}}:args.Length==4 && args[3]=="rabbitrep"?new Dictionary<string,string[]> {{"ragdollactivatescript",new[]{"SetRagdol"}},{"ragdollchildpos",new[]{"UpdPos"}},{"jointHelpScript",new[]{"UnFreezeStart"}},{"pickupable",new[]{"SetCollider"}},{"tosaveitemscript",new[]{"FInit"}},{"movecreaturescript",new[]{"Rot"}}}:args.Length==4 && args[3]=="grass"?new Dictionary<string,string[]> {{"newTerrainTileScript",new[]{"Grass","UpdMaterial","UpdMesh"}}}:args.Length==4 && args[3]=="rabbitpop"?new Dictionary<string,string[]> {{"aispawn",new[]{"TrySpawn","CanSpawn","RandomPlace","Spawn"}}}:args.Length==4 && args[3]=="rabbitnetwork"?new Dictionary<string,string[]> {{"TldMp.StableGameBridge",new[]{"AllowRabbitState"}}}:args.Length==4 && args[3]=="rabbitattack"?new Dictionary<string,string[]> {{"sensoryscript",new[]{"Scan"}},{"aiscript",new[]{"Update","ProcessStimul","stopFleeing","StartDie","Die"}},{"nyulscript",new[]{"Update","Attack","Roar","SeeTarget"}},{"playerdeathtriggerscript",new[]{"OnTriggerStay"}}}:args.Length==4 && args[3]=="rabbitai"?new Dictionary<string,string[]> {
+                    {"sensoryscript",new[]{"Scan"}},
+                    {"aiscript",new[]{"Update","ProcessStimul","stopFleeing","StartDie","Die"}}
+                }:args.Length==4 && args[3]=="spawnnative"?new Dictionary<string,string[]> {
                     {"fixedSpawnScript",new[]{"FStart"}}
                 }:args.Length==4 && args[3]=="spawn"?new Dictionary<string,string[]> {
                     {"TldMp.StableGameBridge",new[]{"FixedSpawnFStart","VerifyAttachmentPacket","VerifyStoredPacket","CloseD","BytesEqual","SpawnHashMatches","ApplySpawn","ParseSpawnLedger","ApplySpawnLedger","VerifySpawnLedger","ReleaseLedger","VerifyPendingSpawnConstruction","ConstructionFence","RequireConstructionSettled"}}
@@ -177,6 +187,11 @@ public static class ExtractReplay
                 {
                     var st=source.MainModule.Types.Single(t=>t.FullName=="syncScript");
                     foreach(var t in st.NestedTypes.Where(t=>requested["syncScript"].Any(n=>t.Name.StartsWith("<"+n+">",StringComparison.Ordinal))))CloneIterator(t,types["syncScript"]);
+                }
+                if(args.Length==4 && (args[3]=="rabbitai" || args[3]=="rabbitattack"))
+                {
+                    var ai=source.MainModule.Types.Single(t=>t.FullName=="aiscript");
+                    foreach(var t in ai.NestedTypes.Where(t=>t.Name.StartsWith("<stopFleeing>",StringComparison.Ordinal)))CloneIterator(t,types["aiscript"]);
                 }
                 foreach (var entry in requested)
                 {

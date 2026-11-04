@@ -13,6 +13,7 @@ namespace TldMp
     {
         readonly Dictionary<ulong,HSteamNetConnection> byPeer=new Dictionary<ulong,HSteamNetConnection>();
         readonly Dictionary<uint,ulong> byHandle=new Dictionary<uint,ulong>();
+        readonly HashSet<uint> connectedHandles=new HashSet<uint>();
         readonly IntPtr[] receiveBatch=new IntPtr[64];
         readonly Callback<SteamNetConnectionStatusChangedCallback_t> statusCallback;
         HSteamListenSocket listen=HSteamListenSocket.Invalid;
@@ -47,6 +48,7 @@ namespace TldMp
             if(listen.m_HSteamListenSocket!=HSteamListenSocket.Invalid.m_HSteamListenSocket)throw new InvalidOperationException("Already listening.");
             listen=SteamNetworkingSockets.CreateListenSocketP2P(virtualPort,0,null);
             if(listen.m_HSteamListenSocket==HSteamListenSocket.Invalid.m_HSteamListenSocket)throw new InvalidOperationException("Steam P2P listen socket creation failed.");
+            if(Trace!=null)Trace("listening port="+virtualPort+" handle="+listen.m_HSteamListenSocket);
         }
         public bool Connect(ulong peer,int virtualPort)
         {
@@ -61,7 +63,7 @@ namespace TldMp
         {
             if(peer==0)throw new InvalidOperationException("Steam identity did not resolve to a Steam ID.");
             HSteamNetConnection prior;if(byPeer.TryGetValue(peer,out prior)&&prior.m_HSteamNetConnection!=connection.m_HSteamNetConnection)
-            {byHandle.Remove(prior.m_HSteamNetConnection);SteamNetworkingSockets.CloseConnection(prior,1000,"Replacing duplicate peer connection",false);}
+            {Unbind(peer,prior);SteamNetworkingSockets.CloseConnection(prior,1000,"Replacing duplicate peer connection",false);}
             byPeer[peer]=connection;byHandle[connection.m_HSteamNetConnection]=peer;
         }
         void OnStatusChanged(SteamNetConnectionStatusChangedCallback_t change)
@@ -78,9 +80,13 @@ namespace TldMp
             }
             if(state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected)
             {
-                if(peer==0)peer=PeerFor(change.m_hConn);if(peer==0 || !AcceptRemote(peer)){SteamNetworkingSockets.CloseConnection(change.m_hConn,1002,"Peer is not a current lobby member",false);return;}
-                HSteamNetConnection existing;if(!byPeer.TryGetValue(peer,out existing))Bind(peer,change.m_hConn);
-                else if(existing.m_HSteamNetConnection==change.m_hConn.m_HSteamNetConnection)
+                peer=PeerFor(change.m_hConn);if(peer==0)return;
+                if(!AcceptRemote(peer))
+                {
+                    Unbind(peer,change.m_hConn);
+                    SteamNetworkingSockets.CloseConnection(change.m_hConn,1002,"Peer is not a current lobby member",false);return;
+                }
+                if(!connectedHandles.Contains(change.m_hConn.m_HSteamNetConnection))
                 {
                     try
                     {
@@ -102,6 +108,7 @@ namespace TldMp
                         SteamNetworkingSockets.CloseConnection(change.m_hConn,1003,"Failed to configure SDR traffic lanes",false);
                         var failure=ReceiveFailure;if(failure!=null)failure(e);return;
                     }
+                    connectedHandles.Add(change.m_hConn.m_HSteamNetConnection);
                     var connected=PeerConnected;if(connected!=null)connected(peer);
                 }
                 return;
@@ -110,21 +117,22 @@ namespace TldMp
                state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally||
                state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Dead)
             {
-                if(peer==0)peer=PeerFor(change.m_hConn);bool current=peer!=0&&Unbind(peer,change.m_hConn);
-                var disconnected=PeerDisconnected;if(current&&disconnected!=null)disconnected(peer,change.m_info.m_eEndReason,change.m_info.m_szEndDebug);return;
+                peer=PeerFor(change.m_hConn);if(peer==0 || !Unbind(peer,change.m_hConn))return;
+                SteamNetworkingSockets.CloseConnection(change.m_hConn,0,null,false);
+                var disconnected=PeerDisconnected;if(disconnected!=null)disconnected(peer,change.m_info.m_eEndReason,change.m_info.m_szEndDebug);return;
             }
         }
         bool AcceptRemote(ulong peer){var accept=AcceptPeer;return accept!=null && accept(peer);}
         ulong PeerFor(HSteamNetConnection c){ulong p;return byHandle.TryGetValue(c.m_HSteamNetConnection,out p)?p:0;}
         bool Unbind(ulong peer,HSteamNetConnection c)
-        {HSteamNetConnection current;bool removed=byPeer.TryGetValue(peer,out current)&&current.m_HSteamNetConnection==c.m_HSteamNetConnection;if(removed)byPeer.Remove(peer);byHandle.Remove(c.m_HSteamNetConnection);return removed;}
+        {HSteamNetConnection current;bool removed=byPeer.TryGetValue(peer,out current)&&current.m_HSteamNetConnection==c.m_HSteamNetConnection;if(removed)byPeer.Remove(peer);byHandle.Remove(c.m_HSteamNetConnection);connectedHandles.Remove(c.m_HSteamNetConnection);return removed;}
 
         // Send is admission to Steam's socket queue, not remote delivery.
         // Reliable refusal returns false so StableCore can retain FIFO data.
         public bool Send(ulong peer,byte[] data,NetDeliveryLane lane,bool reliable)
         {
             ThrowIfDisposed();if(data==null||data.Length==0||data.Length>Constants.k_cbMaxSteamNetworkingSocketsMessageSizeSend||(int)lane<0||(int)lane>2)return false;
-            HSteamNetConnection connection;if(!byPeer.TryGetValue(peer,out connection))return false;
+            HSteamNetConnection connection;if(!byPeer.TryGetValue(peer,out connection) || !connectedHandles.Contains(connection.m_HSteamNetConnection))return false;
             if(legacyLanes)
             {
                 // Use the older byte-buffer API too: do not write the newer
@@ -235,7 +243,7 @@ namespace TldMp
         {
             if(disposed)return;disposed=true;statusCallback.Dispose();
             foreach(var pair in byPeer)SteamNetworkingSockets.CloseConnection(pair.Value,1000,"Session closed",false);
-            byPeer.Clear();byHandle.Clear();if(listen.m_HSteamListenSocket!=HSteamListenSocket.Invalid.m_HSteamListenSocket)SteamNetworkingSockets.CloseListenSocket(listen);
+            byPeer.Clear();byHandle.Clear();connectedHandles.Clear();if(listen.m_HSteamListenSocket!=HSteamListenSocket.Invalid.m_HSteamListenSocket)SteamNetworkingSockets.CloseListenSocket(listen);
         }
         void ThrowIfDisposed(){if(disposed)throw new ObjectDisposedException("SteamSdrTransport");}
     }

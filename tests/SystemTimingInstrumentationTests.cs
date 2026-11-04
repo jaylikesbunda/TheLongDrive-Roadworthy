@@ -61,6 +61,57 @@ static class SystemTimingInstrumentationTests
             if(Directory.Exists(output))throw new Exception("Output directory already exists: "+output);
             Directory.CreateDirectory(output);
             Run(candidate,runtime,true,"");
+            Mutate("missing-terrain-pad-blend",delegate(AssemblyDefinition a) {
+                var call=Find(a,"terrainGenSettings","Height",3).Body.Instructions.First(i=>Hook(i,"TerrainPadValue"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Call-swap count mismatch");
+            Mutate("missing-rabbit-contact-gate",delegate(AssemblyDefinition a) {
+                var call=Find(a,"breakablescript","OnCollisionEnter",1).Body.Instructions.First(i=>Hook(i,"RabbitImpactGate"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong guard observer");
+            Mutate("missing-rabbit-body-forwarding",delegate(AssemblyDefinition a) {
+                var call=Find(a,"ragdollactivatescript","SetRagdol",1).Body.Instructions.First(i=>Hook(i,"ConfigureRabbitImpact"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong exact return-hook count");
+            Mutate("missing-creature-axis-fix",delegate(AssemblyDefinition a) {
+                var field=Find(a,"movecreaturescript","Move",0).Body.Instructions.Single(i=>i.OpCode==OpCodes.Ldfld && i.Operand is FieldReference && ((FieldReference)i.Operand).DeclaringType.FullName=="UnityEngine.Vector3" && ((FieldReference)i.Operand).Name=="z");
+                var old=(FieldReference)field.Operand;field.Operand=new FieldReference("y",old.FieldType,old.DeclaringType);
+            },"Creature horizontal-axis correction missing or ambiguous.");
+            foreach(var type in new[]{"pickupable","carscript","breakablescript"}) {
+                string owner=type;
+                Mutate("missing-contact-guard-"+owner,delegate(AssemblyDefinition a) {
+                    var m=Find(a,owner,"OnCollisionEnter",1);
+                    var call=m.Body.Instructions.First(i=>Hook(i,"HasCollisionContacts"));call.OpCode=OpCodes.Nop;call.Operand=null;
+                },"Wrong guard observer");
+            }
+            Mutate("missing-biome-binding",delegate(AssemblyDefinition a) {
+                var m=Find(a,"terrainGenSettings","FStart",1);
+                var call=m.Body.Instructions.First(i=>Hook(i,"RegisterTerrainBiome"));call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong exact return-hook count");
+            Mutate("missing-biome-color",delegate(AssemblyDefinition a) {
+                var m=Find(a,"terrainGenSettings","Biome",2);
+                var call=m.Body.Instructions.First(i=>Hook(i,"ApplyWorldBiome"));call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong exact return-hook count");
+            Mutate("missing-biome-load",delegate(AssemblyDefinition a) {
+                var m=Find(a,"menuhandler","LoadMap",1);
+                var call=m.Body.Instructions.First(i=>Hook(i,"ConfigureWorldBiome"));call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong entry observer");
+            Mutate("missing-biome-save",delegate(AssemblyDefinition a) {
+                var m=Find(a,"savedatascript","RefreshProperties",1);
+                var call=m.Body.Instructions.First(i=>Hook(i,"StampBiomeVersion"));call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong exact return-hook count");
+            Mutate("missing-debris-wrapper",delegate(AssemblyDefinition a) {
+                var m=Find(a,"breakablescript","Break",0);
+                m.Body.Instructions.First(i=>Hook(i,"InstantiateBreakDebris")).Operand=m;
+            },"Call-swap count mismatch");
+            Mutate("changed-slice-removal",delegate(AssemblyDefinition a) {
+                var m=Find(a,"randomSlice","Slicc",3);
+                m.Body.Instructions.First(i=>i.OpCode==OpCodes.Nop).OpCode=OpCodes.Ldc_I4_0;
+            },"Invalid duplicate slice component removal.");
+            Mutate("missing-debris-mode-exit",delegate(AssemblyDefinition a) {
+                var m=Find(a,"tosaveitemscript","FInit",0);
+                var call=m.Body.Instructions.First(i=>Hook(i,"DebrisItemInitialized"));call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong bounded return-hook count");
             Mutate("wrong-slot",delegate(AssemblyDefinition a) {
                 Find(a,"fpscontroller","Update",0).Body.Instructions[0].Operand=55;
             },"Invalid system timing bracket");
@@ -83,6 +134,76 @@ static class SystemTimingInstrumentationTests
                 var m=Find(a,"savedatascript","SaveToData",1);
                 m.Body.ExceptionHandlers[0].TryStart=m.Body.Instructions[0];
             },"Entry instrumentation changed stock method body");
+            Mutate("missing-rabbit-hearing",delegate(AssemblyDefinition a) {
+                var call=Find(a,"sensoryscript","Scan",0).Body.Instructions.First(i=>Hook(i,"RabbitHearingFalloff"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Rabbit hearing hook count changed");
+            Mutate("omitted-rabbit-hearing-receiver",delegate(AssemblyDefinition a) {
+                var m=Find(a,"sensoryscript","Scan",0);
+                var call=m.Body.Instructions.First(i=>Hook(i,"RabbitHearingFalloff"));
+                m.Body.Instructions.Remove(call.Previous);
+            },"Rabbit hearing receiver changed");
+            Mutate("wrong-rabbit-hearing-target",delegate(AssemblyDefinition a) {
+                var call=Find(a,"sensoryscript","Scan",0).Body.Instructions.First(i=>Hook(i,"RabbitHearingFalloff"));
+                var mr=(MethodReference)call.Operand;
+                call.Operand=new MethodReference("NpcVehicleVelocity",mr.ReturnType,mr.DeclaringType){HasThis=false};
+            },"Rabbit hearing hook count changed");
+            Mutate("missing-rabbit-flee",delegate(AssemblyDefinition a) {
+                var call=Find(a,"aiscript","Update",0).Body.Instructions.First(i=>Hook(i,"RabbitStartFlee"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Call-swap count mismatch");
+            Mutate("missing-ragdoll-velocity",delegate(AssemblyDefinition a) {
+                var call=Find(a,"syncScript","RecRagdoll",1).Body.Instructions.First(i=>Hook(i,"RagdollVelocity"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Call-swap count mismatch");
+            Mutate("missing-ragdoll-angular",delegate(AssemblyDefinition a) {
+                var call=Find(a,"syncScript","RecRagdoll",1).Body.Instructions.First(i=>Hook(i,"RagdollAngularVelocity"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Call-swap count mismatch");
+            Mutate("missing-rabbit-pose-guard",delegate(AssemblyDefinition a) {
+                var call=Find(a,"ragdollchildpos","UpdPos",0).Body.Instructions.First(i=>Hook(i,"BeforeRabbitPose"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong hook");
+            Mutate("missing-rabbit-bracket-entry",delegate(AssemblyDefinition a) {
+                var call=Find(a,"ragdollactivatescript","SetRagdol",1).Body.Instructions.First(i=>Hook(i,"BeforeRabbitRagdoll"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong entry observer");
+            Mutate("missing-rabbit-trigger",delegate(AssemblyDefinition a) {
+                var call=Find(a,"playerdeathtriggerscript","OnTriggerStay",1).Body.Instructions.First(i=>Hook(i,"RabbitTriggerGuard"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong guard observer");
+            Mutate("missing-rabbit-ai-guard",delegate(AssemblyDefinition a) {
+                var call=Find(a,"aiscript","Update",0).Body.Instructions.First(i=>Hook(i,"RabbitAiGuard"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong guard observer");
+            Mutate("missing-rabbit-bracket-end",delegate(AssemblyDefinition a) {
+                var call=Find(a,"pickupable","SetCollider",1).Body.Instructions.First(i=>Hook(i,"AfterRabbitCollider"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong bounded return-hook count");
+            Mutate("missing-rabbit-unfreeze",delegate(AssemblyDefinition a) {
+                var call=Find(a,"jointHelpScript","UnFreezeStart",0).Body.Instructions.First(i=>Hook(i,"RabbitUnfreeze"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong bounded return-hook count");
+            Mutate("missing-rabbit-rot",delegate(AssemblyDefinition a) {
+                var call=Find(a,"movecreaturescript","Rot",0).Body.Instructions.First(i=>Hook(i,"RabbitRotGuard"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong hook");
+            Mutate("missing-rabbit-nyul",delegate(AssemblyDefinition a) {
+                var call=Find(a,"nyulscript","Update",0).Body.Instructions.First(i=>Hook(i,"RabbitNyulGuard"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong hook");
+            Mutate("missing-spawn-gate",delegate(AssemblyDefinition a) {
+                var call=Find(a,"aispawn","Spawn",1).Body.Instructions.First(i=>Hook(i,"RabbitSpawnGate"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong guard observer");
+            Mutate("missing-grass-mesh-changed",delegate(AssemblyDefinition a) {
+                var call=Find(a,"newTerrainTileScript","UpdMesh",1).Body.Instructions.First(i=>Hook(i,"BiomeGrassMeshChanged"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong bounded return-hook count");
+            Mutate("missing-rabbit-init",delegate(AssemblyDefinition a) {
+                var call=Find(a,"tosaveitemscript","FInit",0).Body.Instructions.First(i=>Hook(i,"AfterRabbitInit"));
+                call.OpCode=OpCodes.Nop;call.Operand=null;
+            },"Wrong bounded return-hook count");
             string badRuntime=Path.Combine(output,"bad-label-runtime.dll");
             using(var a=Read(runtime))
             {

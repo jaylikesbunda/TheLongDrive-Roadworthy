@@ -9,7 +9,7 @@ internal static class ProfilerSlotPolicyTests
 
     static void Main()
     {
-        Check(ProfilerSlotPolicy.SlotCount == 13, "unexpected extra-slot count");
+        Check(ProfilerSlotPolicy.SlotCount == 31, "unexpected extra-slot count");
         Check(ProfilerSlotPolicy.Matches(11, "Render", "Camera.Render", ProfilerMarkerDataUnit.TimeNanoseconds), "Camera.Render not matched");
         Check(!ProfilerSlotPolicy.Matches(11, "Render", "Camera.Render", ProfilerMarkerDataUnit.Count), "Camera.Render accepted wrong unit");
         Check(ProfilerSlotPolicy.Matches(12, "Render", "Objects Culled", ProfilerMarkerDataUnit.Count), "Objects Culled count not matched");
@@ -30,6 +30,13 @@ internal static class ProfilerSlotPolicyTests
         Check(ProfilerSlotPolicy.Matches(23, "Render", "Gfx.WaitForGfxCommandsFromMainThread", ProfilerMarkerDataUnit.TimeNanoseconds), "main-thread command wait not matched");
         Check(!ProfilerSlotPolicy.Matches(10, "Render", "Camera.Render", ProfilerMarkerDataUnit.TimeNanoseconds), "base slots handled by policy");
         Check(!ProfilerSlotPolicy.Matches(11, "Render", null, ProfilerMarkerDataUnit.TimeNanoseconds), "null name matched");
+        for(int i=0;i<ProfilerSlotPolicy.PhysicsNames.Length;i++){
+            var unit=i<12?ProfilerMarkerDataUnit.TimeNanoseconds:ProfilerMarkerDataUnit.Count;
+            int slot=ProfilerSlotPolicy.FirstPhysicsSlot+i;
+            Check(ProfilerSlotPolicy.Matches(slot,"Physics",ProfilerSlotPolicy.PhysicsNames[i],unit),"missing physics name");
+            Check(!ProfilerSlotPolicy.Matches(slot,"Physics",ProfilerSlotPolicy.PhysicsNames[i],ProfilerMarkerDataUnit.Bytes),"wrong physics unit");
+            Check(!ProfilerSlotPolicy.Matches(slot,"Physics2D","Physics2D.Simulate",unit),"2D mislabelled");
+        }
         Console.WriteLine("PASS: " + checks + " profiler slot/unit policy assertions");
     }
 }

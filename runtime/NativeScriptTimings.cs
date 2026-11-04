@@ -126,7 +126,29 @@ namespace TldMp
             "fpscontroller.DrawRays",
             "newSaveScreenScript.ReadSave",
             "newSaveScreenScript.ReadFiles",
-            "poiScript.FixedSpawn.Instantiate"
+            "gibscript.Start",
+            "materialChangeScript.Start",
+            "tosaveitemscript.Start",
+            "tosaveitemscript.FStart",
+            "tankscript.Start",
+            "randomSlice.Slicc" ,
+            "randomSlice.SSSLiceee" ,
+            "randomSlice.OnDestroy" ,
+            "MeshSlicer.NewSlice" ,
+            "MeshSlicer.SliceMesh" ,
+            "MeshSlicer.TriangulatePolygon" ,
+            "MeshSlicer.BuildSlice" ,
+            "tosaveitemscript.OnDestroy" ,
+            "pickupable.FStart",
+            "napszakvaltakozas.FixedUpdate",
+            "poiScript.FixedSpawn.Instantiate",
+            "breakablescript.Break.Instantiate",
+            "Debris.Normals",
+            "Debris.Bounds",
+            "Debris.Convex",
+            "Debris.ColliderMesh",
+            "Debris.CollisionPair",
+            "Debris.ComponentCreation"
         };
         static readonly int Slots = Names.Length;
 

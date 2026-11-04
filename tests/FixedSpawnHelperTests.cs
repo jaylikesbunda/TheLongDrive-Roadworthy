@@ -76,6 +76,7 @@ public static class FixedSpawnHelperTests
             var fixedSpawn = Method(patched, "poiScript", "FixedSpawn", 0);
             Check(Calls(fixedSpawn, "NativePoiFixedInstantiateBegin") && Calls(fixedSpawn, "NativePoiFixedInstantiateEnd"),
                 "FixedSpawn instantiate bracket missing");
+            Check(Calls(fixedSpawn, "ConstructFixedProps"), "fixed prefab construction factory missing");
             var spawnPoi = bridge.Methods.Single(m => m.Name == "SpawnPoiCoordinated");
             int beginFrameIdx = -1, firstExecIdx = -1;
             for (int i = 0; i < spawnPoi.Body.Instructions.Count; i++)

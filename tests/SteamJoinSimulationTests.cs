@@ -10,7 +10,8 @@ public static class SteamJoinSimulationTests
     sealed class Peer:IDisposable
     {
         public readonly ulong Id;public readonly SteamSdrTransport Socket;public readonly StableNode Node;public readonly ReliableOutbox Outbox;
-        public bool Authenticated,Rejected,MapLoaded,Applied;public bool Member=true;public int Connected;public double Now;
+        public bool Authenticated,Rejected,MapLoaded,Applied,ConfigApplied;public bool Member=true,WorldAvailable=true;
+        public int Connected,MapsReceived;public double Now;
         public Peer Other;
         public Peer(ulong id,string build)
         {
@@ -19,7 +20,7 @@ public static class SteamJoinSimulationTests
             Node=new StableNode(id,10,999,id+123,build,100);Node.CanEnterWorld=delegate{return MapLoaded;};
             Outbox=new ReliableOutbox(delegate(ulong p,byte[] b,bool reliable){return Socket.Send(p,b,NetDeliveryLane.Critical,reliable);},delegate(ulong p,string e){throw new Exception(e);});
             Node.Send=delegate(ulong p,byte[] b,bool reliable){if(reliable)Outbox.Send(p,b,true,Now);else Socket.Send(p,b,NetDeliveryLane.Critical,false);};
-            Node.Deliver=delegate(ulong p,byte[] b){Check(b[0]==8,"map bootstrap payload");MapLoaded=true;Node.HostWorldLoaded=true;Node.RequestSnapshot();};
+            Node.Deliver=delegate(ulong p,byte[] b){Check(b[0]==8,"map bootstrap payload");Check(Id==10 || ConfigApplied,"host world configuration must arrive before map bootstrap");MapsReceived++;MapLoaded=true;Node.HostWorldLoaded=true;Node.RequestSnapshot();};
             Node.SnapshotRequested=delegate(ulong p){Node.BeginSnapshot(p,new byte[]{9,8,7});};
             Node.ApplySnapshot=delegate(byte[] b){Check(b.Length==3 && b[0]==9,"snapshot byte equality");Applied=true;};
         }
@@ -31,20 +32,60 @@ public static class SteamJoinSimulationTests
             // client accepts only host password/kick pre-auth.
             if(!Member || from!=Other.Id)return;
             if(!Authenticated && b[0]!=5 && !(Id!=10 && b[0]==6))return;
-            if(b[0]==254){Node.Receive(from,b,Now);if(Id==10 && Node.Peers.ContainsKey(from))Node.SendBootstrap(from,new byte[]{8,42});return;}
+            if(b[0]==254){Node.Receive(from,b,Now);return;}
             Check(StablePackets.Valid(b),"valid native bootstrap packet");
             if(b[0]==6){Rejected=true;return;}
             string password=Encoding.Unicode.GetString(b,5,b.Length-5);
             if(Id==10){byte[] reply=password=="secret"?Password("1"):new byte[]{6,1};Check(StablePackets.PasswordBootstrapAllowed(true,10,10,from,true,reply),"host bootstrap reply policy");Outbox.Send(from,reply,true,Now);if(password=="secret")Authenticated=true;}
             else if(password=="1")Authenticated=true;
         }
-        public void Tick(double now){Now=now;Simulation.Current=Id;Outbox.Flush(now);if(Id==10 || Authenticated)Node.Tick(now);Socket.Poll(Receive,256);}
+        void SendJoinMap(ulong peer){Node.SendBootstrap(peer,new byte[]{8,42},true);}
+        public void Tick(double now)
+        {
+            Now=now;Simulation.Current=Id;Outbox.Flush(now);
+            if(WorldAvailable)Node.SendPendingBootstraps(SendJoinMap);
+            if(Id==10 || Authenticated)Node.Tick(now);
+            Socket.Poll(Receive,256);
+        }
         public void Dispose(){Simulation.Current=Id;Socket.Dispose();}
     }
-    static void Run(bool correct,string build,bool refuse,bool member)
+    static void PublicLobbyWithDelayedWorld()
+    {
+        using(var host=new Peer(10,"same"))using(var client=new Peer(20,"same")){
+            host.Other=client;client.Other=host;host.Authenticated=client.Authenticated=true;
+            host.WorldAvailable=false;
+            client.Node.ConfigReceived=delegate{client.ConfigApplied=true;};
+            Check(!host.Node.SendBootstrap(20,new byte[]{8,10},true),"early native callback cannot send a map before Hello");
+            Simulation.Current=10;host.Socket.Listen(0);Simulation.Current=20;
+            Check(client.Socket.Connect(10,0),"public lobby connection allocated");
+            Check(!client.Socket.Send(10,new byte[]{1},NetDeliveryLane.Critical,true),"gameplay sends wait for Steam connected callback");
+            Simulation.Pump();
+            for(int frame=0;frame<25;frame++){client.Tick(frame*.02);host.Tick(frame*.02);}
+            Check(client.Node.Compatible && client.MapsReceived==0,"public handshake can finish before host world starts");
+            host.WorldAvailable=true;
+            for(int frame=25;frame<200 && !client.Node.Ready;frame++){client.Tick(frame*.02);host.Tick(frame*.02);}
+            Check(client.Node.Ready && client.MapsReceived==1 && host.Node.Peers[20].Ready,"public lobby recovers missed native callback and enters world");
+            Check(!host.Node.SendBootstrap(20,new byte[]{8,99},true),"late native callback does not send a second map");
+            client.Tick(5);
+            Check(client.Node.Ready && client.Node.Error==null,"late callback does not restart the guest");
+
+            uint handle=0;
+            foreach(var pair in Simulation.Sockets)
+                if(pair.Value.Owner==20 && pair.Value.Remote==10 && !pair.Value.Closed)handle=pair.Key;
+            Check(handle!=0,"find active client handle");
+            int disconnected=0;client.Socket.PeerDisconnected+=delegate{disconnected++;};
+            Simulation.Status(handle,ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally);
+            Simulation.Pump();
+            Check(disconnected==1 && Simulation.Sockets[handle].Closed && !client.Socket.HasConnection(10),"terminal callback releases and unbinds the socket");
+        }
+        Check(Simulation.Allocations==0,"public lobby releases all native message allocations");
+    }
+    static void Run(bool correct,string build,bool refuse,bool member,int biome=2)
     {
         using(var host=new Peer(10,"same"))using(var client=new Peer(20,build)){
             host.Other=client;client.Other=host;host.Member=member;
+            host.Node.HostConfig=BitConverter.GetBytes(5 | (biome<<4));
+            client.Node.ConfigReceived=delegate(byte[] b){Check(b.Length==4 && BitConverter.ToInt32(b,0)==(5 | (biome<<4)),"calendar and biome config byte parity");client.ConfigApplied=true;};
             Simulation.Current=10;host.Socket.Listen(0);Simulation.Current=20;Check(client.Socket.Connect(10,0),"connection handle allocated");Simulation.Pump();
             Check(Simulation.InvalidAccepts==0,"client never accepts its outgoing connection");
             if(!member){Check(host.Connected==0 && client.Connected==0,"nonmember blocked before authentication");return;}
@@ -62,9 +103,9 @@ public static class SteamJoinSimulationTests
     }
     public static int Main()
     {
-        Run(true,"same",false,true);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);Run(true,"same",false,false);
+        for(int biome=0;biome<4;biome++)Run(true,"same",false,true,biome);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);Run(true,"same",false,false);PublicLobbyWithDelayedWorld();
         Simulation.MissingLaneApi=true;
-        Run(true,"same",false,true);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);
+        for(int biome=0;biome<4;biome++)Run(true,"same",false,true,biome);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);PublicLobbyWithDelayedWorld();
         Check(Simulation.LegacySends>0,"missing lane export uses byte-buffer API");
         Simulation.MissingLaneApi=false;
         Check(Simulation.InvalidAccepts==0,"no invalid accepts in any scenario");Check(Simulation.Allocations==0,"no leaked messages");

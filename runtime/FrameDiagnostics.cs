@@ -45,6 +45,9 @@ namespace TldMp
         static readonly int[] nativeCounts = enabled ? new int[NativeCapacity] : null;
         static readonly int[] nativeAts = enabled ? new int[NativeCapacity] : null;
         static readonly bool[] nativeUnavailable = enabled ? new bool[NativeCapacity] : null;
+        static readonly long[] latestNative=enabled?new long[NativeCapacity]:null,latestNativeCalls=enabled?new long[NativeCapacity]:null;
+        static readonly bool[] latestNativeValid=enabled?new bool[NativeCapacity]:null;
+        static double physicsReportWindow;static int physicsReportLines;
         static readonly string[] terrainNames = enabled ? new string[MaxTerrainInstances] : null;
         static readonly terrainGenScript[] terrainRefs = enabled ? new terrainGenScript[MaxTerrainInstances] : null;
         static readonly string[] categoryNames = enabled ? new string[MaxCategoryNames] : null;
@@ -106,7 +109,7 @@ namespace TldMp
             NativeLoopTimings.FrameCompleted = CompleteSlowFrame;
         }
         static void LogPhaseSpike(string text)
-        { UnityEngine.Debug.Log("[TLD MP phase-spike] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " frame=" + Time.frameCount + " " + text); }
+        { DiagnosticFileLog.Log("[TLD MP phase-spike] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " frame=" + Time.frameCount + " " + text); }
         static bool IsMainThread { get { return mainThreadId != 0 && Thread.CurrentThread.ManagedThreadId == mainThreadId; } }
         public static void NativeBegin(int slot)
         {
@@ -121,9 +124,9 @@ namespace TldMp
             scriptTimings.End(slot, frameId, ticks); slowFrames.End(frameId, slot, ticks);
         }
         internal static void RecordLoopPhase(int frameId, int phase, long start, long end)
-        { if (enabled && IsMainThread) slowFrames.AddPhase(frameId, phase, start, end); }
+        { if (enabled && IsMainThread) { slowFrames.AddPhase(frameId, phase, start, end); StableGameBridge.BreakProbePhase(frameId,phase,start,end); } }
         internal static void CompleteSlowFrame(int frameId, int configuredMask)
-        { if (enabled && IsMainThread) slowFrames.CompleteFrame(frameId, configuredMask); }
+        { if (enabled && IsMainThread) { slowFrames.CompleteFrame(frameId, configuredMask); StableGameBridge.BreakProbeFrame(frameId); } }
         public static void NativePoiNativeAddBegin() { NativeBegin(20); }
         public static void NativePoiNativeAddEnd() { NativeEnd(20); }
         public static void NativePoiInstantiateBegin() { NativeBegin(21); }
@@ -149,7 +152,7 @@ namespace TldMp
                 }
             }
             bool imageMap = setting.mapSetting != null && setting.mapSetting.imageMapLoad != null;
-            UnityEngine.Debug.Log("[TLD MP terrain] name=" + (terrain.terrainName ?? "") +
+            DiagnosticFileLog.Log("[TLD MP terrain] name=" + (terrain.terrainName ?? "") +
                 " resolution=" + terrain.resolution + " imageMap=" + imageMap +
                 " terrainNoises=" + terrainNoises + " subNoises=" + subNoises +
                 " octaveSum=" + octaveSum + " hasCollider=" + terrain.hasCollider);
@@ -191,8 +194,8 @@ namespace TldMp
         public static void NativePoiItemsEnd() { NativeEnd(33); }
         public static void NativePoiFixedBegin() { NativeBegin(34); }
         public static void NativePoiFixedEnd() { NativeEnd(34); }
-        public static void NativePoiFixedInstantiateBegin() { NativeBegin(109); }
-        public static void NativePoiFixedInstantiateEnd() { NativeEnd(109); }
+        public static void NativePoiFixedInstantiateBegin() { NativeBegin(124); }
+        public static void NativePoiFixedInstantiateEnd() { NativeEnd(124); }
         public static void NativePoiRemoveBegin() { NativeBegin(35); }
         public static void NativePoiRemoveEnd() { NativeEnd(35); }
         public static void NativeBehaviorMirrorsBegin() { NoteBehavior(0); NativeBegin(36); }
@@ -370,15 +373,15 @@ namespace TldMp
         {
             if (!enabled) return;
             RegisterMainThread();
-            NativeLoopTimings.TryInstall();
-            NativeLoopTimings.SamplePreviousFrame(Time.frameCount);
+            {long coverage=StableGameBridge.DiagnosticStageBegin();try{NativeLoopTimings.TryInstall();}finally{StableGameBridge.DiagnosticStageEnd("Diagnostics.InstallLoopObservers",coverage);}}
+            {long coverage=StableGameBridge.DiagnosticStageBegin();try{NativeLoopTimings.SamplePreviousFrame(Time.frameCount);}finally{StableGameBridge.DiagnosticStageEnd("Diagnostics.PreviousFrameAndBreakLog",coverage);}}
             long now = Stopwatch.GetTimestamp();
             if (!nativeInitialized) { nativeInitialized = true; nativeInitTimestamp = now; InitializeNativeCounters(); }
             else if (!nativeRetryAttempted && now - nativeInitTimestamp >= 30L * Stopwatch.Frequency && HasUnavailableNativeCounters())
             { nativeRetryAttempted = true; InitializeNativeCounters(); }
-            SampleNativeCounters();
-            RendererCensus.Tick();
-            CameraCost.Tick();
+            {long coverage=StableGameBridge.DiagnosticStageBegin();try{SampleNativeCounters();}finally{StableGameBridge.DiagnosticStageEnd("Diagnostics.ReadNativeCounters",coverage);}}
+            {long coverage=StableGameBridge.DiagnosticStageBegin();try{RendererCensus.Tick();}finally{StableGameBridge.DiagnosticStageEnd("Diagnostics.RendererCensus",coverage);}}
+            {long coverage=StableGameBridge.DiagnosticStageBegin();try{CameraCost.Tick();}finally{StableGameBridge.DiagnosticStageEnd("Diagnostics.CameraCost",coverage);}}
             if (previousFrame != 0) Add(frame, ref frameAt, ref frameCount, Milliseconds(now - previousFrame));
             previousFrame = now; windowFrames++;
             if (windowStart == 0)
@@ -404,7 +407,7 @@ namespace TldMp
                 }
                 catch { timingCaptureFailed = true; }
             }
-            if (now / (double)Stopwatch.Frequency - windowStart >= ReportSeconds) Report(now / (double)Stopwatch.Frequency);
+            if (now / (double)Stopwatch.Frequency - windowStart >= ReportSeconds) {long coverage=StableGameBridge.DiagnosticStageBegin();try{Report(now / (double)Stopwatch.Frequency);}finally{StableGameBridge.DiagnosticStageEnd("Diagnostics.BuildAndWriteReport",coverage);}}
         }
 
         public static void PulseBegin() { if (enabled) pulseStart = Stopwatch.GetTimestamp(); }
@@ -441,6 +444,9 @@ namespace TldMp
             try
             {
                 ProfilerRecorderHandle.GetAvailable(available);
+                var inventory=new StringBuilder("[TLD MP physics-markers] available=");int listed=0;
+                foreach(var handle in available){if(!handle.Valid)continue;var d=ProfilerRecorderHandle.GetDescription(handle);string name=d.Name??"";if(!Has(name,"physics") && !Has(name,"physx") && !Has(d.Category.Name,"physics"))continue;if(listed++<48)inventory.Append(d.Category.Name).Append('/').Append(name).Append('[').Append(d.UnitType).Append("]; ");}
+                inventory.Append(" totalPhysicsCandidates=").Append(listed).Append(" listedCap=48; unavailable markers are not zero-cost");DiagnosticFileLog.Log(inventory.ToString());
                 for (int slot = 0; slot < NativeCapacity; slot++)
                 {
                     if (nativeNames[slot] != null && !nativeUnavailable[slot]) continue;
@@ -510,20 +516,41 @@ namespace TldMp
         {
             for (int i = 0; i < NativeCapacity; i++)
             {
+                latestNativeValid[i]=false;
                 if (nativeUnavailable[i]) continue;
                 try
                 {
                     ProfilerRecorder recorder = nativeRecorders[i];
                     if (!recorder.Valid) { try { nativeRecorders[i].Dispose(); } catch { } nativeRecorders[i] = default(ProfilerRecorder); nativeUnavailable[i] = true; continue; }
                     if (recorder.Count <= 0) continue;
-                    long value = recorder.LastValue;
+                    var sample=recorder.GetSample(recorder.Count-1);
+                    long value = sample.Value;
+                    latestNative[i]=value;latestNativeCalls[i]=sample.Count;latestNativeValid[i]=true;
                     nativeSamples[i, nativeAts[i]] = value; nativeAts[i] = (nativeAts[i] + 1) % NativeSampleCapacity;
                     if (nativeCounts[i] < NativeSampleCapacity) nativeCounts[i]++;
                 }
                 catch { nativeUnavailable[i] = true; try { nativeRecorders[i].Dispose(); } catch { } }
             }
+            ReportPhysicsFrame();
         }
 
+        static void ReportPhysicsFrame()
+        {
+            int frame=Time.frameCount;double phase=NativeLoopTimings.PreviousPhysicsMs(frame);
+            if(phase<10)return;
+            double now=Time.realtimeSinceStartup;if(now<physicsReportWindow || now-physicsReportWindow>=5){physicsReportWindow=now;physicsReportLines=0;}
+            if(physicsReportLines++>=8)return;
+            var text=new StringBuilder("[TLD MP physics-native] frame=").Append(frame-1).Append(" phaseMs=").Append(phase.ToString("F3",CultureInfo.InvariantCulture)).Append(" source=last-completed-rendered-frame; recorder timings sum samples across threads/steps, may overlap and include waits; do not add/subtract as wall time");
+            for(int i=0;i<NativeCapacity;i++)
+            {
+                if(i!=2 && i<ProfilerSlotPolicy.FirstPhysicsSlot)continue;
+                text.Append("; ").Append(nativeLabels[i]).Append('=');
+                if(nativeNames[i]==null || nativeUnavailable[i])text.Append("unavailable");
+                else if(!latestNativeValid[i])text.Append("no-sample");
+                else text.Append(latestNative[i]).Append(' ').Append(nativeUnits[i]).Append(" calls=").Append(latestNativeCalls[i]);
+            }
+            DiagnosticFileLog.Log(text.ToString());
+        }
         static string NativeCounters()
         {
             string result = "nativeCounters{discovery=" + (nativeDiscoveryFailed ? "unavailable:" + nativeFailure : "available") +
@@ -805,12 +832,12 @@ namespace TldMp
             string counts = WorldCounts(out countsMs, out countsCapped);
             scriptTimings.SetWindowFrames(windowFrames);
             string script = scriptTimings.ReportAndReset(1000.0 / Stopwatch.Frequency);
-            UnityEngine.Debug.Log("[TLD MP fps] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " window=" + elapsed.ToString("F1", CultureInfo.InvariantCulture) + "s fps=" + (windowFrames / elapsed).ToString("F1", CultureInfo.InvariantCulture) +
+            DiagnosticFileLog.Log("[TLD MP fps] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " window=" + elapsed.ToString("F1", CultureInfo.InvariantCulture) + "s fps=" + (windowFrames / elapsed).ToString("F1", CultureInfo.InvariantCulture) +
                 " frameMs{" + Summary(frame, frameCount, scratchFrame) + "} bridgePulseMs{" + Summary(pulse, pulseCount, scratchPulse) + "}" +
                 " bridgePhysicsMs{" + Summary(physics, physicsCount, scratchPhysics) + "} bridgeRenderMs{" + Summary(render, renderCount, scratchRender) + "}" +
                 " " + cpuGpu + " " + NativeCounters() + " " + NativeLoopTimings.Report() + " " + script + " gcDelta=" + (nextGc0 - gc0) + "/" + (nextGc1 - gc1) + "/" + (nextGc2 - gc2) + " (0/1/2) vSync=" + QualitySettings.vSyncCount +
                 " targetFps=" + Application.targetFrameRate + " samplesCap=" + Capacity);
-            UnityEngine.Debug.Log("[TLD MP fps-world] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " " + counts +
+            DiagnosticFileLog.Log("[TLD MP fps-world] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " " + counts +
                 " mapCountsMs=" + countsMs.ToString("F3", CultureInfo.InvariantCulture) +
                 " mapCountsCapped=" + countsCapped +
                 " managedHeapBytes=" + GC.GetTotalMemory(false).ToString(CultureInfo.InvariantCulture) +
@@ -818,10 +845,10 @@ namespace TldMp
                 " " + TerrainRoadSelection.ReportAndReset() +
                 " kinematicWarnings=" + CargoDiagnostics.TakeKinematicWarnings() +
                 " gcDeltaNote=collections may be reported across generation counters; not allocation volume or full collections");
-            UnityEngine.Debug.Log("[TLD MP fps-slow] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " " +
+            DiagnosticFileLog.Log("[TLD MP fps-slow] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " " +
                 slowFrames.ReportAndReset(Stopwatch.Frequency) + " workerTerrainMesh{frame=uncorrelated begins=" +
                 Interlocked.Exchange(ref workerMeshBegins, 0) + " ends=" + Interlocked.Exchange(ref workerMeshEnds, 0) + "}");
-            UnityEngine.Debug.Log("[TLD MP fps-phase] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " " + PhaseTimings.ReportAndReset(windowFrames));
+            DiagnosticFileLog.Log("[TLD MP fps-phase] t=" + Time.realtimeSinceStartup.ToString("F3", CultureInfo.InvariantCulture) + " " + PhaseTimings.ReportAndReset(windowFrames));
             NativeLoopTimings.ResetWindow();
             windowStart = now; windowFrames = 0; gc0 = nextGc0; gc1 = nextGc1; gc2 = nextGc2;
             frameAt = frameCount = pulseAt = pulseCount = physicsAt = physicsCount = renderAt = renderCount = cpuAt = cpuCount = gpuAt = gpuCount = 0;

@@ -4,6 +4,16 @@ using UnityEngine;
 
 namespace TldMp
 {
+    public static partial class StableGameBridge
+    {
+        public static void RoadConnectionAdded(roadGenScript road, Vector3d ownerChunk)
+        {
+            // A neighbouring chunk can add a road after this chunk finished.
+            // The native pass skips already generated roads when it revisits it.
+            road.chunks[ownerChunk].innerChunkGenerated = false;
+        }
+    }
+
     // roadGenScript.UpdChunksToRemove currently marks every chunk that is not in
     // chunksNeeded. UpdChunks then destroys its road objects, removes it, and
     // immediately re-adds the same cell through the -1..1 neighbour loop, which

@@ -9,7 +9,7 @@ namespace TldMp
     public static class ProfilerSlotPolicy
     {
         public const int FirstSlot = 11;
-        public const int LastSlot = 23;
+        public const int LastSlot = 41;
         public const int SlotCount = LastSlot - FirstSlot + 1;
 
         // One fixed label per extra slot. Slot indices are stable across builds
@@ -28,9 +28,38 @@ namespace TldMp
             "GC allocated bytes",
             "Render/Visible Batches",
             "Render/Shadow Draw Calls",
-            "Gfx.WaitForGfxCommandsFromMainThread"
+            "Gfx.WaitForGfxCommandsFromMainThread",
+            "Physics.Processing (may include waits)",
+            "Physics.FetchResults",
+            "Physics.UpdateBodies",
+            "Physics.SyncTransforms",
+            "Physics.SyncColliderTransform",
+            "Physics.SyncRigidbodies",
+            "Physics.CollisionDetection",
+            "Physics.Broadphase",
+            "Physics.Narrowphase",
+            "Physics.Solver",
+            "Physics.ProcessReports",
+            "Physics.Interpolation",
+            "Physics contact count",
+            "Physics active dynamic bodies",
+            "Physics active kinematic bodies",
+            "Physics broadphase adds",
+            "Physics broadphase removes",
+            "Physics colliders synced"
         };
 
+        public const int FirstPhysicsSlot=24;
+        public static readonly string[] PhysicsNames=new[]{"Physics.Processing","Physics.FetchResults","Physics.UpdateBodies","Physics.SyncTransforms","Physics.SyncColliderTransform","Physics.SyncRigidbodies","Physics.CollisionDetection","Physics.Broadphase","Physics.Narrowphase","Physics.Solver","Physics.ProcessReports","Physics.Interpolation","Contacts","Active Dynamic","Active Kinematic","Broadphase Adds","Broadphase Removes","Colliders Synced"};
+        static bool MatchesPhysics(int slot,string name,ProfilerMarkerDataUnit unit)
+        {
+            int index=slot-FirstPhysicsSlot;
+            if(index<0 || index>=PhysicsNames.Length)return false;
+            if(unit!=(index<12?ProfilerMarkerDataUnit.TimeNanoseconds:ProfilerMarkerDataUnit.Count))return false;
+            string actual=(name??"").Replace(" ","").Replace("_","");
+            string expected=PhysicsNames[index].Replace(" ","");
+            return String.Equals(actual,expected,StringComparison.OrdinalIgnoreCase) || (index>=12 && String.Equals(actual,"Physics."+expected,StringComparison.OrdinalIgnoreCase));
+        }
         static bool Has(string value, string token)
         {
             return value != null && value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
@@ -40,6 +69,7 @@ namespace TldMp
         {
             category = category ?? String.Empty;
             name = name ?? String.Empty;
+            if(slot>=FirstPhysicsSlot)return MatchesPhysics(slot,name,unit);
             switch (slot)
             {
                 case 11:

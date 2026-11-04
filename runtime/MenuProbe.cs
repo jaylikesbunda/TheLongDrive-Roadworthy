@@ -23,6 +23,8 @@ namespace TldMp
         {
             if(Environment.GetEnvironmentVariable("TLD_MP_WHEEL_PROBE")=="1" && host.GetComponent<WheelAssemblyProbe>()==null)host.AddComponent<WheelAssemblyProbe>();
             string dir = Environment.GetEnvironmentVariable("TLD_MP_MENU_PROBE");
+            string gdir = Environment.GetEnvironmentVariable("TLD_MP_GRASS_PROBE");
+            if (host != null && !string.IsNullOrEmpty(gdir) && host.GetComponent<GrassTransitionProbe>() == null) host.AddComponent<GrassTransitionProbe>().output = gdir;
             if (string.IsNullOrEmpty(dir) || host == null || host.GetComponent<MenuProbe>() != null) return;
             host.AddComponent<MenuProbe>().output = dir;
         }

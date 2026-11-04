@@ -45,7 +45,15 @@ public static class StableWireProductionTests
         Packet(40,false,(uint)5,0,.1f,.2f,.3f,0,.5f);Packet(40,true,0,g,0,.1f,.2f,.3f,0,.5f);
         Packet(41,false,(uint)5,0,new int[]{1,2},new float[]{1,2});Packet(41,true,0,g,0,new int[]{1,2},new float[]{1,2});
         Packet(42,(uint)5,0);Packet(42,(uint)5,1,0,(uint)6,0,g,0,g,g,v,v);
-        Packet(43,(uint)5,new Vector3[]{v},new Vector3[]{v},new Vector3[]{v},new Vector3[]{v});Packet(44,(uint)5,0,1,.5f);
+        Packet(43,(uint)5,new Vector3[]{v},new Vector3[]{v},new Vector3[]{v},new Vector3[]{v});
+        Packet(43,(uint)5,new Vector3[0],new Vector3[0],new Vector3[0],new Vector3[0]);
+        Packet(43,(uint)5,new Vector3[]{v,v},new Vector3[]{v,v},new Vector3[]{v,v},new Vector3[]{v,v});
+        for(int changed=0;changed<4;changed++){var arrs=new[]{new[]{v,v},new[]{v,v},new[]{v,v},new[]{v,v}};arrs[changed]=new[]{v};Check(!StablePackets.Valid(DataByteConverterScript.GetBytes((msgType)43,(uint)5,arrs[0],arrs[1],arrs[2],arrs[3])),"Unequal ragdoll array count accepted at field "+changed);}
+        var neg=DataByteConverterScript.GetBytes((msgType)43,(uint)5,new Vector3[0],new Vector3[0],new Vector3[0],new Vector3[0]);neg[5]=neg[6]=neg[7]=neg[8]=0xFF;Check(!StablePackets.Valid(neg),"Negative ragdoll count accepted.");
+        var huge=DataByteConverterScript.GetBytes((msgType)43,(uint)5,new Vector3[0],new Vector3[0],new Vector3[0],new Vector3[0]);huge[8]=0x7F;huge[5]=huge[6]=huge[7]=0xFF;Check(!StablePackets.Valid(huge),"Huge ragdoll count accepted.");
+        var nanVec=new Vector3(Single.NaN,0,0);
+        Check(!StablePackets.Valid(DataByteConverterScript.GetBytes((msgType)43,(uint)5,new Vector3[]{nanVec},new Vector3[]{v},new Vector3[]{v},new Vector3[]{v})),"Nonfinite ragdoll vector accepted.");
+        Packet(44,(uint)5,0,1,.5f);
         Packet(45,false,false,(uint)5,true,false,false);Packet(45,true,false,(uint)5,true,false,false,g);Packet(45,true,true,(uint)5,true,false,false,(ulong)20);
         Packet(46,(uint)5);Packet(47,g,0,1,.5f);Packet(48,(uint)5,1,new bool[]{true},new Color[]{color});
         foreach(var b in packets)

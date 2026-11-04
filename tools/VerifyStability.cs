@@ -66,7 +66,22 @@ public static class VerifyStability
         "fpscontroller.GetLook/0:3",
         "fpscontroller.DrawRays/0:1",
         "newSaveScreenScript.ReadSave/1:1",
-        "newSaveScreenScript.ReadFiles/0:1"
+        "newSaveScreenScript.ReadFiles/0:1",
+        "gibscript.Start/0:1",
+        "materialChangeScript.Start/0:1",
+        "tosaveitemscript.Start/0:1",
+        "tosaveitemscript.FStart/0:2",
+        "tankscript.Start/0:1",
+        "randomSlice.Slicc/3:1",
+        "randomSlice.SSSLiceee/4:2",
+        "randomSlice.OnDestroy/0:2",
+        "MeshSlicer.NewSlice/6:2",
+        "MeshSlicer.SliceMesh/3:3",
+        "MeshSlicer.TriangulatePolygon/4:4",
+        "MeshSlicer.BuildSlice/3:1",
+        "tosaveitemscript.OnDestroy/0:2",
+        "pickupable.FStart/1:2",
+        "napszakvaltakozas.FixedUpdate/0:1"
     };
     static bool IsSystemTiming(Instruction i)
     {
@@ -83,7 +98,7 @@ public static class VerifyStability
             i.Operand is FieldReference && ((FieldReference)i.Operand).Name=="Names");
         var labels=initializer.Body.Instructions.TakeWhile(i=>i!=labelStore)
             .Where(i=>i.OpCode==OpCodes.Ldstr).Select(i=>(string)i.Operand).ToArray();
-        if(labels.Length!=55+SystemTimingSpecs.Length)throw new Exception("System timing label count mismatch.");
+        if(labels.Length!=62+SystemTimingSpecs.Length)throw new Exception("System timing label count mismatch.");
         int stripped=0;
         for(int index=0;index<SystemTimingSpecs.Length;index++)
         {
@@ -563,6 +578,16 @@ public static class VerifyStability
         }
         if(found!=expected)throw new Exception("Call-swap count mismatch: "+native.FullName+" found="+found+" expected="+expected);
     }
+    static void StripBusOwner(MethodDefinition patched,TypeDefinition bridge)
+    {
+        var i=patched.Body.Instructions;
+        if(i.Count<7||i[0].OpCode!=OpCodes.Ldarg_0||!IsBridge(i[1])||((MethodReference)i[1].Operand).Name!="BusAttachedOwner"||
+            i[2].OpCode!=OpCodes.Dup||i[3].OpCode!=OpCodes.Brfalse||i[3].Operand!=i[5]||i[4].OpCode!=OpCodes.Ret||i[5].OpCode!=OpCodes.Pop)
+            throw new Exception("Invalid bus attachment owner prefix.");
+        var d=BridgeDefinition(bridge,(MethodReference)i[1].Operand);
+        if(d.ReturnType.FullName!="tosaveitemscript"||d.Parameters.Count!=1||d.Parameters[0].ParameterType.FullName!="attachablescript")throw new Exception("Invalid bus owner signature.");
+        for(int n=0;n<6;n++)i.RemoveAt(0);
+    }
     static void StripCarPoseStart(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge,string gateName,string startName)
     {
         var instructions=patched.Body.Instructions;
@@ -595,6 +620,77 @@ public static class VerifyStability
         if(instruction.OpCode==OpCodes.Stloc_2)return method.Body.Variables[2];
         if(instruction.OpCode==OpCodes.Stloc_3)return method.Body.Variables[3];
         return null;
+    }
+    static void StripPlacementRoadLookup(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge,string name,int count,string receiver)
+    {
+        var originals=native.Body.Instructions.Where(i=>i.OpCode==OpCodes.Call && i.Operand is MethodReference &&
+            ((MethodReference)i.Operand).DeclaringType.FullName=="mapSettingScript" && ((MethodReference)i.Operand).Name=="RoadsNear" && ((MethodReference)i.Operand).Parameters.Count==1).ToArray();
+        var calls=patched.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name==name).ToArray();
+        if(originals.Length!=count || calls.Length!=count)throw new Exception("Placement lookup count changed: "+native.FullName);
+        for(int i=0;i<count;i++)
+        {
+            var c=calls[i];var load=c.Previous;
+            if(load==null || load.OpCode!=OpCodes.Ldarg_0 || BranchTargetCount(patched,load)!=0 || BranchTargetCount(patched,c)!=0)
+                throw new Exception("Placement lookup receiver changed: "+native.FullName);
+            var def=BridgeDefinition(bridge,(MethodReference)c.Operand);
+            if(def.ReturnType.FullName!="System.Collections.Generic.List`1<roadGenScript/roadClass>" || def.Parameters.Count!=2 ||
+               def.Parameters[0].ParameterType.FullName!="UnityEngine.Vector3d" || def.Parameters[1].ParameterType.FullName!=receiver)
+                throw new Exception("Placement lookup signature changed: "+native.FullName);
+            patched.Body.Instructions.Remove(load);c.Operand=originals[i].Operand;
+        }
+    }
+    static void StripMountainPlacement(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge)
+    {
+        var fields=native.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ldfld && i.Operand is FieldReference && ((FieldReference)i.Operand).DeclaringType.FullName=="objGenScript/categoryClass" && ((FieldReference)i.Operand).Name=="minDistFromRoad").ToArray();
+        var minimum=patched.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="MountainMinRoad").ToArray();
+        if(fields.Length!=3 || minimum.Length!=1 || minimum[0].OpCode!=OpCodes.Call)throw new Exception("Mountain minimum distance hook changed.");
+        var minDef=BridgeDefinition(bridge,(MethodReference)minimum[0].Operand);
+        if(minDef.ReturnType.FullName!="System.Single" || minDef.Parameters.Count!=1 || minDef.Parameters[0].ParameterType.FullName!="objGenScript/categoryClass")throw new Exception("Mountain minimum signature changed.");
+        minimum[0].OpCode=fields[1].OpCode;minimum[0].Operand=fields[1].Operand;
+        var originals=native.Body.Instructions.Where(i=>i.OpCode==OpCodes.Callvirt && i.Operand is MethodReference && ((MethodReference)i.Operand).Name=="Add" && ((MethodReference)i.Operand).DeclaringType.FullName.StartsWith("System.Collections.Generic.Dictionary`2<UnityEngine.Vector3d,objGenScript/objClass>") && ((MethodReference)i.Operand).Parameters.Count==2).ToArray();
+        var calls=patched.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="AddGeneratedMountain").ToArray();
+        if(originals.Length!=1 || calls.Length!=1 || calls[0].OpCode!=OpCodes.Call)throw new Exception("Mountain object add hook changed.");
+        var call=calls[0];var load=call.Previous;
+        if(load==null || load.OpCode!=OpCodes.Ldarg_0 || BranchTargetCount(patched,load)!=0 || BranchTargetCount(patched,call)!=0)throw new Exception("Mountain object add receiver changed.");
+        var def=BridgeDefinition(bridge,(MethodReference)call.Operand);
+        string[] types={"System.Collections.Generic.Dictionary`2<UnityEngine.Vector3d,objGenScript/objClass>","UnityEngine.Vector3d","objGenScript/objClass","objGenScript/categoryClass"};
+        if(def.ReturnType.FullName!="System.Void" || !def.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(types))throw new Exception("Mountain object add signature changed.");
+        patched.Body.Instructions.Remove(load);call.OpCode=originals[0].OpCode;call.Operand=originals[0].Operand;
+    }
+    static void StripNpcVehicleVelocity(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge)
+    {
+        var originals=native.Body.Instructions.Where(i=>i.OpCode==OpCodes.Callvirt && i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.Collision" && ((MethodReference)i.Operand).Name=="get_relativeVelocity" && ((MethodReference)i.Operand).Parameters.Count==0).ToArray();
+        var calls=patched.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="NpcVehicleVelocity").ToArray();
+        if(originals.Length!=1 || calls.Length!=1 || calls[0].OpCode!=OpCodes.Call)throw new Exception("NPC vehicle velocity hook count changed.");
+        var call=calls[0];var load=call.Previous;
+        if(load==null || load.OpCode!=OpCodes.Ldarg_0 || BranchTargetCount(patched,load)!=0 || BranchTargetCount(patched,call)!=0)throw new Exception("NPC velocity receiver changed.");
+        var def=BridgeDefinition(bridge,(MethodReference)call.Operand);
+        if(def.ReturnType.FullName!="UnityEngine.Vector3" || !def.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(new[]{"UnityEngine.Collision","breakablescript"}))throw new Exception("NPC velocity signature changed.");
+        patched.Body.Instructions.Remove(load);call.OpCode=originals[0].OpCode;call.Operand=originals[0].Operand;
+    }
+    static void StripRabbitHearing(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge)
+    {
+        var originals=native.Body.Instructions.Where(i=>i.OpCode==OpCodes.Call && i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.Mathf" && ((MethodReference)i.Operand).Name=="InverseLerp" && ((MethodReference)i.Operand).Parameters.Count==3).ToArray();
+        var calls=patched.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="RabbitHearingFalloff").ToArray();
+        if(originals.Length!=1 || calls.Length!=1 || calls[0].OpCode!=OpCodes.Call)throw new Exception("Rabbit hearing hook count changed.");
+        var call=calls[0];var load=call.Previous;
+        if(load==null || load.OpCode!=OpCodes.Ldarg_0 || BranchTargetCount(patched,load)!=0 || BranchTargetCount(patched,call)!=0)throw new Exception("Rabbit hearing receiver changed.");
+        var def=BridgeDefinition(bridge,(MethodReference)call.Operand);
+        if(def.ReturnType.FullName!="System.Single" || !def.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(new[]{"System.Single","System.Single","System.Single","sensoryscript"}))throw new Exception("Rabbit hearing signature changed.");
+        patched.Body.Instructions.Remove(load);call.OpCode=originals[0].OpCode;call.Operand=originals[0].Operand;
+        if(patched.Body.Variables.Count!=native.Body.Variables.Count || patched.Body.ExceptionHandlers.Count!=native.Body.ExceptionHandlers.Count)
+            throw new Exception("Rabbit hearing changed locals or handlers.");
+    }
+    static void StripPoiIdentity(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge)
+    {
+        var originals=native.Body.Instructions.Where(i=>i.OpCode==OpCodes.Call && i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="mainscript" && ((MethodReference)i.Operand).Name=="Snap" && ((MethodReference)i.Operand).Parameters.Count==2 && ((MethodReference)i.Operand).Parameters[0].ParameterType.FullName=="UnityEngine.Vector3d" && ((MethodReference)i.Operand).Parameters[1].ParameterType.FullName=="System.Single").ToArray();
+        var calls=patched.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="PoiIdentitySnap").ToArray();
+        if(originals.Length!=1 || calls.Length!=1 || calls[0].OpCode!=OpCodes.Call)throw new Exception("POI identity snap hook changed.");
+        var call=calls[0];var load=call.Previous;
+        if(load==null || load.OpCode!=OpCodes.Ldarg_0 || BranchTargetCount(patched,load)!=0 || BranchTargetCount(patched,call)!=0)throw new Exception("POI identity receiver changed.");
+        var def=BridgeDefinition(bridge,(MethodReference)call.Operand);
+        if(def.ReturnType.FullName!="UnityEngine.Vector3d" || !def.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(new[]{"UnityEngine.Vector3d","System.Single","poiGenScript"}))throw new Exception("POI identity signature changed.");
+        patched.Body.Instructions.Remove(load);call.Operand=originals[0].Operand;
     }
     static void StripTerrainRoadDedupe(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge,string hookName)
     {
@@ -885,7 +981,120 @@ public static class VerifyStability
                 if(added.Length!=1 || added[0]!="Tld.Multiplayer")throw new Exception("Unexpected dependency set.");
                 var before=VerifyPatch.AllTypes(original.MainModule.Types).ToDictionary(t=>t.FullName);var after=VerifyPatch.AllTypes(patched.MainModule.Types).ToDictionary(t=>t.FullName);
                 if(!before.Keys.OrderBy(x=>x).SequenceEqual(after.Keys.OrderBy(x=>x)))throw new Exception("Changed type layout.");
+                var breakOriginal=Find(before,"breakablescript.Break/0");var breakCandidate=Find(after,"breakablescript.Break/0");
+                StripEntry(breakOriginal,breakCandidate,bridge,"BreakProbeBegin",new[]{-1});
+                StripReturns(breakOriginal,breakCandidate,bridge,"BreakProbeEnd",2);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakStateBegin","BreakStateEnd","breakablescript","BreakableUpd",0,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakSeatQueryBegin","BreakSeatQueryEnd","UnityEngine.Component","GetComponentInChildren",0,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakSeatExitBegin","BreakSeatExitEnd","fpscontroller","GetOut",2,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakComponentQueryBegin","BreakComponentQueryEnd","UnityEngine.Component","GetComponent",0,3);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakDropBegin","BreakDropEnd","pickupable","Drop2",0,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakLegacyDeathBegin","BreakLegacyDeathEnd","aiscript","Die",1,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakDeathBegin","BreakDeathEnd","newAiScript","Die",1,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakRegisterBegin","BreakRegisterEnd","tosaveitemscript","FStart",0,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakBuryBegin","BreakBuryEnd","tosaveitemscript","Bury",0,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakAudioBegin","BreakAudioEnd","mainscript","PlayClipAtPoint",4,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakReflectionQueryBegin","BreakReflectionQueryEnd","UnityEngine.Component","GetComponentsInChildren",0,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakReflectionOffBegin","BreakReflectionOffEnd","reflectionPlaneScript","Turn",2,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakSliceBegin","BreakSliceEnd","randomSlice","Slicc",3,1);
+                StripBracketCalls(breakOriginal,breakCandidate,bridge,"BreakDestroyBegin","BreakDestroyEnd","UnityEngine.Object","Destroy",1,1);
+                StripReturns(Find(before,"tosaveitemscript.FInit/0"),Find(after,"tosaveitemscript.FInit/0"),bridge,"DebrisItemInitialized",1,new[]{-1});
+                StripEntry(Find(before,"menuhandler.LoadMap/1"),Find(after,"menuhandler.LoadMap/1"),bridge,"ConfigureWorldBiome",new int[0]);
+                StripReturn(Find(before,"savedatascript.RefreshProperties/1"),Find(after,"savedatascript.RefreshProperties/1"),bridge,"StampBiomeVersion",new[]{0},false,1);
+                StripReturn(Find(before,"terrainGenSettings.FStart/1"),Find(after,"terrainGenSettings.FStart/1"),bridge,"RegisterTerrainBiome",new[]{-1},false,1);
+                StripReturn(Find(before,"terrainGenSettings.Biome/2"),Find(after,"terrainGenSettings.Biome/2"),bridge,"ApplyWorldBiome",new[]{-1},true,1);
+                StripGuard(Find(before,"breakablescript.OnCollisionEnter/1"),Find(after,"breakablescript.OnCollisionEnter/1"),bridge,"RabbitImpactGate",new[]{-1,0});
+                StripEntry(Find(before,"survivalscript.Restart/0"),Find(after,"survivalscript.Restart/0"),bridge,"ResetSurvivalSickness",new[]{-1});
+                var nativeGrass=Find(before,"newTerrainTileScript.UpdMaterial/1");var patchedGrass=Find(after,"newTerrainTileScript.UpdMaterial/1");
+                StripReturns(Find(before,"newTerrainTileScript.UpdMesh/1"),Find(after,"newTerrainTileScript.UpdMesh/1"),bridge,"BiomeGrassMeshChanged",1,new[]{-1});
+                StripReturns(nativeGrass,patchedGrass,bridge,"BiomeGrassApplied",3,new[]{-1,0});
+                StripCallSwap(nativeGrass,patchedGrass,bridge,"BiomeGrassDecision",1,"newTerrainTileScript","Grass",0,"System.Boolean","newTerrainTileScript");
+                var nativeSurvival=Find(before,"survivalscript.Update/0");var patchedSurvival=Find(after,"survivalscript.Update/0");
+                foreach(string survivalHook in new[]{"SurvivalFoodRate","SurvivalWaterRate"})
+                {
+                    var calls=patchedSurvival.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name==survivalHook).ToArray();
+                    if(calls.Length!=1)throw new Exception("Missing survival loss hook: "+survivalHook);
+                    var def=BridgeDefinition(bridge,(MethodReference)calls[0].Operand);
+                    if(def.ReturnType.FullName!="System.Single" || def.Parameters.Count!=1 || def.Parameters[0].ParameterType.FullName!="survivalscript")throw new Exception("Invalid survival rate signature");
+                    var nativeRead=nativeSurvival.Body.Instructions[patchedSurvival.Body.Instructions.IndexOf(calls[0])];
+                    var field=nativeRead.Operand as FieldReference;
+                    if(nativeRead.OpCode!=OpCodes.Ldfld || field==null || field.Name!="foodLoss" || field.DeclaringType.FullName!="survivalscript")throw new Exception("Unexpected survival rate read");
+                    calls[0].OpCode=nativeRead.OpCode;calls[0].Operand=nativeRead.Operand;
+                }
+                StripCallSwap(Find(before,"terrainGenSettings.Height/3"),Find(after,"terrainGenSettings.Height/3"),bridge,"TerrainPadValue",1,"poiGenScript","TerrainAlignsValue",2,"poiGenScript/terrainAlignValueClass","UnityEngine.Vector3d","System.Collections.Generic.List`1<poiGenScript/poiClass>");
+                foreach(var type in new[]{"pickupable","carscript","breakablescript"})
+                    StripGuard(Find(before,type+".OnCollisionEnter/1"),Find(after,type+".OnCollisionEnter/1"),bridge,"HasCollisionContacts",new[]{0});
                 StripSystemTimings(before,after,bridge,runtime.MainModule);
+                var nativeMove=Find(before,"movecreaturescript.Move/0");var patchedMove=Find(after,"movecreaturescript.Move/0");
+                var nativeAxes=nativeMove.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ldfld && i.Operand is FieldReference && ((FieldReference)i.Operand).DeclaringType.FullName=="UnityEngine.Vector3" && ((FieldReference)i.Operand).Name=="y").ToArray();
+                var patchedAxes=patchedMove.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ldfld && i.Operand is FieldReference && ((FieldReference)i.Operand).DeclaringType.FullName=="UnityEngine.Vector3" && ((FieldReference)i.Operand).Name=="z").ToArray();
+                if(nativeAxes.Length!=1 || patchedAxes.Length!=1)throw new Exception("Creature horizontal-axis correction missing or ambiguous.");
+                patchedAxes[0].Operand=nativeAxes[0].Operand;
+                StripCallSwap(Find(before,"attachablescript.CollisionUpd/1"),Find(after,"attachablescript.CollisionUpd/1"),bridge,"AddIgnoredCollider",1,"System.Collections.Generic.List`1<UnityEngine.Collider>","Add",1,"System.Void","System.Collections.Generic.List`1<UnityEngine.Collider>","UnityEngine.Collider");
+                StripNpcVehicleVelocity(Find(before,"breakablescript.OnCollisionEnter/1"),Find(after,"breakablescript.OnCollisionEnter/1"),bridge);
+                StripCallSwap(Find(before,"breakablescript.OnCollisionEnter/1"),Find(after,"breakablescript.OnCollisionEnter/1"),bridge,"NpcImpactLayer",2,"UnityEngine.GameObject","get_layer",0,"System.Int32","UnityEngine.GameObject");
+                StripGuard(Find(before,"aispawn.Spawn/1"),Find(after,"aispawn.Spawn/1"),bridge,"RabbitSpawnGate",new[]{-1,0});
+                StripBusOwner(Find(after,"attachablescript.AttachedToTosave/0"),bridge);
+                var playerMove=Find(before,"fpscontroller.Move/0");
+                int velocityReads=playerMove.Body.Instructions.Count(i=>i.Operand is MethodReference&&((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.Rigidbody"&&((MethodReference)i.Operand).Name=="get_velocity");
+                StripCallSwap(playerMove,Find(after,"fpscontroller.Move/0"),bridge,"PassengerVelocity",velocityReads,"UnityEngine.Rigidbody","get_velocity",0,"UnityEngine.Vector3","UnityEngine.Rigidbody");
+                StripCallSwap(Find(before,"fpscontroller.Update/0"),Find(after,"fpscontroller.Update/0"),bridge,"PassengerMove",1,"fpscontroller","Move",0,"System.Void","fpscontroller");
+                StripGuard(Find(before,"sensoryscript.Scan/0"),Find(after,"sensoryscript.Scan/0"),bridge,"RabbitScanGuard",new[]{-1});
+                StripReturns(Find(before,"sensoryscript.Scan/0"),Find(after,"sensoryscript.Scan/0"),bridge,"RabbitScanComplete",1,new[]{-1});
+                StripGuard(Find(before,"playerdeathtriggerscript.OnTriggerStay/1"),Find(after,"playerdeathtriggerscript.OnTriggerStay/1"),bridge,"RabbitTriggerGuard",new[]{-1});
+                StripReturns(Find(before,"playerdeathtriggerscript.OnTriggerStay/1"),Find(after,"playerdeathtriggerscript.OnTriggerStay/1"),bridge,"RabbitPlayerContact",1,new[]{-1,0});
+                StripRabbitHearing(Find(before,"sensoryscript.Scan/0"),Find(after,"sensoryscript.Scan/0"),bridge);
+                StripGuard(Find(before,"aiscript.Update/0"),Find(after,"aiscript.Update/0"),bridge,"RabbitAiGuard",new[]{-1});
+                StripReturns(Find(before,"aiscript.Update/0"),Find(after,"aiscript.Update/0"),bridge,"RabbitMotionObserve",2,new[]{-1});
+                StripCallSwap(Find(before,"aiscript.Update/0"),Find(after,"aiscript.Update/0"),bridge,"RabbitMotionAnimate",1,"nyulscript","SetAnims",1,"System.Void","nyulscript","System.Single");
+                StripCallSwap(Find(before,"aiscript.Update/0"),Find(after,"aiscript.Update/0"),bridge,"RabbitStartFlee",1,"UnityEngine.MonoBehaviour","StartCoroutine",1,"UnityEngine.Coroutine","UnityEngine.MonoBehaviour","System.Collections.IEnumerator");
+                // Verify the paired-bus additions independently, then require
+                // the original scope/body checks to pass without those prefixes.
+                StripGuard(Find(before,"syncScript.RecCarVelocity/1"),Find(after,"syncScript.RecCarVelocity/1"),bridge,"BusCarVelocityAllowed",new[]{0});
+                StripEntry(Find(before,"syncScript/playerSyncClass.GotUpd/9"),Find(after,"syncScript/playerSyncClass.GotUpd/9"),bridge,"BusSeatClaim",new[]{-1,3,4,5,6});
+                StripEntry(Find(before,"syncScript.RecRagdoll/1"),Find(after,"syncScript.RecRagdoll/1"),bridge,"BeforeRabbitRecRagdoll",new[]{0});
+                StripGuard(Find(before,"syncScript.RecRagdoll/1"),Find(after,"syncScript.RecRagdoll/1"),bridge,"BusRagdollAllowed",new[]{0});
+                StripEntry(Find(before,"ragdollactivatescript.SetRagdol/1"),Find(after,"ragdollactivatescript.SetRagdol/1"),bridge,"BeforeRabbitRagdoll",new[]{-1});
+                StripReturns(Find(before,"tosaveitemscript.FInit/0"),Find(after,"tosaveitemscript.FInit/0"),bridge,"AfterRabbitInit",1,new[]{-1});
+                StripReturns(Find(before,"carscript.Start/0"),Find(after,"carscript.Start/0"),bridge,"AfterBusStart",1,new[]{-1});
+                StripGuard(Find(before,"dinamiccolliderforbus.Update/0"),Find(after,"dinamiccolliderforbus.Update/0"),bridge,"BusColliderNativeUpdate",new[]{-1});
+                StripCallSwap(Find(before,"syncScript.RecRagdoll/1"),Find(after,"syncScript.RecRagdoll/1"),bridge,"RagdollVelocity",1,"UnityEngine.Rigidbody","set_velocity",1,"System.Void","UnityEngine.Rigidbody","UnityEngine.Vector3");
+                StripCallSwap(Find(before,"syncScript.RecRagdoll/1"),Find(after,"syncScript.RecRagdoll/1"),bridge,"RagdollAngularVelocity",1,"UnityEngine.Rigidbody","set_angularVelocity",1,"System.Void","UnityEngine.Rigidbody","UnityEngine.Vector3");
+                var oldIgnore=before["pickupable"].Methods.Single(m=>m.Name=="IgnoreCollision" && m.Parameters.Count==2 && m.Parameters[0].ParameterType.FullName=="UnityEngine.Collider");
+                var newIgnore=after["pickupable"].Methods.Single(m=>m.Name=="IgnoreCollision" && m.Parameters.Count==2 && m.Parameters[0].ParameterType.FullName=="UnityEngine.Collider");
+                StripCallSwap(oldIgnore,newIgnore,bridge,"SetIgnoredCollider",1,"UnityEngine.Physics","IgnoreCollision",3,"System.Void","UnityEngine.Collider","UnityEngine.Collider","System.Boolean");
+                StripCallSwap(Find(before,"pickupable.OnCollisionEnter/1"),Find(after,"pickupable.OnCollisionEnter/1"),bridge,"PickupImpactSound",1,"mainscript","PlayClipAtPoint",4,"UnityEngine.GameObject","UnityEngine.AudioClip","UnityEngine.Vector3","System.Single","System.Byte");
+                StripCallSwap(Find(before,"carscript.OnCollisionEnter/1"),Find(after,"carscript.OnCollisionEnter/1"),bridge,"CarImpactSound",1,"mainscript","PlayClipAtPoint",6,"UnityEngine.GameObject","UnityEngine.AudioClip","UnityEngine.Vector3","System.Single","System.Boolean","UnityEngine.Audio.AudioMixerGroup","System.Byte");
+                var sliceOriginal=Find(before,"randomSlice.Slicc/3");var sliceCandidate=Find(after,"randomSlice.Slicc/3");
+                var additions=sliceOriginal.Body.Instructions.Where(i=>i.Operand is GenericInstanceMethod && ((GenericInstanceMethod)i.Operand).Name=="AddComponent" && ((GenericInstanceMethod)i.Operand).GenericArguments[0].FullName=="randomSlice").ToArray();
+                if(additions.Length!=2)throw new Exception("Native slice addition layout changed.");
+                int duplicate=sliceOriginal.Body.Instructions.IndexOf(additions[1]);
+                string[] duplicateOps={"Ldloc_1","Ldloc_3","Ldloc_0","Ldloc_3","Ldelem_Ref","Callvirt","Callvirt","Stelem_Ref"};
+                for(int n=0;n<8;n++){
+                    var originalInstruction=sliceOriginal.Body.Instructions[duplicate-6+n];var actual=sliceCandidate.Body.Instructions[duplicate-6+n];
+                    if(originalInstruction.OpCode.Code.ToString()!=duplicateOps[n] || actual.OpCode!=OpCodes.Nop || actual.Operand!=null)throw new Exception("Invalid duplicate slice component removal.");
+                    actual.OpCode=originalInstruction.OpCode;actual.Operand=originalInstruction.Operand;
+                }
+                var orderOriginal=Find(before,"MeshSlicer.NewSlice/6");var orderCandidate=Find(after,"MeshSlicer.NewSlice/6");
+                var nativeOrder=orderOriginal.Body.Instructions.Single(i=>i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="System.Linq.Enumerable" && ((MethodReference)i.Operand).Name=="OrderBy");
+                int orderIndex=orderOriginal.Body.Instructions.IndexOf(nativeOrder);int sortIndex=orderIndex-10;
+                var hookSort=orderCandidate.Body.Instructions[sortIndex+1];
+                if(!IsBridge(hookSort) || ((MethodReference)hookSort.Operand).Name!="SortSliceMeshes")throw new Exception("Invalid slice sort replacement");
+                for(int i=sortIndex+2;i<=orderIndex+1;i++)if(orderCandidate.Body.Instructions[i].OpCode!=OpCodes.Nop)throw new Exception("Invalid slice sort replacement");
+                for(int i=sortIndex+1;i<=orderIndex+1;i++){orderCandidate.Body.Instructions[i].OpCode=orderOriginal.Body.Instructions[i].OpCode;var operand=orderOriginal.Body.Instructions[i].Operand;var target=operand as Instruction;orderCandidate.Body.Instructions[i].Operand=target==null?operand:orderCandidate.Body.Instructions[orderOriginal.Body.Instructions.IndexOf(target)];}
+                var geometryOriginal=Find(before,"MeshSlicer.SliceMesh/3");var geometryCandidate=Find(after,"MeshSlicer.SliceMesh/3");
+                StripEntry(geometryOriginal,geometryCandidate,bridge,"SliceGeometryBegin",new int[0]);StripReturns(geometryOriginal,geometryCandidate,bridge,"SliceGeometryEnd",3);
+                StripCallSwap(geometryOriginal,geometryCandidate,bridge,"SliceTransformPoint",1,"UnityEngine.Transform","TransformPoint",1,"UnityEngine.Vector3","UnityEngine.Transform","UnityEngine.Vector3");
+                StripCallSwap(geometryOriginal,geometryCandidate,bridge,"SlicePlaneSide",4,"MeshSlicer/CustomPlane","GetSide",1,"System.Single","MeshSlicer/CustomPlane&","UnityEngine.Vector3");
+                StripCallSwap(geometryOriginal,geometryCandidate,bridge,"SliceVertices",1,"UnityEngine.Mesh","get_vertices",0,"UnityEngine.Vector3[]","UnityEngine.Mesh");
+                StripCallSwap(geometryOriginal,geometryCandidate,bridge,"SliceUv",1,"UnityEngine.Mesh","get_uv",0,"UnityEngine.Vector2[]","UnityEngine.Mesh");
+                StripCallSwap(geometryOriginal,geometryCandidate,bridge,"SliceTriangles",1,"UnityEngine.Mesh","get_triangles",0,"System.Int32[]","UnityEngine.Mesh");
+                var setupOriginal=Find(before,"randomSlice.SSSLiceee/4");var setupCandidate=Find(after,"randomSlice.SSSLiceee/4");
+                StripEntry(setupOriginal,setupCandidate,bridge,"SlicePairsBegin",new int[0]);StripReturns(setupOriginal,setupCandidate,bridge,"SlicePairsEnd",2);
+                StripBracketCalls(setupOriginal,setupCandidate,bridge,"DebrisComponentsBegin","DebrisComponentsEnd","UnityEngine.GameObject","AddComponent",0,2);
+                StripCallSwap(setupOriginal,setupCandidate,bridge,"SetSliceCollisionMode",1,"UnityEngine.Rigidbody","set_collisionDetectionMode",1,"System.Void","UnityEngine.Rigidbody","UnityEngine.CollisionDetectionMode");
+                StripCallSwap(setupOriginal,setupCandidate,bridge,"SliceIgnoreCollision",1,"UnityEngine.Physics","IgnoreCollision",2,"System.Void","UnityEngine.Collider","UnityEngine.Collider");
+                StripCallSwap(Find(before,"breakablescript.Break/0"),Find(after,"breakablescript.Break/0"),bridge,"InstantiateBreakDebris",2,"UnityEngine.Object","Instantiate",3,"UnityEngine.GameObject","UnityEngine.GameObject","UnityEngine.Vector3","UnityEngine.Quaternion");
                 // Exactly the kept native methods. Anything else that differs is a
                 // regression back toward a removed gameplay hook.
                 var expected=new Dictionary<string,string>{
@@ -902,6 +1111,17 @@ public static class VerifyStability
                     {"syncScript.UpdAttachable/12","W:WrapNativeAttachment:0,1,2,3,4,7"},
                     {"syncScript.SyncStuff/0","R:SyncItems:-1"},
                     {"massScript.Mass/0","R:MassWithoutArray:-1"},
+                    {"MeshSlicer.BuildSlice/3","R:BuildBoxSlice:0,1,2"},
+                    {"newRandomStuffSpawnScript.selectId/1","R:SelectPropCategory:0"},
+                    {"mainscript.Awake/0","E:RegisterUrineFluid:-1"},
+                    {"survivalscript.ConvWaterToPiss/1","R:ConvertWaterToUrine:-1,0"},
+                    {"survivalscript.EatInstant/4","SW:BladderOverflow:mainscript/fluidcontainer:ChangeWithoutMix:2:System.Void:mainscript/fluidcontainer:System.Single:System.Boolean"},
+
+                    {"mapSettingScript.GetChunksNeeded/2","R:GetChunksNeededWithoutLinq:-1,0,1"},
+                    {"tankscript.Upd/1","E:PruneSpentTankFluids:-1,0"},
+                    {"fpscontroller.usePickedUpStuff/2","E:FluidFillPrompt:-1,0,1"},
+                    {"fpscontroller.DrinkFill/3","G:NativeFluidFillAllowed:-1,0,1,2"},
+                    {"tankcapparticledetectionscript.Tankolas/2","PT:ParticleDrinkTransfer:"},
                     {"SteamP2PNetworkingUnderTheHoodScript.SendBytes/2","R:RouteBroadcast:0,1"},
                     {"SteamP2PNetworkingUnderTheHoodScript.SendBytesToTarget/3","R:RouteTarget:0,1,2"},
                     {"SteamP2PNetworkingUnderTheHoodScript.ReadMessage/0","R:ReadBudgeted:-1"},
@@ -914,6 +1134,7 @@ public static class VerifyStability
                     {"roadGenScript.Upd/1:System.Boolean","G:RoadUpdate:-1,0"},
                     {"roadGenScript.Upd/1:UnityEngine.Vector3d","G:RoadAt:-1,0"},
                     {"roadClass.Generate/1","E:RoadGenerated:0"},
+                    {"roadGenScript.ConnectWithRoad/6:UnityEngine.Vector3d","A:RoadConnectionAdded:-1,4"},
                     {"poiGenScript.GenChunk/1","G:PoiChunk:-1,0"},
                     {"poiGenScript.AddPois/0","GT:PoiAdd:NativePoiNativeAddBegin:NativePoiNativeAddEnd:1:-:-"},
                     {"poiGenScript.AddPoi/4","E:BusGroundPlaced:0,1,2,3"},
@@ -942,12 +1163,15 @@ public static class VerifyStability
                     {"pickupable.JustUnPhysicsLock/0","E:NativeBeforeUnPhysicsLock:-1"},
                     {"poiScript.SpawnStuff/1","O:NativePoiStuffBegin:NativePoiStuffEnd:2:-:-"},
                     {"poiScript.ItemSpawn/0","O:NativePoiItemsBegin:NativePoiItemsEnd:1:-:-"},
-                    {"poiScript.FixedSpawn/0","BOV:NativePoiFixedBegin:NativePoiFixedEnd:1:-:-:NativePoiFixedInstantiateBegin,NativePoiFixedInstantiateEnd,UnityEngine.Object,Instantiate,4,1"},
+                    {"poiScript.FixedSpawn/0","BOV:NativePoiFixedBegin:NativePoiFixedEnd:1:-:-:NativePoiFixedInstantiateBegin,NativePoiFixedInstantiateEnd,UnityEngine.Object,Instantiate,4,1:FI"},
                     {"savedatascript.SaveToData/1","E:BeforeNativeSaveData:"},
                     {"newSaveScreenScript.Save/4","E:BeforeNativeSaveScreen:"},
+                    {"newSaveScreenScript.ReadSaveProperties/1","SV:SaveVersionLabel:"},
                     {"kaposztaleves.SaveSelected/0","E:BeforeNativeExport:"},
                     {"savedatascript.SaveToDictionary/2","E:RequireConstructionSettled:"},
                     {"savedatascript.SetDataFromSave/0","E:ResetConstruction:"},
+                    {"savedatascript.FixLoadStuff/0","E:RemoveNullSavedBuildings:-1"},
+                    {"save_poi.Load/1","SP"},
                     {"fixedSpawnScript.FStart/0","FS:"},
                     {"poiGenScript.RemovePoi/1","O:NativePoiRemoveBegin:NativePoiRemoveEnd:2:-:-"},
                     {"terrainGenScript.PlaceMesh/2","O:NativeTerrainPlaceMeshBegin:NativeTerrainPlaceMeshEnd:1:-:-"},
@@ -970,6 +1194,14 @@ public static class VerifyStability
                     {"sensorScript.Update/0","O:NativeBehaviorSensorBegin:NativeBehaviorSensorEnd:1:-:-"},
                     {"movecreaturescript.Update/0","O:NativeBehaviorCreatureBegin:NativeBehaviorCreatureEnd:1:-:-"},
                     {"movecreaturescript.Move/0","G:CreatureMoveGate:-1"},
+                    {"ragdollactivatescript.SetRagdol/1","A:ConfigureRabbitImpact:-1"},
+                    {"movecreaturescript.Rot/0","G:RabbitRotGuard:-1"},
+                    {"nyulscript.Update/0","G:RabbitNyulGuard:-1"},
+                    {"nyulscript.Attack/0","G:RabbitAttackGate:-1"},
+                    {"nyulscript.Roar/0","G:RabbitNyulGuard:-1"},
+                    {"pickupable.SetCollider/1","O:BeforeRabbitCollider:AfterRabbitCollider:1:-1:-1"},
+                    {"jointHelpScript.UnFreezeStart/0","RX:RabbitUnfreeze:2:-1"},
+                    {"ragdollchildpos.UpdPos/0","E:BeforeRabbitPose:-1"},
                     {"movecreaturescript.Jump/0","G:CreatureJumpGate:-1"},
                     {"tosaveitemscript.ThisOneInChargeCar/1","G:CarChargeGate:-1,0"},
                     {"newAiScript.Update/0","O:NativeBehaviorAiBegin:NativeBehaviorAiEnd:2:-:-"},
@@ -979,7 +1211,7 @@ public static class VerifyStability
                     {"partconditionscript.Update/0","O:NativeBehaviorPartConditionsBegin:NativeBehaviorPartConditionsEnd:2:-:-"},
                     {"usablescript.Update/0","O:NativeBehaviorUsablesBegin:NativeBehaviorUsablesEnd:1:-:-"},
                     {"wheelgraphicsscript.Update/0","O:NativeBehaviorWheelGraphicsBegin:NativeBehaviorWheelGraphicsEnd:1:-:-"},
-                    {"wheelgraphicsscript.Graphics/0","O:NativeWheelGraphicsBegin:NativeWheelGraphicsEnd:3:-:-"},
+                    {"wheelgraphicsscript.Graphics/0","OV:NativeWheelGraphicsBegin:NativeWheelGraphicsEnd:3:-:-:SetWheelVisualPosition:UnityEngine.Transform:set_position:1:System.Void:UnityEngine.Transform:UnityEngine.Vector3"},
                     {"wheelgraphicsscript.WheelSize/0","WK:NativeWheelSizeBegin:NativeWheelSizeEnd:1:-:-"},
                     {"syncScript.Update/0","O:NativeBehaviorSyncBegin:NativeBehaviorSyncEnd:1:-:-"},
                     {"mainscript.VisszaRakas/0","O:NativeVisszaRakasBegin:NativeVisszaRakasEnd:2:-:-"},
@@ -1017,7 +1249,7 @@ public static class VerifyStability
                     "carscript.DamageStuff/1","tosaveitemscript.OnDestroy/0",
                     "breakablescript.Break/0","breakablescript.OnCollisionEnter/1","breakablescript.OnTriggerEnter/1",
                     "savedatascript.AddedNew/1","tosaveitemscript.HasToSync/4","syncScript.RecItemPosPlayer/1",
-                    "fpscontroller.Move/0","fpscontroller.PickedUpForceAdd/0","mpplayerscript.UpdCollider/2",
+                    "fpscontroller.PickedUpForceAdd/0","mpplayerscript.UpdCollider/2",
                     "syncScript.RecItemVelocity/1","syncScript.RecCarVelocity/1","syncScript.RecRagdoll/1",
                     "mainscript.CheckHoliday/1"
                 };
@@ -1043,7 +1275,38 @@ public static class VerifyStability
                     {
                         var bm=b.Methods.Single(m=>m.FullName==am.FullName);if(VerifyPatch.Fingerprint(am)==VerifyPatch.Fingerprint(bm)){unchanged++;continue;}
                         changed++;kept.Add(bm);string key=a.Name+"."+am.Name+"/"+am.Parameters.Count,rule;if(a.Name=="roadGenScript" && am.Parameters.Count>0)key+=":"+am.Parameters[0].ParameterType.FullName;if(!expected.TryGetValue(key,out rule))throw new Exception("Unexpected edit: "+key);expected.Remove(key);
-                        if(rule.StartsWith("WT:"))
+                        if(rule=="SP")
+                        {
+                            StripCallSwap(am,bm,bridge,"RestoreBuildingUsable",1,"save_usablescript","Load",1,"System.Void","save_usablescript","usablescript");
+                            StripCallSwap(am,bm,bridge,"RestoreBuildingTank",1,"save_tankscript","Load",1,"System.Void","save_tankscript","tankscript");
+                            if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Building save restore changed native traversal.");
+                            continue;
+                        }
+                        if(rule.StartsWith("SV:"))
+                        {
+                            var calls=bm.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="SaveVersionLabel").ToArray();
+                            if(calls.Length!=1 || calls[0].OpCode!=OpCodes.Call || calls[0].Previous==null || calls[0].Previous.OpCode!=OpCodes.Ldfld || !(calls[0].Previous.Operand is FieldReference) || ((FieldReference)calls[0].Previous.Operand).DeclaringType.FullName!="saveproperties" || ((FieldReference)calls[0].Previous.Operand).Name!="version" || BranchTargetCount(bm,calls[0])!=0)throw new Exception("Invalid save version projection.");
+                            var def=BridgeDefinition(bridge,(MethodReference)calls[0].Operand);
+                            if(def.ReturnType.FullName!="System.String" || def.Parameters.Count!=1 || def.Parameters[0].ParameterType.FullName!="System.String")throw new Exception("Invalid save version label signature.");
+                            bm.Body.Instructions.Remove(calls[0]);
+                            if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Save version projection changed native body.");
+                            continue;
+                        }
+                        else if(rule.StartsWith("PT:"))
+                        {
+                            var nativeParticleCalls=am.Body.Instructions.Where(i=>i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="mainscript/fluidcontainer" && ((MethodReference)i.Operand).Name=="pour" && ((MethodReference)i.Operand).Parameters.Count==5).ToArray();
+                            var calls=bm.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="ParticleDrinkTransfer").ToArray();
+                            if(nativeParticleCalls.Length!=1 || calls.Length!=1 || bm.Body.Instructions.Count!=am.Body.Instructions.Count+2)throw new Exception("Particle transfer call count changed.");
+                            var c=calls[0];var arg1=c.Previous;var arg0=arg1==null?null:arg1.Previous;
+                            if(c.OpCode!=OpCodes.Call || arg0==null || arg0.OpCode!=OpCodes.Ldarg_0 || arg1.OpCode!=OpCodes.Ldarg_1 || BranchTargetCount(bm,arg0)!=0 || BranchTargetCount(bm,arg1)!=0 || BranchTargetCount(bm,c)!=0)throw new Exception("Particle transfer argument loads changed.");
+                            var def=BridgeDefinition(bridge,(MethodReference)c.Operand);
+                            string[] types={"mainscript/fluidcontainer","mainscript/fluidcontainer","System.Single","System.Boolean","System.Boolean","System.Collections.Generic.List`1<mainscript/fluidenum>","tankcapparticledetectionscript","tankcapscript"};
+                            if(def.ReturnType.FullName!="System.Void" || !def.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(types))throw new Exception("Particle transfer signature changed.");
+                            bm.Body.Instructions.Remove(arg0);bm.Body.Instructions.Remove(arg1);c.OpCode=nativeParticleCalls[0].OpCode;c.Operand=nativeParticleCalls[0].Operand;
+                            if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Particle transfer changed other native instructions.");
+                            continue;
+                        }
+                        else if(rule.StartsWith("WT:"))
                         {
                             var resolver=bm.Body.Instructions.Single(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="ResolveWheelPickup");
                             var gate=bm.Body.Instructions.Single(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="WheelPickupMountBlocked");
@@ -1091,7 +1354,17 @@ public static class VerifyStability
                         var instructions=bm.Body.Instructions;
                         if(mode=="BOV")
                         {
-                            if(bits.Length!=7)throw new Exception("Bad POI spawn observer/bracket rule: "+key);
+                            if(bits.Length!=7 && !(bits.Length==8 && bits[7]=="FI"))throw new Exception("Bad POI spawn observer/bracket rule: "+key);
+                            if(bits.Length==8)
+                            {
+                                if(key!="poiScript.FixedSpawn/0")throw new Exception("Fixed construction swap on wrong method.");
+                                var call=bm.Body.Instructions.Single(i=>IsBridge(i) && ((MethodReference)i.Operand).Name=="ConstructFixedProps");
+                                var definition=BridgeDefinition(bridge,(MethodReference)call.Operand);
+                                var fixedArgs=new[]{"UnityEngine.GameObject","UnityEngine.Vector3","UnityEngine.Quaternion","UnityEngine.Transform"};
+                                if(definition.ReturnType.FullName!="UnityEngine.GameObject" || definition.Parameters.Count!=4 || !definition.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(fixedArgs))throw new Exception("Fixed construction factory signature changed.");
+                                var fixedOriginal=am.Body.Instructions.Single(i=>i.Operand is GenericInstanceMethod && ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.Object" && ((MethodReference)i.Operand).Name=="Instantiate" && ((MethodReference)i.Operand).Parameters.Count==4);
+                                call.OpCode=fixedOriginal.OpCode;call.Operand=fixedOriginal.Operand;
+                            }
                             int returns=Int32.Parse(bits[3]);
                             StripEntry(am,bm,bridge,bits[1],ParseLoads(bits[4]));
                             StripReturn(am,bm,bridge,bits[2],ParseLoads(bits[5]),false,returns);
@@ -1124,6 +1397,8 @@ public static class VerifyStability
                             if(bridgeCalls.Length!=1 || nativeCalls.Length!=1)throw new Exception("Terrain-hole call count changed: "+key);
                             BridgeDefinition(bridge,(MethodReference)bridgeCalls[0].Operand);bridgeCalls[0].Operand=nativeCalls[0].Operand;
                             if(bits.Length==9)StripTerrainRoadDedupe(am,bm,bridge,bits[8]);
+                            StripPlacementRoadLookup(am,bm,bridge,"TerrainRoadsNear",1,"terrainGenScript");
+                            StripCallSwap(am,bm,bridge,"TerrainHeight",1,"terrainGenSettings","Height",3,"System.Double","terrainGenSettings","UnityEngine.Vector3d","System.Collections.Generic.List`1<roadGenScript/roadClass>","System.Collections.Generic.List`1<poiGenScript/poiClass>");
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Terrain mesh observers changed stock method body: "+key);
                             continue;
                         }
@@ -1351,6 +1626,7 @@ public static class VerifyStability
                             StripGuard(am,bm,bridge,bits[1],new int[]{-1});
                             StripEntry(am,bm,bridge,bits[2],beginLoads);
                             StripReturns(am,bm,bridge,bits[3],expectedReturns,endLoads);
+                            if(key=="poiGenScript.AddPois/0")StripCallSwap(am,bm,bridge,"AddRandomPoi",1,"poiGenScript","AddPoi",4,"poiGenScript/poiClass","poiGenScript","UnityEngine.Vector3d","UnityEngine.Vector3","System.Int32","System.Boolean");
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Guard+entry/exit observers changed stock method body: "+key);
                             continue;
                         }
@@ -1436,12 +1712,15 @@ public static class VerifyStability
                             {
                                 if(index!=loads.Length+1)throw new Exception("Wrong entry-hook prefix.");
                                 for(int n=0;n<index;n++)instructions.RemoveAt(0);
+                                if(key=="poiGenScript.AddPoi/4")StripPoiIdentity(am,bm,bridge);
                                 if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Entry instrumentation changed stock method body.");continue;
                             }
                             if(instructions[index++].OpCode!=OpCodes.Ret)throw new Exception("Bad return.");
                             if(mode=="R"){if(index!=instructions.Count)throw new Exception("Extra replacement instructions.");continue;}
                             if(instructions[index]!=target)throw new Exception("Guard does not enter original body.");for(int i=0;i<index;i++)instructions.RemoveAt(0);
                             if(mode=="GH")StripCategoryCleanupOptimization(am,bm);
+                            if(key=="categoryClass.UpdGen/1"){StripPlacementRoadLookup(am,bm,bridge,"LargeRockRoadsNear",2,"objGenScript/categoryClass");StripMountainPlacement(am,bm,bridge);}
+                            if(key=="fpscontroller.DrinkFill/3")StripCallSwap(am,bm,bridge,"DrinkTransfer",1,"mainscript/fluidcontainer","pour",5,"System.Void","mainscript/fluidcontainer","mainscript/fluidcontainer","System.Single","System.Boolean","System.Boolean","System.Collections.Generic.List`1<mainscript/fluidenum>");
                         }
                         if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Extra stock changes: "+key);
                     }
@@ -1473,7 +1752,7 @@ public static class VerifyStability
                 // Bus-ground diagnostics add two entry observers (AddPoi, poiScript.FStart): two methods, two sites.
                 // The terrain-align fix swaps two Transform.localPosition reads in poiGenScript.alignClass's constructor: one method, two sites.
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
-                if(bridgeUsers.Count!=111 || hookSites!=237)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                if(bridgeUsers.Count!=133 || hookSites!=273)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }
@@ -1481,5 +1760,3 @@ public static class VerifyStability
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
     }
 }
-
-

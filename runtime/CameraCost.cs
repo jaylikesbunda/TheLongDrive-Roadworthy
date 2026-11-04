@@ -33,13 +33,13 @@ namespace TldMp
             if (windowStart == 0) windowStart = now;
             if (now - windowStart >= WindowSeconds)
             {
-                try { Log(now - windowStart); } catch (Exception e) { UnityEngine.Debug.Log("[TLD MP cameras] log failed: " + e.GetType().Name); }
+                try { Log(now - windowStart); } catch (Exception e) { DiagnosticFileLog.Log("[TLD MP cameras] log failed: " + e.GetType().Name); }
                 core.ResetWindow(); windowStart = now;
             }
             if (bandRuns < BandAt.Length && Time.realtimeSinceStartup >= BandAt[bandRuns])
             {
                 bandRuns++;
-                try { LogSettings(); LogBands(); } catch (Exception e) { UnityEngine.Debug.Log("[TLD MP cameras] census failed: " + e.GetType().Name + ": " + e.Message); }
+                try { LogSettings(); LogBands(); } catch (Exception e) { DiagnosticFileLog.Log("[TLD MP cameras] census failed: " + e.GetType().Name + ": " + e.Message); }
             }
         }
 
@@ -118,10 +118,10 @@ namespace TldMp
             text.Append(" wildlife{creatureWritesSkipped=").Append(WildlifeWeather.CreatureWritesSkipped).Append('}');
             WildlifeWeather.CreatureWritesSkipped = 0;
             MirrorOnScreen.Skipped = 0; MirrorOnScreen.Passed = 0;
-            UnityEngine.Debug.Log(text.ToString());
+            DiagnosticFileLog.Log(text.ToString());
             int interpolated, extrapolated, held;
             RemoteCarSmoothing.TakeSampleCounts(out interpolated, out extrapolated, out held);
-            UnityEngine.Debug.Log(NetStats.TakeLine(Time.realtimeSinceStartup, seconds, StableGameBridge.DeliveryCoalesced,
+            DiagnosticFileLog.Log(NetStats.TakeLine(Time.realtimeSinceStartup, seconds, StableGameBridge.DeliveryCoalesced,
                 PlayerLeaveSafety.RestoreCache, interpolated, extrapolated, held));
         }
 
@@ -167,7 +167,7 @@ namespace TldMp
                 for (int i = 0; i < main.Mirrors.Count && i < 3; i++)
                     if (main.Mirrors[i] != null) Describe(text, "mirror" + i, main.Mirrors[i].C);
             }
-            UnityEngine.Debug.Log(text.ToString());
+            DiagnosticFileLog.Log(text.ToString());
         }
 
         static readonly float[] Bands = { 200f, 500f, 2000f, 5000f, float.PositiveInfinity };
@@ -201,7 +201,7 @@ namespace TldMp
             for (int b = 0; b < Bands.Length; b++)
                 text.Append(' ').Append(BandNames[b]).Append("{skinned=").Append(skinned[b]).Append(" mesh=").Append(mesh[b])
                     .Append(" other=").Append(other[b]).Append(" bakedRoads=").Append(baked[b]).Append(" ropes=").Append(ropes[b]).Append('}');
-            UnityEngine.Debug.Log(text.ToString());
+            DiagnosticFileLog.Log(text.ToString());
         }
     }
 }

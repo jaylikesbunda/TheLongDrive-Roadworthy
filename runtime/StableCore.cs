@@ -34,7 +34,7 @@ namespace TldMp
     // Session, handshake, liveness, world-manifest transfer and join journal.
     // There is no ownership/lease/epoch authority here: native gameplay bytes are
     // relayed as opaque transport payloads and native handlers decide everything.
-    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18, Spawn=19, SpawnAck=20, SpawnChunk=21, SpawnChunkAck=22 }
+    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18, Spawn=19, SpawnAck=20, SpawnChunk=21, SpawnChunkAck=22, RabbitRequest=23, RabbitState=24 }
 
     public sealed class StableMessage
     {
@@ -52,7 +52,7 @@ namespace TldMp
             {
                 if(r.ReadByte()!=254 || r.ReadUInt32()!=0x33444C54 || r.ReadByte()!=3) return null;
                 var m=new StableMessage { Op=(StableOp)r.ReadByte(),Lobby=r.ReadUInt64(),Session=r.ReadUInt64(),Origin=r.ReadUInt64(),Epoch=r.ReadUInt64(),Sequence=r.ReadUInt64(),WorldRevision=r.ReadUInt64(),Key=r.ReadString() };
-                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.SpawnChunkAck) return null;
+                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.RabbitState) return null;
                 m.Data=r.ReadBytes(n);return m;
             }} catch(Exception e) { if(e is IOException || e is ArgumentException || e is OverflowException) return null;throw; }
         }
@@ -65,7 +65,7 @@ namespace TldMp
         {
             public byte[] Bytes;public bool Reliable;public int Size;public ulong Key;
         }
-        public ulong Session;public bool Ready,Syncing;public uint First,Last;
+        public ulong Session;public bool Ready,Syncing;internal bool BootstrapSent;public uint First,Last;public ulong LastRabbitRequest;
         public double Seen;public ulong Transfer;public List<Entry> Journal=new List<Entry>();public int JournalBytes;
         public bool JournalOverflowNoticed;
         public StableNode.SpawnIn SpawnIn;
@@ -100,6 +100,8 @@ namespace TldMp
         public Action<byte[]> ApplySnapshot;
         public Action<ulong> SnapshotRequested;
         public Action<uint,bool> CarBloodReceived;
+        public Action<ulong,byte[]> RabbitRequestReceived;
+        public Action<byte[]> RabbitStateReceived;
         public Func<ulong,ulong,byte[],bool> SpawnReceived;
         public Action<ulong> SpawnAcknowledged;
         public Action<ulong,int> SpawnProgress;
@@ -389,6 +391,27 @@ namespace TldMp
         }
         static bool ValidCarBlood(StableMessage m)
         {return m.Key=="" && m.Data.Length==5 && BitConverter.ToUInt32(m.Data,0)!=0 && m.Data[4]<=1;}
+        ulong rabbitRequestSeq,rabbitStateSeq,lastHostRabbitState;
+        public bool SendRabbitRequest(byte[] bytes)
+        {
+            if(IsHost || !Ready || !Compatible || Error!=null || bytes==null || bytes.Length<1 || bytes.Length>256)return false;
+            if(rabbitRequestSeq==ulong.MaxValue)return false;
+            var message=Message(StableOp.RabbitRequest,"",bytes);
+            message.Epoch=Session;message.Sequence=++rabbitRequestSeq;
+            Emit(Host,message,true);
+            return true;
+        }
+        public bool PublishRabbitState(byte[] bytes)
+        {
+            if(!IsHost || !Compatible || Error!=null || bytes==null || bytes.Length<1 || bytes.Length>16384)return false;
+            if(rabbitStateSeq==ulong.MaxValue)return false;
+            var data=(byte[])bytes.Clone();
+            var message=Message(StableOp.RabbitState,"",data);
+            message.Epoch=Session;message.Sequence=++rabbitStateSeq;
+            byte[] encoded=message.Encode();
+            foreach(var pair in Peers)SendNativeTo(pair.Key,pair.Value,encoded,true);
+            return true;
+        }
         public bool PublishNativeTo(ulong peer,byte[] bytes)
         {return PublishNativeTo(peer,bytes,false);}
         public bool PublishNativeTo(ulong peer,byte[] bytes,bool forceReliable)
@@ -554,6 +577,14 @@ namespace TldMp
                     if(CarBloodReceived!=null)CarBloodReceived(id,dirty);
                     PublishCarBlood(id,dirty,sender);return;
                 }
+                if(m.Op==StableOp.RabbitRequest)
+                {
+                    if(!p.Ready || m.Key!="" || m.Epoch!=p.Session || m.Data.Length<1 || m.Data.Length>256 || m.Sequence==0 || m.Sequence<=p.LastRabbitRequest)return;
+                    p.LastRabbitRequest=m.Sequence;
+                    if(RabbitRequestReceived!=null)RabbitRequestReceived(sender,m.Data);
+                    return;
+                }
+                if(m.Op==StableOp.RabbitState)return;
                 if(m.Op==StableOp.MapRequest)
                 {
                     // Join prerequisites arrive as a burst of road/POI keys. Queue
@@ -620,6 +651,14 @@ namespace TldMp
                 if(ValidCarBlood(m) && CarBloodReceived!=null)CarBloodReceived(BitConverter.ToUInt32(m.Data,0),m.Data[4]!=0);
                 return;
             }
+            if(m.Op==StableOp.RabbitState)
+            {
+                if(m.Origin!=Host || m.Session!=HostSession || !Compatible || m.Epoch!=HostSession || m.Key!="" || m.Data.Length<1 || m.Data.Length>16384 || !(Joining || Ready) || m.Sequence==0 || m.Sequence<=lastHostRabbitState)return;
+                lastHostRabbitState=m.Sequence;
+                if(RabbitStateReceived!=null)RabbitStateReceived(m.Data);
+                return;
+            }
+            if(m.Op==StableOp.RabbitRequest)return;
             if(m.Op==StableOp.MapPart){ReceiveMap(m);return;}
             if(m.Op==StableOp.Data){AcceptBootstrap(m);return;}
             if(m.Op==StableOp.Begin)
@@ -754,10 +793,25 @@ namespace TldMp
             var job=new MapApplyJob {Key=m.Key,Data=data,Request=request};
             if(DeferMapWork){request.Queued=true;mapApplyJobs.Enqueue(job);}else ApplyMap(job);
         }
-        public void SendBootstrap(ulong peer,byte[] bytes)
+        internal void SendPendingBootstraps(Action<ulong> sendMap)
         {
-            if(!IsHost || !Peers.ContainsKey(peer) || bytes.Length==0 || bytes[0]!=8)return;
+            if(!IsHost)return;
+            List<ulong> pending=null;
+            foreach(var pair in Peers)
+            {
+                if(pair.Value.BootstrapSent)continue;
+                if(pending==null)pending=new List<ulong>();
+                pending.Add(pair.Key);
+            }
+            if(pending!=null)foreach(ulong peer in pending)sendMap(peer);
+        }
+        public bool SendBootstrap(ulong peer,byte[] bytes,bool initial=false)
+        {
+            StablePeer p;
+            if(!IsHost || !Peers.TryGetValue(peer,out p) || bytes==null || bytes.Length==0 || bytes.Length>58000 || bytes[0]!=8 || (initial && p.BootstrapSent))return false;
+            p.BootstrapSent=true;
             Emit(peer,Message(StableOp.Data,"bootstrap:map",bytes),true);
+            return true;
         }
         public void BeginSnapshot(ulong peer,byte[] bytes)
         {

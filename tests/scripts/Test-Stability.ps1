@@ -3,7 +3,7 @@ param([string]$GameDirectory='')
 $ErrorActionPreference='Stop'
 $repoRoot=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Push-Location $repoRoot
-try { & python -m unittest tests.test_starting_stop tests.test_loading_overlay tests.test_storage_optimizations; if ($LASTEXITCODE -ne 0) { throw 'Starting-stop or loading-overlay regression tests failed.' } } finally { Pop-Location }
+try { & python -m unittest tests.test_starting_stop tests.test_loading_overlay tests.test_storage_optimizations tests.test_debris_optimizations tests.test_debris_ccd tests.test_debris_contacts tests.test_crate_contacts tests.test_impact_audio tests.test_slice_sort tests.test_slice_buffers tests.test_world_biome_bridge tests.test_reverse_fluid tests.test_urine_drinking tests.test_particle_urine_drinking tests.test_npc_vehicle_impact tests.test_guest_relocation tests.test_survival_rates tests.test_survival_hud tests.test_grass_transition; if ($LASTEXITCODE -ne 0) { throw 'Starting-stop or loading-overlay regression tests failed.' } } finally { Pop-Location }
 . (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tools\Resolve-GameDirectory.ps1')
 $GameDirectory=Resolve-GameDirectory $GameDirectory
 & (Join-Path $PSScriptRoot 'Test-Offline.ps1') -GameDirectory $GameDirectory
@@ -48,6 +48,7 @@ function Run([string]$Exe,[string[]]$ArgsList) { & (Test-ExePath $Exe) @ArgsList
 $net=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\NetCore.cs'
 $core=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\StableCore.cs'
 $packets=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\StablePackets.cs'
+$pairProto=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\BusPairProtocol.cs'
 $bridge=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\StableGameBridge.cs'
 $map=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\StableMap.cs'
 $roadCodec=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\StableRoadCodec.cs'
@@ -75,6 +76,12 @@ $carPosePolicy=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent)
 $profilerSlotPolicy=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\ProfilerSlotPolicy.cs'
 $terrainMembership=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\TerrainMembership.cs'
 $terrainWorkDiagnostics=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\TerrainWorkDiagnostics.cs'
+$worldPlacementPolicy=Join-Path $repoRoot 'runtime\WorldPlacementPolicy.cs'
+$roadTerrainClearance=Join-Path $repoRoot 'runtime\RoadTerrainClearance.cs'
+$poiSlopePlacement=Join-Path $repoRoot 'runtime\PoiSlopePlacement.cs'
+$worldRelocationLedger=Join-Path $repoRoot 'runtime\WorldRelocationLedger.cs'
+$largeRockClearance=Join-Path $repoRoot 'runtime\LargeRockClearance.cs'
+$worldBiomePolicy=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\WorldBiomePolicy.cs'
 $terrainWorker=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\TerrainWorker.cs'
 $contentFingerprint=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\ContentFingerprint.cs'
 $netDeliveryScheduler=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\NetDeliveryScheduler.cs'
@@ -89,6 +96,7 @@ $wildlifeWeather=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Paren
 $menuLayoutPolicy=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\MenuLayoutPolicy.cs'
 $menuLayout=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\MenuLayout.cs'
 $menuProbe=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\MenuProbe.cs'
+$grassProbe=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\GrassTransitionProbe.cs'
 $playerLeaveSafety=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\PlayerLeaveSafety.cs'
 $itemAskSafety=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\ItemAskSafety.cs'
 $roadLiveCache=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\RoadLiveCache.cs'
@@ -128,25 +136,49 @@ $placementSkip=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent)
 $liveUsable=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\LiveUsable.cs'
 $carCargo=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\CarCargo.cs'
 $spawnCoordinator=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\SpawnCoordinator.cs'
+$fixedPropConstruction=Join-Path $repoRoot 'runtime\FixedPropConstruction.cs'
 $nativeSpawnAdapter=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\NativeSpawnAdapter.cs'
 $results=Join-Path $run 'results.txt'
 $nativeRefs=@("/reference:$($baseline.original)","/reference:$managed\UnityEngine.CoreModule.dll","/reference:$managed\UnityEngine.PhysicsModule.dll","/reference:$managed\com.rlabrecque.steamworks.net.dll","/reference:$managed\netstandard.dll")
 $tests=@(
-    @{Name='SteamJoinSimulationTests';Sources=@($steamSdrTransport,$netDeliveryScheduler,$net,$core,$packets,$deferredCore,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamSocketSimulation.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamJoinSimulationTests.cs'));Refs=@()},
+    @{Name='RabbitMetadataSyncTests';Sources=@((Join-Path $repoRoot 'runtime\RabbitProtocol.cs'),(Join-Path $repoRoot 'runtime\RabbitMetadataSync.cs'),(Join-Path $repoRoot 'tests\RabbitMetadataSyncTests.cs'));Refs=@()},
+    @{Name='MovingVehiclePassengerTests';Sources=@((Join-Path $repoRoot 'runtime\MovingVehiclePassenger.cs'),(Join-Path $repoRoot 'runtime\MovingVehiclePassengerPolicy.cs'),(Join-Path $repoRoot 'runtime\BusRearAuthority.cs'),(Join-Path $repoRoot 'tests\MovingVehiclePassengerTests.cs'));Refs=@()},
+    @{Name='BusPairTests';Sources=@((Join-Path $repoRoot 'runtime\BusPairProtocol.cs'),(Join-Path $repoRoot 'runtime\BusPairReplica.cs'),(Join-Path $repoRoot 'runtime\BusSeatClaims.cs'),(Join-Path $repoRoot 'tests\BusPairTests.cs'));Refs=@()},
+    @{Name='RabbitContactTests';Sources=@((Join-Path $repoRoot 'runtime\RabbitProtocol.cs'),(Join-Path $repoRoot 'runtime\RabbitContact.cs'),(Join-Path $repoRoot 'tests\RabbitContactTests.cs'));Refs=@()},
+    @{Name='RabbitCombatReachTests';Sources=@((Join-Path $repoRoot 'runtime\RabbitCombatReach.cs'),(Join-Path $repoRoot 'runtime\RabbitPlayers.cs'),(Join-Path $repoRoot 'runtime\RabbitLocomotion.cs'),(Join-Path $repoRoot 'tests\RabbitCombatReachTests.cs'));Refs=@()},
+    @{Name='RabbitGuestAnimationTests';Sources=@($net,$packets,$pairProto,(Join-Path $repoRoot 'runtime\RabbitNetwork.cs'),(Join-Path $repoRoot 'runtime\RabbitReplicas.cs'),(Join-Path $repoRoot 'runtime\RabbitAi.cs'),(Join-Path $repoRoot 'runtime\RabbitGuestAnimation.cs'),(Join-Path $repoRoot 'tests\RabbitGuestAnimationTests.cs'));Refs=@()},
+    @{Name='RabbitMotionTests';Sources=@($net,(Join-Path $repoRoot 'runtime\RemotePoseBuffer.cs'),(Join-Path $repoRoot 'runtime\RabbitMotionProtocol.cs'),(Join-Path $repoRoot 'tests\RabbitMotionTests.cs'));Refs=@()},
+    @{Name='RabbitMotionRuntimeTests';Sources=@($net,(Join-Path $repoRoot 'runtime\RemotePoseBuffer.cs'),(Join-Path $repoRoot 'runtime\RabbitMotionProtocol.cs'),(Join-Path $repoRoot 'runtime\RabbitMotionRuntime.cs'),(Join-Path $repoRoot 'tests\RabbitMotionRuntimeTests.cs'));Refs=@()},
+    @{Name='RabbitPlayersTests';Sources=@((Join-Path $repoRoot 'runtime\RabbitPlayers.cs'),(Join-Path $repoRoot 'runtime\RabbitCombatReach.cs'),(Join-Path $repoRoot 'tests\RabbitPlayersTests.cs'));Refs=@()},
+    @{Name='RabbitLocomotionTests';Sources=@((Join-Path $repoRoot 'runtime\RabbitLocomotion.cs'),(Join-Path $repoRoot 'runtime\RabbitCombatReach.cs'),(Join-Path $repoRoot 'tests\RabbitLocomotionTests.cs'));Refs=@()},
+    @{Name='SmokeRuntimeStubTests';Sources=@($net,(Join-Path $repoRoot 'runtime\SmokeProtocol.cs'),(Join-Path $repoRoot 'runtime\SmokeRuntime.cs'),(Join-Path $repoRoot 'tests\SmokeRuntimeStubTests.cs'));Refs=@()},
+    @{Name='SmokeProtocolTests';Sources=@($net,(Join-Path $repoRoot 'runtime\SmokeProtocol.cs'),(Join-Path $repoRoot 'tests\SmokeProtocolTests.cs'));Refs=@()},
+    @{Name='BusArticulationRuntimeTests';Sources=@((Join-Path $repoRoot 'runtime\BusArticulation.cs'),(Join-Path $repoRoot 'runtime\BusArticulationPolicy.cs'),(Join-Path $repoRoot 'tests\TestBusArticulationRuntime.cs'));Refs=@()},
+    @{Name='BusArticulationPolicyTests';Sources=@((Join-Path $repoRoot 'runtime\BusArticulationPolicy.cs'),(Join-Path $repoRoot 'tests\TestBusArticulationPolicy.cs'));Refs=@()},
+    @{Name='LargeRockClearanceTests';Sources=@($largeRockClearance,$worldRelocationLedger,(Join-Path $repoRoot 'tests\LargeRockClearanceTests.cs'));Refs=@()},
+    @{Name='TerrainPadBlendTests';Sources=@($worldBiomePolicy,$worldPlacementPolicy,(Join-Path $repoRoot 'runtime\TerrainPadBlend.cs'),(Join-Path $repoRoot 'tests\TerrainPadBlendTests.cs'));Refs=$nativeRefs},
+    @{Name='WorldPlacementPolicyTests';Sources=@($worldBiomePolicy,$worldPlacementPolicy,(Join-Path $repoRoot 'tests\WorldPlacementPolicyTests.cs'));Refs=$nativeRefs},
+    @{Name='PoiSlopePlacementTests';Sources=@($worldBiomePolicy,$worldPlacementPolicy,$roadTerrainClearance,$poiSlopePlacement,$worldRelocationLedger,(Join-Path $repoRoot 'tests\PoiSlopePlacementTests.cs'));Refs=$nativeRefs},
+    @{Name='PoiSlopePlacementReplayTests';Sources=@($worldPlacementPolicy,$poiSlopePlacement,$worldRelocationLedger,(Join-Path $repoRoot 'tests\PoiSlopePlacementReplayTests.cs'));Refs=@()},
+    @{Name='PoiSaveRestoreTests';Sources=@((Join-Path $repoRoot 'runtime\PoiSaveRestore.cs'),(Join-Path $repoRoot 'tests\PoiSaveRestoreTests.cs'));Refs=@()},
+    @{Name='WorldBiomeSaveTests';Sources=@($worldBiomePolicy,(Join-Path $repoRoot 'tests\WorldBiomeSaveTests.cs'));Refs=$nativeRefs},
+    @{Name='WorldBiomePolicyTests';Sources=@($worldBiomePolicy,(Join-Path $repoRoot 'tests\WorldBiomePolicyTests.cs'));Refs=$nativeRefs},
+    @{Name='SteamJoinSimulationTests';Sources=@($steamSdrTransport,$netDeliveryScheduler,$net,$core,$packets,$pairProto,$deferredCore,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamSocketSimulation.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamJoinSimulationTests.cs'));Refs=@()},
     @{Name='SteamConnectionDirectionTests';Sources=@($steamSdrTransport,$netDeliveryScheduler,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamConnectionDirectionTests.cs'));Refs=$nativeRefs},
-    @{Name='StableCoreTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableCoreTests.cs'));Refs=@()},
-    @{Name='SpawnTransferTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SpawnTransferTests.cs'));Refs=@()},
-    @{Name='SpawnTransportTests';Sources=@($steamSdrTransport,$netDeliveryScheduler,$net,$core,$packets,$loopback,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamSocketSimulation.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SpawnTransportTests.cs'));Refs=@()},
-    @{Name='StableAuditTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableAuditTests.cs'));Refs=@()},
-    @{Name='StableJournalTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableJournalTests.cs'));Refs=@()},
+    @{Name='StableCoreTests';Sources=@($net,$core,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableCoreTests.cs'));Refs=@()},
+    @{Name='SpawnTransferTests';Sources=@($net,$core,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SpawnTransferTests.cs'));Refs=@()},
+    @{Name='SpawnTransportTests';Sources=@($steamSdrTransport,$netDeliveryScheduler,$net,$core,$packets,$pairProto,$loopback,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SteamSocketSimulation.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SpawnTransportTests.cs'));Refs=@()},
+    @{Name='StableAuditTests';Sources=@($net,$core,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableAuditTests.cs'));Refs=@()},
+    @{Name='StableJournalTests';Sources=@($net,$core,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableJournalTests.cs'));Refs=@()},
     @{Name='ReliableOutboxTests';Sources=@($deferredCore,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ReliableOutboxTests.cs'));Refs=@()},
     @{Name='LoopbackTests';Sources=@($loopback,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\LoopbackTests.cs'));Refs=@()},
-    @{Name='LoopbackIntegrationTests';Sources=@($net,$core,$packets,$loopback,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\LoopbackIntegrationTests.cs'));Refs=@()},
+    @{Name='LoopbackIntegrationTests';Sources=@($net,$core,$packets,$pairProto,$loopback,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\LoopbackIntegrationTests.cs'));Refs=@()},
+    @{Name='RabbitTransportTests';Sources=@($net,$core,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\RabbitTransportTests.cs'));Refs=@()},
     @{Name='LoopbackBackpressureTests';Sources=@($loopback,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\LoopbackBackpressureTests.cs'));Refs=@()},
-    @{Name='StableFailureTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableFailureTests.cs'));Refs=@()},
-    @{Name='JoinStageBoundTests';Sources=@($net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\JoinStageBoundTests.cs'));Refs=@()},
-    @{Name='NetCoreTests';Sources=@($net,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NetCoreTests.cs'));Refs=@()},
-    @{Name='StableWireTests';Sources=@($net,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableWireProductionTests.cs'));Refs=$nativeRefs},
+    @{Name='StableFailureTests';Sources=@($net,$core,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableFailureTests.cs'));Refs=@()},
+    @{Name='JoinStageBoundTests';Sources=@($net,$core,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\JoinStageBoundTests.cs'));Refs=@()},
+    @{Name='NetCoreTests';Sources=@($net,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NetCoreTests.cs'));Refs=@()},
+    @{Name='StableWireTests';Sources=@($net,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StableWireProductionTests.cs'));Refs=$nativeRefs},
     @{Name='SyncItemSchedulerTests';Sources=@($syncItemScheduler,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SyncItemSchedulerTests.cs'));Refs=@()},
     @{Name='TerrainDistanceTests';Sources=@($terrainPolicy,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\TerrainDistanceTests.cs'));Refs=@()},
     @{Name='TerrainMembershipTests';Sources=@($terrainMembership,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\TerrainMembershipTests.cs'));Refs=$nativeRefs},
@@ -158,8 +190,8 @@ $tests=@(
     @{Name='NativeScriptTimingsTests';Sources=@($nativeScriptTimings,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NativeScriptTimingsTests.cs'));Refs=@()},
     @{Name='PendingAttachTests';Sources=@($pendingAttach,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PendingAttachTests.cs'));Refs=@()},
     @{Name='ItemRecoveryBridgeTests';Sources=@($pendingAttach,$attachReplay,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ItemRecoveryBridgeTests.cs'));Refs=@()},
-    @{Name='VehicleMotionTests';Sources=@($net,$packets,$poseSequence,$liveUsable,$remotePoseBuffer,$carPosePolicy,$patchOptions,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\VehicleMotionTests.cs'));Refs=$nativeRefs},
-    @{Name='VehicleMotionLoopbackTests';Sources=@($net,$packets,$poseSequence,$liveUsable,$remotePoseBuffer,$carPosePolicy,$patchOptions,$loopback,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\VehicleMotionLoopbackTests.cs'));Refs=$nativeRefs},
+    @{Name='VehicleMotionTests';Sources=@($net,$packets,$pairProto,$poseSequence,$liveUsable,$remotePoseBuffer,$carPosePolicy,$patchOptions,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\VehicleMotionTests.cs'));Refs=$nativeRefs},
+    @{Name='VehicleMotionLoopbackTests';Sources=@($net,$packets,$pairProto,$poseSequence,$liveUsable,$remotePoseBuffer,$carPosePolicy,$patchOptions,$loopback,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\VehicleMotionLoopbackTests.cs'));Refs=$nativeRefs},
     @{Name='PhaseTimingsTests';Sources=@((Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\PhaseTimings.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\ModDiagnostics.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PhaseTimingsTests.cs'));Refs=@()},
     @{Name='ItemIndexTableTests';Sources=@($itemIndexTable,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ItemIndexTableTests.cs'));Refs=$nativeRefs},
     @{Name='TerrainHoleAdjacencyTests';Sources=@($terrainHoleAdjacency,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\TerrainHoleAdjacencyTests.cs'));Refs=$nativeRefs},
@@ -177,7 +209,7 @@ $tests=@(
     @{Name='NativeAttachmentGuardTests';Sources=@($nativeAttachmentGuard,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NativeAttachmentGuardTests.cs'));Refs=@()},
     @{Name='NativeSeatSafetyTests';Sources=@($nativeSeatSafety,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NativeSeatSafetyTests.cs'));Refs=@("/reference:$managed\UnityEngine.CoreModule.dll","/reference:$managed\netstandard.dll")},
     @{Name='MenuLayoutPolicyTests';Sources=@($menuLayoutPolicy,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\MenuLayoutPolicyTests.cs'));Refs=@()},
-    @{Name='ContentFingerprintTests';Sources=@($net,$core,$packets,$contentFingerprint,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ContentFingerprintTests.cs'));Refs=@()},
+    @{Name='ContentFingerprintTests';Sources=@($net,$core,$packets,$pairProto,$contentFingerprint,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ContentFingerprintTests.cs'));Refs=@()},
     @{Name='NetLogLimiterTests';Sources=@($netLogLimiter,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NetLogLimiterTests.cs'));Refs=@()},
     @{Name='FeedbackPolicyTests';Sources=@($feedbackPolicy,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\FeedbackPolicyTests.cs'));Refs=@()},
     @{Name='StreamScanPolicyTests';Sources=@($streamScanPolicy,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\StreamScanPolicyTests.cs'));Refs=@()},
@@ -185,12 +217,14 @@ $tests=@(
     @{Name='ItemStreamPolicyTests';Sources=@($itemStreamPolicy,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ItemStreamPolicyTests.cs'));Refs=@()},
     @{Name='ItemSettlePolicyTests';Sources=@($itemSettlePolicy,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\ItemSettlePolicyTests.cs'));Refs=@()},
     @{Name='FarPlaceQueueTests';Sources=@($farPlaceQueue,$spawnCoordinator,$nativeSpawnAdapter,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\FarPlaceQueueTests.cs'));Refs=$nativeRefs},
-    @{Name='TerrainWorkerParityTests';Sources=@($terrainWorker,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\TerrainWorkerParityTests.cs'));Refs=$nativeRefs},
+    @{Name='WorldRelocationLedgerTests';Sources=@($worldRelocationLedger,(Join-Path $repoRoot 'tests\WorldRelocationLedgerTests.cs'));Refs=@()},
+    @{Name='UrineLiquidTests';Sources=@((Join-Path $repoRoot 'runtime\UrineLiquid.cs'),(Join-Path $repoRoot 'tests\UrineLiquidTests.cs'));Refs=@()},
+    @{Name='TerrainWorkerParityTests';Sources=@($terrainWorker,$worldBiomePolicy,$worldPlacementPolicy,$roadTerrainClearance,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\TerrainWorkerParityTests.cs'));Refs=$nativeRefs},
     @{Name='RemotePoseBufferTests';Sources=@($remotePoseBuffer,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\RemotePoseBufferTests.cs'));Refs=@()},
-    @{Name='NetUpdateCostTests';Sources=@($net,$packets,$collisionRestoreCache,$netStats,$patchOptions,$carPosePolicy,$remotePoseBuffer,$netDeliveryScheduler,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NetUpdateCostTests.cs'));Refs=$nativeRefs},
+    @{Name='NetUpdateCostTests';Sources=@($net,$packets,$pairProto,$collisionRestoreCache,$netStats,$patchOptions,$carPosePolicy,$remotePoseBuffer,$netDeliveryScheduler,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NetUpdateCostTests.cs'));Refs=$nativeRefs},
     @{Name='NativeStoreTextTests';Sources=@($nativeStoreText,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\NativeStoreTextTests.cs'));Refs=$nativeRefs},
     @{Name='PoseSequenceTests';Sources=@($poseSequence,$liveUsable,$remotePoseBuffer,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PoseSequenceTests.cs'));Refs=$nativeRefs},
-    @{Name='CarCargoTests';Sources=@($net,$packets,$carCargo,$poseSequence,$liveUsable,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\CarCargoTests.cs'));Refs=$nativeRefs},
+    @{Name='CarCargoTests';Sources=@($net,$packets,$pairProto,$carCargo,$poseSequence,$liveUsable,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\CarCargoTests.cs'));Refs=$nativeRefs},
     @{Name='LiveUsableTests';Sources=@($liveUsable,$poseSequence,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\LiveUsableTests.cs'));Refs=$nativeRefs},
     @{Name='PlacementSkipTests';Sources=@($placementSkip,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\PlacementSkipTests.cs'));Refs=$nativeRefs},
     @{Name='CarOwnershipTests';Sources=@($carOwnership,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\CarOwnershipTests.cs'));Refs=$nativeRefs},
@@ -207,7 +241,7 @@ foreach ($test in $tests) {
 }
 # Compiler-generated module IDs differ between machines. Compare the exact source
 # signature in the handshake instead of hashing our locally compiled helper DLL.
-$signatureInputs=@('runtime\NetCore.cs','runtime\StableCore.cs','runtime\StablePackets.cs','runtime\StableGameBridge.cs','runtime\StableMap.cs','runtime\StableRoadCodec.cs','runtime\DeferredCore.cs','runtime\LoopbackTransport.cs','runtime\TerrainDistancePolicy.cs','runtime\CargoDiagnostics.cs','runtime\FrameDiagnostics.cs','runtime\ModDiagnostics.cs','runtime\PhaseTimings.cs','runtime\AttachDiagnostics.cs','runtime\PendingAttach.cs','runtime\AttachReplay.cs','runtime\GroundDiagnostics.cs','runtime\SyncItemScheduler.cs','runtime\NativeLoopTimings.cs','runtime\NativeScriptTimings.cs','runtime\SlowFrameDiagnostics.cs','runtime\ItemIndexTable.cs','runtime\TerrainHoleAdjacency.cs','runtime\TerrainRoadSelection.cs','runtime\RendererCensus.cs','runtime\RoadChunkPolicy.cs','runtime\CarPosePolicy.cs','runtime\PlayerLeaveSafety.cs','runtime\ItemAskSafety.cs','runtime\NativeStoreGate.cs','runtime\NativeStoreAdapter.cs','runtime\NativeStoreText.cs','runtime\PatchInfo.cs','runtime\PatchOptions.cs','runtime\PatchOptionsMenu.cs','runtime\PatchSurface.cs','runtime\JoinPhysics.cs','runtime\CargoGhost.cs','runtime\RoadLiveCache.cs','runtime\RoadFarSkip.cs','runtime\CameraCostCore.cs','runtime\CameraCost.cs','runtime\MirrorOnScreen.cs','runtime\RoadBake.cs','runtime\RenderSwitches.cs','runtime\SmallFixes.cs','runtime\ProfilerSlotPolicy.cs','runtime\TerrainMembership.cs','runtime\TerrainWorkDiagnostics.cs','runtime\ContentFingerprint.cs','runtime\NetDeliveryScheduler.cs','runtime\SteamSdrTransport.cs','runtime\NativeSpawnSafety.cs','runtime\NativeSeatSafety.cs','runtime\NativeAttachmentGuard.cs','runtime\NativeSafetyAdapter.cs','runtime\SpawnClearance.cs','runtime\SpawnClearanceAdapter.cs','runtime\WildlifeWeather.cs','runtime\MenuLayoutPolicy.cs','runtime\MenuLayout.cs','runtime\MenuProbe.cs','runtime\NetLogLimiter.cs','runtime\FeedbackPolicy.cs','runtime\FeedbackBundle.cs','runtime\ItemStreamPolicy.cs','runtime\TerrainAlignPolicy.cs','runtime\StreamScanPolicy.cs','runtime\ItemSettlePolicy.cs','runtime\FarPlaceQueue.cs','runtime\TerrainWorker.cs','runtime\RemotePoseBuffer.cs','runtime\RemoteSmoothing.cs','runtime\CollisionRestoreCache.cs','runtime\NetStats.cs','runtime\WorldJump.cs','runtime\PoseSequence.cs','runtime\PartsCensus.cs','runtime\CarOwnership.cs','runtime\PlacementSkip.cs','runtime\LiveUsable.cs','runtime\CarCargo.cs','runtime\SpawnCoordinator.cs','runtime\NativeSpawnAdapter.cs','tools\PatchStability.cs','tools\VerifyStability.cs')
+$signatureInputs=@('runtime\PoiSaveRestore.cs','runtime\RabbitProtocol.cs','runtime\RabbitMetadataSync.cs','runtime\RabbitFlowDiagnostics.cs','runtime\BusRearAuthority.cs','runtime\RabbitContact.cs','runtime\RabbitCombatReach.cs','runtime\RabbitAttackDiagnostics.cs','runtime\BusPairProtocol.cs','runtime\BusPairReplica.cs','runtime\BusSeatClaims.cs','runtime\MovingVehiclePassenger.cs','runtime\MovingVehiclePassengerPolicy.cs','runtime\RabbitGuestAnimation.cs','runtime\RabbitMotionProtocol.cs','runtime\RabbitMotionRuntime.cs','runtime\RabbitPlayers.cs','runtime\RabbitLocomotion.cs','runtime\BusArticulation.cs','runtime\BusArticulationPolicy.cs','runtime\SmokeProtocol.cs','runtime\SmokeRuntime.cs','runtime\GrassTransition.cs','runtime\RabbitAi.cs','runtime\RabbitNetwork.cs','runtime\RabbitReplicas.cs','runtime\RabbitPopulation.cs','runtime\SurvivalHud.cs','runtime\SurvivalRates.cs','runtime\TerrainPadBlend.cs','runtime\WorldRelocationLedger.cs', 'runtime\NpcVehicleImpact.cs', 'runtime\UrineLiquid.cs','runtime\ParticleFluidDrinking.cs','runtime\LargeRockClearance.cs','runtime\WorldPlacementPolicy.cs','runtime\RoadTerrainClearance.cs','runtime\PoiSlopePlacement.cs','runtime\FixedPropConstruction.cs','runtime\NetCore.cs','runtime\StableCore.cs','runtime\StablePackets.cs','runtime\StableGameBridge.cs','runtime\StableMap.cs','runtime\StableRoadCodec.cs','runtime\DeferredCore.cs','runtime\LoopbackTransport.cs','runtime\TerrainDistancePolicy.cs','runtime\CargoDiagnostics.cs','runtime\FrameDiagnostics.cs','runtime\ModDiagnostics.cs','runtime\PhaseTimings.cs','runtime\AttachDiagnostics.cs','runtime\PendingAttach.cs','runtime\AttachReplay.cs','runtime\GroundDiagnostics.cs','runtime\SyncItemScheduler.cs','runtime\NativeLoopTimings.cs','runtime\NativeScriptTimings.cs','runtime\SlowFrameDiagnostics.cs','runtime\ItemIndexTable.cs','runtime\TerrainHoleAdjacency.cs','runtime\TerrainRoadSelection.cs','runtime\RendererCensus.cs','runtime\RoadChunkPolicy.cs','runtime\CarPosePolicy.cs','runtime\PlayerLeaveSafety.cs','runtime\ItemAskSafety.cs','runtime\NativeStoreGate.cs','runtime\NativeStoreAdapter.cs','runtime\NativeStoreText.cs','runtime\PatchInfo.cs','runtime\PatchOptions.cs','runtime\PatchOptionsMenu.cs','runtime\PatchSurface.cs','runtime\JoinPhysics.cs','runtime\CargoGhost.cs','runtime\RoadLiveCache.cs','runtime\RoadFarSkip.cs','runtime\CameraCostCore.cs','runtime\CameraCost.cs','runtime\MirrorOnScreen.cs','runtime\RoadBake.cs','runtime\RenderSwitches.cs','runtime\SmallFixes.cs','runtime\ProfilerSlotPolicy.cs','runtime\TerrainMembership.cs','runtime\TerrainWorkDiagnostics.cs','runtime\ContentFingerprint.cs','runtime\NetDeliveryScheduler.cs','runtime\SteamSdrTransport.cs','runtime\NativeSpawnSafety.cs','runtime\NativeSeatSafety.cs','runtime\NativeAttachmentGuard.cs','runtime\NativeSafetyAdapter.cs','runtime\SpawnClearance.cs','runtime\SpawnClearanceAdapter.cs','runtime\WildlifeWeather.cs','runtime\MenuLayoutPolicy.cs','runtime\MenuLayout.cs','runtime\MenuProbe.cs','runtime\GrassTransitionProbe.cs','runtime\NetLogLimiter.cs','runtime\FeedbackPolicy.cs','runtime\FeedbackBundle.cs','runtime\ItemStreamPolicy.cs','runtime\TerrainAlignPolicy.cs','runtime\StreamScanPolicy.cs','runtime\ItemSettlePolicy.cs','runtime\FarPlaceQueue.cs','runtime\TerrainWorker.cs','runtime\WorldBiomePolicy.cs','runtime\RemotePoseBuffer.cs','runtime\RemoteSmoothing.cs','runtime\CollisionRestoreCache.cs','runtime\NetStats.cs','runtime\WorldJump.cs','runtime\PoseSequence.cs','runtime\PartsCensus.cs','runtime\CarOwnership.cs','runtime\PlacementSkip.cs','runtime\LiveUsable.cs','runtime\CarCargo.cs','runtime\SpawnCoordinator.cs','runtime\NativeSpawnAdapter.cs','tools\PatchStability.cs','tools\VerifyStability.cs')
 $signatureText=($signatureInputs | ForEach-Object { $_+':'+(Get-FileHash -LiteralPath (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) $_) -Algorithm SHA256).Hash }) -join "`n"
 $hasher=[Security.Cryptography.SHA256]::Create()
 try {$sourceSignature=[BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($signatureText))).Replace('-','')} finally {$hasher.Dispose()}
@@ -230,7 +264,7 @@ $notes=Join-Path $run 'PatchNotes.cs'
 $notesB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText((Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'CHANGELOG.md'))))
 Set-Content -LiteralPath $notes -Encoding UTF8 -Value ('namespace TldMp { internal static class PatchNotes { public const string ChangelogBase64="'+$notesB64+'"; } }')
 $runtime=Join-Path $run 'Tld.Multiplayer.dll'
-Run $csc @('/nologo','/target:library','/optimize+',"/out:$runtime","/reference:$($baseline.original)","/reference:$managed\UnityEngine.CoreModule.dll","/reference:$managed\UnityEngine.PhysicsModule.dll","/reference:$managed\UnityEngine.VehiclesModule.dll","/reference:$managed\UnityEngine.ParticleSystemModule.dll","/reference:$managed\UnityEngine.JSONSerializeModule.dll","/reference:$managed\com.rlabrecque.steamworks.net.dll","/reference:$managed\UnityEngine.UI.dll","/reference:$managed\UnityEngine.UIModule.dll","/reference:$managed\UnityEngine.ScreenCaptureModule.dll","/reference:$managed\netstandard.dll","/reference:$managed\System.IO.Compression.dll","/reference:$managed\Unity.TextMeshPro.dll","/reference:$managed\UnityEngine.InputLegacyModule.dll",$net,$core,$packets,$bridge,$map,$roadCodec,$deferredCore,$loopback,$terrainPolicy,$cargoDiagnostics,$frameDiagnostics,$syncItemScheduler,$nativeLoopTimings,$nativeScriptTimings,$slowFrameDiagnostics,$itemIndexTable,$terrainHoleAdjacency,$terrainRoadSelection,$rendererCensus,$roadChunkPolicy,$carPosePolicy,$playerLeaveSafety,$itemAskSafety,$nativeStoreGate,$nativeStoreAdapter,$nativeStoreText,$patchInfo,$patchOptions,$patchOptionsMenu,$patchSurface,$joinPhysics,$cargoGhost,$roadLiveCache,$roadFarSkip,$cameraCostCore,$cameraCost,$mirrorOnScreen,$roadBake,$renderSwitches,$smallFixes,$profilerSlotPolicy,$terrainMembership,$terrainWorkDiagnostics,$terrainWorker,$contentFingerprint,$netDeliveryScheduler,$steamSdrTransport,$nativeSpawnSafety,$nativeSeatSafety,$nativeAttachmentGuard,$nativeSafetyAdapter,$spawnClearance,$spawnClearanceAdapter,$wildlifeWeather,$menuLayoutPolicy,$menuLayout,$menuProbe,$netLogLimiter,$feedbackPolicy,$feedbackBundle,$itemStreamPolicy,$terrainAlignPolicy,$itemSettlePolicy,$farPlaceQueue,$remotePoseBuffer,$remoteSmoothing,$collisionRestoreCache,$netStats,$worldJump,$poseSequence,$partsCensus,$carOwnership,$placementSkip,$liveUsable,$carCargo,$spawnCoordinator,$nativeSpawnAdapter,$modDiagnostics,$phaseTimings,$groundDiagnostics,$attachDiagnostics,$pendingAttach,$attachReplay,$streamScanPolicy,$identity,$notes)
+Run $csc @('/nologo','/target:library','/optimize+',"/out:$runtime","/reference:$($baseline.original)","/reference:$managed\UnityEngine.CoreModule.dll","/reference:$managed\UnityEngine.PhysicsModule.dll","/reference:$managed\UnityEngine.AnimationModule.dll","/reference:$managed\UnityEngine.AudioModule.dll","/reference:$managed\UnityEngine.VehiclesModule.dll","/reference:$managed\UnityEngine.ParticleSystemModule.dll","/reference:$managed\UnityEngine.JSONSerializeModule.dll","/reference:$managed\com.rlabrecque.steamworks.net.dll","/reference:$managed\UnityEngine.UI.dll","/reference:$managed\UnityEngine.UIModule.dll","/reference:$managed\UnityEngine.ScreenCaptureModule.dll","/reference:$managed\netstandard.dll","/reference:$managed\System.IO.Compression.dll","/reference:$managed\Unity.TextMeshPro.dll","/reference:$managed\UnityEngine.InputLegacyModule.dll","/reference:$managed\UnityEngine.ImageConversionModule.dll",(Join-Path $repoRoot 'runtime\PoiSaveRestore.cs'),(Join-Path $repoRoot 'runtime\BusArticulation.cs'),(Join-Path $repoRoot 'runtime\BusArticulationPolicy.cs'),(Join-Path $repoRoot 'runtime\SmokeProtocol.cs'),(Join-Path $repoRoot 'runtime\SmokeRuntime.cs'),(Join-Path $repoRoot 'runtime\TerrainPadBlend.cs'),(Join-Path $repoRoot 'runtime\SurvivalRates.cs'),(Join-Path $repoRoot 'runtime\SurvivalHud.cs'),(Join-Path $repoRoot 'runtime\GrassTransition.cs'),(Join-Path $repoRoot 'runtime\RabbitAi.cs'),(Join-Path $repoRoot 'runtime\RabbitNetwork.cs'),(Join-Path $repoRoot 'runtime\RabbitReplicas.cs'),(Join-Path $repoRoot 'runtime\RabbitPopulation.cs'),$worldRelocationLedger,(Join-Path $repoRoot 'runtime\NpcVehicleImpact.cs'),(Join-Path $repoRoot 'runtime\UrineLiquid.cs'),(Join-Path $repoRoot 'runtime\ParticleFluidDrinking.cs'),$net,$core,$packets,$bridge,$map,$roadCodec,$deferredCore,$loopback,$terrainPolicy,$cargoDiagnostics,$frameDiagnostics,$syncItemScheduler,$nativeLoopTimings,$nativeScriptTimings,$slowFrameDiagnostics,$itemIndexTable,$terrainHoleAdjacency,$terrainRoadSelection,$rendererCensus,$roadChunkPolicy,$carPosePolicy,$playerLeaveSafety,$itemAskSafety,$nativeStoreGate,$nativeStoreAdapter,$nativeStoreText,$patchInfo,$patchOptions,$patchOptionsMenu,$patchSurface,$joinPhysics,$cargoGhost,$roadLiveCache,$roadFarSkip,$cameraCostCore,$cameraCost,$mirrorOnScreen,$roadBake,$renderSwitches,$smallFixes,$profilerSlotPolicy,$terrainMembership,$terrainWorkDiagnostics,$terrainWorker,$worldBiomePolicy,$worldPlacementPolicy,$roadTerrainClearance,$poiSlopePlacement,$largeRockClearance,$contentFingerprint,$netDeliveryScheduler,$steamSdrTransport,$nativeSpawnSafety,$nativeSeatSafety,$nativeAttachmentGuard,$nativeSafetyAdapter,$spawnClearance,$spawnClearanceAdapter,$wildlifeWeather,$menuLayoutPolicy,$menuLayout,$menuProbe,$grassProbe,$netLogLimiter,$feedbackPolicy,$feedbackBundle,$itemStreamPolicy,$terrainAlignPolicy,$itemSettlePolicy,$farPlaceQueue,$remotePoseBuffer,$remoteSmoothing,$collisionRestoreCache,$netStats,$worldJump,$poseSequence,$partsCensus,$carOwnership,$placementSkip,$liveUsable,$carCargo,$spawnCoordinator,$nativeSpawnAdapter,$fixedPropConstruction,$modDiagnostics,$phaseTimings,$groundDiagnostics,$attachDiagnostics,$pendingAttach,$attachReplay,$streamScanPolicy,(Join-Path $repoRoot 'runtime\RabbitCombatReach.cs'),(Join-Path $repoRoot 'runtime\RabbitLocomotion.cs'),(Join-Path $repoRoot 'runtime\RabbitPlayers.cs'),(Join-Path $repoRoot 'runtime\RabbitMotionProtocol.cs'),(Join-Path $repoRoot 'runtime\RabbitMotionRuntime.cs'),(Join-Path $repoRoot 'runtime\RabbitGuestAnimation.cs'),(Join-Path $repoRoot 'runtime\MovingVehiclePassenger.cs'),(Join-Path $repoRoot 'runtime\MovingVehiclePassengerPolicy.cs'),(Join-Path $repoRoot 'runtime\BusRearAuthority.cs'),(Join-Path $repoRoot 'runtime\BusPairProtocol.cs'),(Join-Path $repoRoot 'runtime\BusPairReplica.cs'),(Join-Path $repoRoot 'runtime\BusSeatClaims.cs'),(Join-Path $repoRoot 'runtime\RabbitContact.cs'),(Join-Path $repoRoot 'runtime\RabbitAttackDiagnostics.cs'),(Join-Path $repoRoot 'runtime\RabbitFlowDiagnostics.cs'),(Join-Path $repoRoot 'runtime\RabbitProtocol.cs'),(Join-Path $repoRoot 'runtime\RabbitMetadataSync.cs'),$identity,$notes)
 # v4 is built later (Stage-NativeSafetyBuild.ps1 / the installer) and calls back into
 # the runtime. A missing callback makes Mono reject the whole patched method at run
 # time (the save button silently did nothing), so require every one here.
@@ -260,6 +294,9 @@ $patched=Join-Path $run 'Assembly-CSharp.dll'
 Run $patcher @($baseline.patched,$runtime,$patched,$managed)
 & (Test-ExePath $verifier) $baseline.patched $patched 2>&1 | Tee-Object -FilePath $results -Append
 if ($LASTEXITCODE -ne 0) { throw 'V3 hook verification failed.' }
+$fixedPropTests=Join-Path $run 'FixedPropConstructionTests.exe'
+Run $csc @('/nologo','/optimize+',"/out:$fixedPropTests",$fixedPropConstruction,(Join-Path $repoRoot 'tests\FixedPropConstructionTests.cs'))
+Run $fixedPropTests @()
 $fixedSpawnTests=Join-Path $run 'FixedSpawnHelperTests.exe'
 Run $csc @('/nologo','/optimize+',"/out:$fixedSpawnTests","/reference:$cecil",(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\FixedSpawnHelperTests.cs'))
 & (Test-ExePath $fixedSpawnTests) $runtime $patched 2>&1 | Tee-Object -FilePath $results -Append
@@ -326,10 +363,83 @@ Write-Host 'PASS: item-selection negative control rejected a missing Begin obser
 if($LASTEXITCODE -ne 0){throw 'Production world-cleanup IL parity failed.'}
 $extractor=Join-Path $toolDir 'ExtractReplay.exe'
 Run $csc @('/nologo','/optimize+',"/out:$extractor","/reference:$cecil",(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tools\ExtractReplay.cs'))
+$creatureFixture=Join-Path $run 'CreatureMovementFixture.exe'
+$creatureReplay=Join-Path $run 'CreatureMovementReplay.exe'
+Run $csc @('/nologo','/optimize+',"/out:$creatureFixture",(Join-Path $repoRoot 'tests\CreatureMovementReplayTests.cs'))
+Run $extractor @($patched,$creatureFixture,$creatureReplay,'creature')
+Run $creatureReplay @()
+$rabbitFixture=Join-Path $run 'RabbitAiReplayFixture.exe'
+$rabbitBaseline=Join-Path $run 'RabbitAiBaseline.exe'
+$rabbitCandidate=Join-Path $run 'RabbitAiCandidate.exe'
+Run $csc @('/nologo','/optimize+',"/out:$rabbitFixture",(Join-Path $repoRoot 'tests\RabbitAiReplayTests.cs'),(Join-Path $repoRoot 'runtime\RabbitAi.cs'),(Join-Path $repoRoot 'runtime\RabbitNetwork.cs'),(Join-Path $repoRoot 'runtime\RabbitReplicas.cs'),(Join-Path $repoRoot 'runtime\StablePackets.cs'),(Join-Path $repoRoot 'runtime\BusPairProtocol.cs'),(Join-Path $repoRoot 'runtime\NetCore.cs'))
+Run $extractor @($baseline.original,$rabbitFixture,$rabbitBaseline,'rabbitai')
+Run $extractor @($patched,$rabbitFixture,$rabbitCandidate,'rabbitai')
+& (Test-ExePath $rabbitBaseline) 'baseline' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit AI baseline replay failed.' }
+& (Test-ExePath $rabbitCandidate) 'candidate' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit AI candidate replay failed.' }
+$attackFixture=Join-Path $run 'RabbitAttackFlowFixture.exe'
+$attackBaseline=Join-Path $run 'RabbitAttackFlowBaseline.exe'
+$attackCandidate=Join-Path $run 'RabbitAttackFlowCandidate.exe'
+Run $csc @('/nologo','/optimize+',"/out:$attackFixture",(Join-Path $repoRoot 'tests\RabbitAttackFlowReplayTests.cs'),(Join-Path $repoRoot 'runtime\RabbitAi.cs'),(Join-Path $repoRoot 'runtime\RabbitNetwork.cs'),(Join-Path $repoRoot 'runtime\RabbitReplicas.cs'),$packets,$pairProto,$net)
+Run $extractor @($baseline.original,$attackFixture,$attackBaseline,'rabbitattack')
+Run $extractor @($patched,$attackFixture,$attackCandidate,'rabbitattack')
+& (Test-ExePath $attackBaseline) 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Native rabbit attack baseline replay failed.' }
+& (Test-ExePath $attackCandidate) 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Native rabbit attack candidate replay failed.' }
+$grassFixture=Join-Path $run 'GrassFixture.exe'
+$grassBaseline=Join-Path $run 'GrassBaseline.exe'
+$grassCandidate=Join-Path $run 'GrassCandidate.exe'
+Run $csc @('/nologo','/optimize+',"/out:$grassFixture",(Join-Path $repoRoot 'tests\GrassTransitionTests.cs'),(Join-Path $repoRoot 'runtime\GrassTransition.cs'))
+Run $extractor @($baseline.original,$grassFixture,$grassBaseline,'grass')
+Run $extractor @($patched,$grassFixture,$grassCandidate,'grass')
+& (Test-ExePath $grassBaseline) 'baseline' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Grass baseline replay failed.' }
+& (Test-ExePath $grassCandidate) 'candidate' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Grass candidate replay failed.' }
+$ragdollFixture=Join-Path $run 'RabbitRagdollFixture.exe'
+$ragdollBaseline=Join-Path $run 'RabbitRagdollBaseline.exe'
+$ragdollCandidate=Join-Path $run 'RabbitRagdollCandidate.exe'
+Run $csc @('/nologo','/optimize+',"/out:$ragdollFixture",(Join-Path $repoRoot 'tests\RabbitRagdollReplayTests.cs'),(Join-Path $repoRoot 'runtime\RabbitNetwork.cs'),(Join-Path $repoRoot 'runtime\RabbitReplicas.cs'),(Join-Path $repoRoot 'runtime\RabbitAi.cs'),(Join-Path $repoRoot 'runtime\StablePackets.cs'),(Join-Path $repoRoot 'runtime\BusPairProtocol.cs'),(Join-Path $repoRoot 'runtime\NetCore.cs'))
+Run $extractor @($baseline.original,$ragdollFixture,$ragdollBaseline,'rabbitrags')
+Run $extractor @($patched,$ragdollFixture,$ragdollCandidate,'rabbitrags')
+& (Test-ExePath $ragdollBaseline) 'baseline' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit ragdoll baseline replay failed.' }
+& (Test-ExePath $ragdollCandidate) 'candidate' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit ragdoll candidate replay failed.' }
+$guardFixture=Join-Path $run 'RabbitNetworkGuardFixture.exe'
+$rabbitPolicy=Join-Path $run 'RabbitPolicy.exe'
+Run $csc @('/nologo','/optimize+',"/out:$guardFixture","/reference:$cecil",(Join-Path $repoRoot 'tests\RabbitNetworkGuardTests.cs'),(Join-Path $repoRoot 'runtime\RabbitNetwork.cs'),(Join-Path $repoRoot 'runtime\RabbitReplicas.cs'),(Join-Path $repoRoot 'runtime\RabbitAi.cs'),(Join-Path $repoRoot 'runtime\StablePackets.cs'),(Join-Path $repoRoot 'runtime\BusPairProtocol.cs'),(Join-Path $repoRoot 'runtime\NetCore.cs'))
+Run $extractor @($runtime,$guardFixture,$rabbitPolicy,'rabbitnetwork')
+& (Test-ExePath $rabbitPolicy) 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit network policy replay failed.' }
+& (Test-ExePath $guardFixture) 'order' $runtime 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit network guard call-order checks failed.' }
+$replicaFixture=Join-Path $run 'RabbitReplicaFixture.exe'
+$replicaBaseline=Join-Path $run 'RabbitReplicaBaseline.exe'
+$replicaCandidate=Join-Path $run 'RabbitReplicaCandidate.exe'
+Run $csc @('/nologo','/optimize+',"/out:$replicaFixture",(Join-Path $repoRoot 'tests\RabbitReplicaReplayTests.cs'),(Join-Path $repoRoot 'runtime\RabbitNetwork.cs'),(Join-Path $repoRoot 'runtime\RabbitReplicas.cs'),(Join-Path $repoRoot 'runtime\RabbitAi.cs'),(Join-Path $repoRoot 'runtime\StablePackets.cs'),(Join-Path $repoRoot 'runtime\BusPairProtocol.cs'),(Join-Path $repoRoot 'runtime\NetCore.cs'))
+Run $extractor @($baseline.original,$replicaFixture,$replicaBaseline,'rabbitrep')
+Run $extractor @($patched,$replicaFixture,$replicaCandidate,'rabbitrep')
+& (Test-ExePath $replicaBaseline) 'baseline' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit replica baseline replay failed.' }
+& (Test-ExePath $replicaCandidate) 'candidate' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit replica candidate replay failed.' }
 $spawnRun=Join-Path $run 'spawn-production-replay'
+$populationFixture=Join-Path $run 'RabbitPopulationFixture.exe'
+$populationBaseline=Join-Path $run 'RabbitPopulationBaseline.exe'
+$populationCandidate=Join-Path $run 'RabbitPopulationCandidate.exe'
+Run $csc @('/nologo','/optimize+',"/out:$populationFixture",(Join-Path $repoRoot 'tests\RabbitPopulationReplayTests.cs'),(Join-Path $repoRoot 'runtime\RabbitPopulation.cs'),$net,$core,$packets,$pairProto)
+Run $extractor @($baseline.original,$populationFixture,$populationBaseline,'rabbitpop')
+Run $extractor @($patched,$populationFixture,$populationCandidate,'rabbitpop')
+& (Test-ExePath $populationBaseline) 'baseline' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit population baseline replay failed.' }
+& (Test-ExePath $populationCandidate) 'candidate' 2>&1 | Tee-Object -FilePath $results -Append
+if ($LASTEXITCODE -ne 0) { throw 'Rabbit population candidate replay failed.' }
 New-Item -ItemType Directory -Path $spawnRun | Out-Null
 $spawnFixture=Join-Path $spawnRun 'SpawnProductionReplayFixture.exe'
-Run $csc @('/nologo','/nowarn:0169','/optimize+',"/out:$spawnFixture",$net,$core,$packets,$pendingAttach,$spawnCoordinator,$nativeSpawnAdapter,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SpawnProductionReplayFixture.cs'))
+Run $csc @('/nologo','/nowarn:0169','/optimize+',"/out:$spawnFixture",$net,$core,$packets,$pairProto,$pendingAttach,$spawnCoordinator,$nativeSpawnAdapter,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\SpawnProductionReplayFixture.cs'))
 $spawnNative=Join-Path $spawnRun 'SpawnNative.exe'
 Run $extractor @($baseline.original,$spawnFixture,$spawnNative,'spawnnative')
 $spawnReplay=Join-Path $spawnRun 'SpawnProductionReplay.exe'
@@ -337,7 +447,7 @@ Run $extractor @($runtime,$spawnNative,$spawnReplay,'spawn')
 & (Test-ExePath $spawnReplay) 2>&1 | Tee-Object -FilePath $results -Append
 if ($LASTEXITCODE -ne 0) { throw 'Spawn production-method replay failed.' }
 $vehicleFixture=Join-Path $run 'VehicleMotionReplayFixture.exe'
-Run $csc @('/nologo','/nowarn:0649','/optimize+',"/out:$vehicleFixture",$net,$core,$packets,$poseSequence,$liveUsable,$deferredCore,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\VehicleMotionReplayFixture.cs'))
+Run $csc @('/nologo','/nowarn:0649','/optimize+',"/out:$vehicleFixture",$net,$core,$packets,$pairProto,$poseSequence,$liveUsable,$deferredCore,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\VehicleMotionReplayFixture.cs'))
 $vehicleReplay=Join-Path $run 'VehicleMotionReplay.exe'
 Run $extractor @($runtime,$vehicleFixture,$vehicleReplay,'vehicle')
 & (Test-ExePath $vehicleReplay) 2>&1 | Tee-Object -FilePath $results -Append
@@ -345,7 +455,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Production vehicle motion replay failed.' }
 $worldRun=Join-Path $run 'world-load-replay'
 New-Item -ItemType Directory -Path $worldRun | Out-Null
 $worldFixture=Join-Path $worldRun 'WorldLoadReplayFixture.exe'
-Run $csc @('/nologo','/nowarn:0649','/optimize+',"/out:$worldFixture","/reference:$managed\netstandard.dll",$net,$core,$packets,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\WorldLoadReplayFixture.cs'))
+Run $csc @('/nologo','/nowarn:0649','/optimize+',"/out:$worldFixture","/reference:$managed\netstandard.dll",$net,$core,$packets,$pairProto,(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\WorldLoadReplayFixture.cs'))
 $worldNative=Join-Path $worldRun 'WorldLoadNative.exe'
 Run $extractor @($baseline.original,$worldFixture,$worldNative,'worldnative')
 $worldReplay=Join-Path $worldRun 'WorldLoadReplay.exe'

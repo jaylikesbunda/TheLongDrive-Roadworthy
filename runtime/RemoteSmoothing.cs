@@ -111,7 +111,18 @@ namespace TldMp
         // Guard on tosaveitemscript.GotSync. Returns true for the native body.
         internal static bool Gate(tosaveitemscript item, Vector3 pos, Vector3 rot)
         {
-            if (!Enabled || item == null || item.car == null) return true;
+            if (item == null || item.car == null) return true;
+            // The complete paired replica is the sole pose path regardless of
+            // the smoothing option: bookkeeping only, never a native teleport.
+            if (BusPairReplica.Owns(item))
+            {
+                item.gotSyncLocal = false;
+                item.gotSyncLastPos = pos;
+                item.gotSyncLastRot = rot;
+                item.UpdGotSyncTime();
+                return false;
+            }
+            if (!Enabled) return true;
             int id = item.GetInstanceID();
             bool inCharge = item.ThisOneInChargeCar();
             if (RemoteSmoothPolicy.CarGotSyncIsNative(true, true, inCharge))
@@ -207,6 +218,9 @@ namespace TldMp
                 tosaveitemscript item = track.Item;
                 bool destroyed = item == null;
                 bool inCharge = !destroyed && item.ThisOneInChargeCar();
+                // A complete paired replica is the sole pose/velocity path for
+                // both bodies; native smoothing must not write alongside it.
+                if (!destroyed && BusPairReplica.Owns(item)) continue;
                 if (RemoteSmoothPolicy.CarShouldRelease(destroyed, inCharge, now, track.LastSample))
                 {
                     dead.Add(pair.Key);
@@ -296,7 +310,9 @@ namespace TldMp
         }
     }
 
-    public sealed class RemoteCarDriver : MonoBehaviour
+    // Runs after the bridge Driver (order 10000) so a paired-bus send/apply in
+    // the same FixedUpdate always precedes any native smoothing write.
+    [DefaultExecutionOrder(10001)]public sealed class RemoteCarDriver : MonoBehaviour
     {
         static bool reported;
 

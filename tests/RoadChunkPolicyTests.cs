@@ -70,6 +70,17 @@ internal static class RoadChunkPolicyTests
         var withRoad = Cell(road, chunks, new Vector3d(0, 0, Step));
         withRoad.roads.Add((roadGenScript.roadClass)FormatterServices.GetUninitializedObject(typeof(roadGenScript.roadClass)));
         Check(!RoadChunkPolicy.Keep(road, needed, new Vector3d(0, 0, Step)), "a border cell with road data must take the native path");
+        var owner = new Vector3d(0, 0, Step);
+        withRoad.insideConnected = true;
+        withRoad.roads[0].generated = true;
+        withRoad.innerChunkGenerated = true;
+        chunks[center].innerChunkGenerated = true;
+        var lateRoad = (roadGenScript.roadClass)FormatterServices.GetUninitializedObject(typeof(roadGenScript.roadClass));
+        withRoad.roads.Add(lateRoad);
+        Check(!withRoad.Done() && withRoad.innerChunkGenerated, "late connection leaves the stock completion flag stale");
+        StableGameBridge.RoadConnectionAdded(road, owner);
+        Check(!withRoad.innerChunkGenerated && withRoad.insideConnected, "the owner is eligible for native road generation again");
+        Check(withRoad.roads[0].generated && !lateRoad.generated && chunks[center].innerChunkGenerated, "existing roads and other chunks keep their state");
 
         var withInner = Cell(road, chunks, new Vector3d(-Step, 0, 0));
         withInner.innerChunks[new Vector3d(0, 0, 0)] = new roadGenScript.innerChunkClass();

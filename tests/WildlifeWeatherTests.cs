@@ -3,6 +3,23 @@ using System.IO;
 using System.Reflection;
 using TldMp;
 
+// This fixture exercises the single-player/disabled-online policy; population
+// transport and spawning are covered by RabbitPopulationReplayTests.
+namespace TldMp
+{
+    internal static class RabbitPopulation
+    {
+        internal const bool OnlineReady=false;
+        internal static void Reset(){}
+    }
+    internal static class StableGameBridge
+    {
+        internal static bool RabbitLoopbackTesting{get{return false;}}
+        internal static void TickRabbitPopulation(aispawn spawner,fpscontroller player,bool worldStarted)
+        {throw new InvalidOperationException("Online population must stay disabled in this fixture.");}
+    }
+}
+
 internal static class WildlifeWeatherTests
 {
     static int checks;
@@ -22,9 +39,13 @@ internal static class WildlifeWeatherTests
 
     static int Run()
     {
+        Check(!WildlifeWeatherPolicy.OnlineRabbitPopulation(false,false), "ordinary online population stays protected");
+        Check(WildlifeWeatherPolicy.OnlineRabbitPopulation(false,true), "loopback testing enables controlled host population");
+        Check(WildlifeWeatherPolicy.OnlineRabbitPopulation(true,false), "released online population remains supported");
+        Check(WildlifeWeatherPolicy.OnlineRabbitPopulation(true,true), "released loopback population remains supported");
         // Rabbits: single-player only, once a world with a player and its spawner is running.
         Check(WildlifeWeatherPolicy.RabbitsShouldRun(true, false, true, true, true), "rabbits run in a started single-player world");
-        Check(!WildlifeWeatherPolicy.RabbitsShouldRun(true, true, true, true, true), "rabbits never run in multiplayer (ragdoll sync flings guest cars)");
+        Check(!WildlifeWeatherPolicy.RabbitsShouldRun(true, true, true, true, true), "native single-player spawner stays off in multiplayer");
         Check(!WildlifeWeatherPolicy.RabbitsShouldRun(false, false, true, true, true), "the option turns rabbits off");
         Check(!WildlifeWeatherPolicy.RabbitsShouldRun(true, false, false, true, true), "not before the world has started");
         Check(!WildlifeWeatherPolicy.RabbitsShouldRun(true, false, true, false, true), "not without a player");
@@ -62,7 +83,7 @@ internal static class WildlifeWeatherTests
         Check(PatchOptions.Rabbits && PatchOptions.Sandstorms, "unknown values keep the default");
         Check(PatchOptions.Format().Contains("smoothcars=on"), "existing keys are still written");
 
-        Console.WriteLine("PASS: " + checks + " wildlife/weather assertions; rabbits and sandstorms are single-player only, a host clears leftover rabbits, frozen creatures skip rejected velocity writes, and both options round-trip.");
+        Console.WriteLine("PASS: " + checks + " wildlife/weather assertions; multiplayer uses controlled rabbit population, sandstorms stay single-player, and options round-trip.");
         return 0;
     }
 }

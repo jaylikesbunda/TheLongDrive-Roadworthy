@@ -84,6 +84,39 @@ public static class TerrainWorkerParityTests
             }
         }
 
+        if (patched)
+        {
+            // Invoke the candidate's actual game Biome IL and the runtime policy
+            // assembly, rather than a second implementation of the classification.
+            var biomePolicy=Assembly.Load("Tld.Multiplayer").GetType("TldMp.WorldBiomePolicy",true);
+            var setMode=biomePolicy.GetMethod("SetMode");var begin=biomePolicy.GetMethod("BeginWorker");var end=biomePolicy.GetMethod("EndWorker");
+            var probe=coords[coords.Count/2];double height=setting.Height(probe);
+            setMode.Invoke(null,new object[]{0});Color native=setting.Biome(probe,height);
+            for(int mode=1;mode<=3;mode++)
+            {
+                setMode.Invoke(null,new object[]{mode});Color color=setting.Biome(probe,height);
+                Color expectedColor=mode==1?new Color(1,0,0,1):mode==2?new Color(0,0,1,1):new Color(0,1,0,1);
+                if(color.r!=expectedColor.r || color.g!=expectedColor.g || color.b!=expectedColor.b || color.a!=expectedColor.a ||
+                    setting.GetBiomeInt(color)!=(mode==1?0:mode==2?1:2) || setting.Height(probe)!=height)
+                    throw new Exception("Actual terrain biome mode or seed-height parity failed: "+mode);
+            }
+            begin.Invoke(null,new object[]{1});setMode.Invoke(null,new object[]{3});
+            try{if(setting.GetBiomeInt(setting.Biome(probe,height))!=0)throw new Exception("Worker mode observed replacement world");}
+            finally{end.Invoke(null,null);}
+            if(setting.GetBiomeInt(setting.Biome(probe,height))!=2)throw new Exception("Worker mode was not cleared");
+            setMode.Invoke(null,new object[]{0});Color restored=setting.Biome(probe,height);
+            if(native.r!=restored.r || native.g!=restored.g || native.b!=restored.b || native.a!=restored.a)throw new Exception("Mixed native biome changed");
+            setMode.Invoke(null,new object[]{1});setting.FStart(setting.mapSetting);
+            setMode.Invoke(null,new object[]{3});
+            if(setting.GetBiomeInt(setting.Biome(probe,setting.Height(probe)))!=0)throw new Exception("Old terrain instance observed a new world mode");
+            begin.Invoke(null,new object[]{2});
+            try{if(setting.GetBiomeInt(setting.Biome(probe,setting.Height(probe)))!=1)throw new Exception("Explicit worker capture did not override terrain binding");}
+            finally{end.Invoke(null,null);}
+            var next=MakeSettings();next.FStart(next.mapSetting);
+            if(next.GetBiomeInt(next.Biome(probe,next.Height(probe)))!=2)throw new Exception("New terrain instance missed its world mode");
+            setMode.Invoke(null,new object[]{0});
+            Console.WriteLine("PASS: actual patched terrain biome IL: all modes, native classifiers, height parity, captured worker mode and mixed restoration.");
+        }
         if (mismatches != 0) throw new Exception("FAIL: terrain worker mismatched " + mismatches + " elements.");
         Console.WriteLine("PASS: terrain worker parity (" + (patched ? "patched" : "baseline") + "): " +
             coords.Count + " tile coords, " + sequentialChecks + " sequential worker-vs-vanilla comparisons, " +

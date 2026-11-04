@@ -4,24 +4,74 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ## v0.2.0
 
-- Mass checks create less temporary garbage.
-- Wheels skip unchanged physics settings each frame.
-- Storage checks reuse buffers and compare nearby props more efficiently.
-- Spawn lists create less scratch garbage; prefab creation still happens atomically, can hitch, and no hitch reduction is measured yet.
-- Saves and joins see a consistent snapshot of construction work.
-- Guest spawns larger than one packet deliver reliably; acknowledgement commits only after completed relationship verification.
-- Game, lobby and installer labels now show v0.2.0 Roadworthy.
+### Joining and playing together
+
+- Steam guests are less likely to get stuck at the main menu while joining.
+- The game retries once if the first Steam connection drops during joining.
+- Large objects spawned by guests are more likely to appear for everyone.
+- Other players can see your cigarette smoke.
+- The game, Steam lobby, and installer show Roadworthy v0.2.0.
+
+### Driving and riding
+
+- Both sections of a double bus move together more smoothly for passengers and guests.
+- The rear section of a double bus is less likely to snap out of place while you drive.
+- Wheels on the rear section of a double bus stay mounted more reliably.
+
+### Rabbits and other wildlife
+
+- Rabbits move more smoothly, turn in place, and look for ways around obstacles.
+- Rabbits react more to nearby sounds and can spot players in a group or with their heads out of view.
+- Rabbits lunge within biting range, finish the attack, and flee without doubling back as often.
+- Hard vehicle hits can hurt and ragdoll enemy npcs, including rabbits.
+- Multiplayer rabbits spawn around the host and guests, including in Steam sessions.
+- Guests see shared rabbit movement and can bump into rabbits or be bitten.
+
+### Drinking and survival
+
+- Press `;` to reverse which container pours into the other.
+- You can collect, mix, and drink your pee.
+- Drinking pee quenches less thirst than water and slightly hurts your health.
+- Peeing into a container in a new world adds pee to it instead of alcohol.
+- You get thirsty faster, and sprinting uses more food and water.
+- Drinking fuel or oil can make you thirstier for a while.
+- Your water bar pulses yellow while you’re sick from drinking fuel or oil.
+
+### Roads, buildings, and saves
+
+- New worlds use the biome you select. Existing saves load with their original biome.
+- Grass thins out more gradually between biomes.
+- Less sand covers roads, and large mountains are less likely to block them.
+- Buildings look for flatter spots nearby, and new worlds have smoother ground around them.
+- Fixed gaps caused by road sections getting skipped when nearby areas load.
+- The world can keep loading when it encounters a damaged building record.
+- Objects finish spawning before they’re included in a save or sent to a joining player.
+
+### Performance and diagnostics
+
+- Driving, using fluid containers, and updating wheels or stored items use less processing time.
+- Breaking objects uses less processing time, and heavy impacts play fewer overlapping sounds.
+- Loose fragments pass through each other and use simpler shapes when hitting other objects.
+- Checking item weight and spawning objects use less memory.
+- Frozen animals produce fewer warnings in the game log.
+- Optional performance logs help identify stutters and write in the background.
+- Put `tldmp-debris-speculative.on` beside `TheLongDrive.exe` and restart to test fast debris collisions.
 
 ## v0.1.3
 
-- Opt-in performance logs cover 55 more game methods, retain worst-call and
-  worst-frame costs, and rank observed self time to help diagnose hitches.
+### Installer and interface
+
 - Installer checks GitHub releases for a newer published version on open and
   via --check-updates (read-only, never downloads by itself).
 - Installer detects the installed release/build, updates recognized older installs
   (legacy release version may be unknown) with an offline verified build (recovery copies kept), blocks
   downgrades over newer releases, adds a separate Restore original, real stage
   progress, and a dark UI with collapsible details.
+- The menu news window shows the Roadworthy changes above the original game news.
+- Game, lobby and installer labels now show v0.1.3 Roadworthy.
+
+### Multiplayer
+
 - Missing-item repairs reach other players more reliably.
 - Vehicle updates better tolerate packet loss.
 - Smoother remote cars and faster updates after impacts.
@@ -32,10 +82,16 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - New guest items and saved items are protected from early deletion.
 - Missing-item recovery uses less memory and spreads work across frames.
 - Deleted items discard old updates, and moved parts update their mounts.
-- Multiplayer logs make missing parts, delays and color differences easier to investigate.
+
+### World loading
+
 - The loading screen, background included, stays up until the nearby world has loaded in.
-- The menu news window shows the Roadworthy changes above the original game news.
-- Game, lobby and installer labels now show v0.1.3 Roadworthy.
+
+### Diagnostics
+
+- Opt-in performance logs cover 55 more game methods, retain worst-call and
+  worst-frame costs, and rank observed self time to help diagnose hitches.
+- Multiplayer logs make missing parts, delays and color differences easier to investigate.
 
 ## v0.1.2
 

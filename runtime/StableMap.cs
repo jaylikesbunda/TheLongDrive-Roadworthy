@@ -90,9 +90,9 @@ namespace TldMp
         [Serializable] public sealed class Inner {public Vector3d Pos;public List<roadGenScript.roadChunk> Roads;}
         [Serializable] public sealed class Road
         {public List<Dot> Dots=new List<Dot>();public List<Line> Lines=new List<Line>();public List<Inner> Inner=new List<Inner>();public List<int> Main;public int Seed;public bool Inside,U,R;}
-        [Serializable] public sealed class Poi {public int ID;public Vector3d Pos;public Vector3 Rot;public bool Aligned;public save_poi State;}
+        [Serializable] public sealed class Poi {public int ID;public Vector3d PosID,Pos;public Vector3 Rot;public bool Aligned,Relocated;public save_poi State;}
         [Serializable] public sealed class Decoration
-        {public int Seed,Prefab,Biome;public Vector3d Chunk,PosID,GPosID,Pos;public Vector3 Rot;public float Scale;}
+        {public int Seed,Prefab,Biome;public Vector3d Chunk,PosID,GPosID,Pos;public Vector3 Rot;public float Scale;public bool Relocated;}
         [Serializable] public sealed class Chunk
         {public int Version=1,Seed;public string Key;public Vector3d Position;public Road Road;public List<Poi> Pois=new List<Poi>();public List<Decoration> Objects=new List<Decoration>();public bool PoisComplete=true;}
         static mapSettingScript Map {get{return menuhandler.s==null?null:menuhandler.s.currentMainMap;}}
@@ -102,10 +102,15 @@ namespace TldMp
             availableWorld=Map;availableSeed=availableWorld==null?0:availableWorld.seed;availableWorldKnown=true;
             proximityCachesDirty=false;
             if(node==null)return;
-            if(node.IsHost){int bits=0;for(int i=0;i<4;i++)if(mainscript.CheckHoliday((mainscript.holiday)i))bits|=1<<i;calendar=bits;HasCalendar=true;node.HostConfig=BitConverter.GetBytes(bits);}
-            node.ConfigReceived=delegate(byte[] b){if(b.Length!=4){node.Stop("Missing host world-generation settings.");return;}calendar=BitConverter.ToInt32(b,0);HasCalendar=true;};
+            if(node.IsHost){int bits=0;for(int i=0;i<4;i++)if(mainscript.CheckHoliday((mainscript.holiday)i))bits|=1<<i;calendar=bits;HasCalendar=true;node.HostConfig=BitConverter.GetBytes(WorldPlacementPolicy.PackConfig(bits,WorldBiomePolicy.Mode,WorldPlacementPolicy.Version));}
+            node.ConfigReceived=delegate(byte[] b){if(b.Length!=4){node.Stop("Missing host world-generation settings.");return;}int selected,decoded,placement;if(!WorldPlacementPolicy.TryUnpackConfig(BitConverter.ToInt32(b,0),out decoded,out selected,out placement)){node.Stop("Invalid host world-generation settings.");return;}if(!HasCalendar && node!=null && !node.IsHost)WorldRelocationLedger.Clear();calendar=decoded;StableGameBridge.SetWorldPlacementVersion(placement);StableGameBridge.SetWorldBiomeMode(selected);HasCalendar=true;};
             node.MapRequested=Provide;node.MapApplied=Apply;
             node.CanEnterWorld=Ready;
+        }
+        internal static void RefreshBiomeConfig()
+        {
+            if(node!=null && node.IsHost && HasCalendar)
+                node.HostConfig=BitConverter.GetBytes(WorldPlacementPolicy.PackConfig(calendar,WorldBiomePolicy.Mode,WorldPlacementPolicy.Version));
         }
         public static bool OriginalHoliday(){return node==null || !HasCalendar;}
         public static bool Holiday(mainscript.holiday h){return (int)h>=0 && (int)h<4 && (calendar&(1<<(int)h))!=0;}
@@ -188,7 +193,7 @@ namespace TldMp
         {if(node==null || node.IsHost)return true;Need(Key("p",Index(Map.poiGens,gen),0,chunk));return false;}
         public static bool PoiAdd(poiGenScript gen)
         {
-            if(node!=null && !node.IsHost){FrameDiagnostics.NotePoiAdd(false);return true;}
+            if(node!=null && !node.IsHost){FrameDiagnostics.NotePoiAdd(false);return WorldPlacementPolicy.Version<4;}
             if(activePoiAdd.Contains(gen)){FrameDiagnostics.NotePoiAdd(false);return true;}
             FrameDiagnostics.NotePoiAdd(true);
             FrameDiagnostics.NativePoiAddBegin();
@@ -824,7 +829,12 @@ namespace TldMp
                 }
                 if(c.poiToPlace!=null && c.poiToPlace.Count>0)complete=false;
                 result.PoisComplete=complete;
-                foreach(var p in c.pois.Values)if(p.id>=0)result.Pois.Add(new Poi {ID=p.id,Pos=p.pos,Rot=p.rot,Aligned=p.alignedToRoad,State=p.pobj!=null || p.save!=null?new save_poi(p):null});
+                foreach(var p in c.pois.Values)if(p.id>=0)
+                {
+                    WorldRelocationLedger.Record record;
+                    bool relocated=WorldPlacementPolicy.Version>=4 && WorldRelocationLedger.TryGet(1,gen,0,p.posID,out record);
+                    result.Pois.Add(new Poi {ID=p.id,PosID=p.posID,Pos=p.pos,Rot=p.rot,Aligned=p.alignedToRoad,Relocated=relocated,State=p.pobj!=null || p.save!=null?new save_poi(p):null});
+                }
                 PhaseTimings.End(PhaseTimings.PoiCollect,collectStart,key);
             }
             else if(parts[0]=="o")
@@ -859,7 +869,9 @@ namespace TldMp
                 {
                     if(cat.saveDestroy && (o.placed && o.obj==null || IsTombstoned(cat,o.chunkID,o.gposID)))continue;
                     int biome;biomeLookup.TryGetValue(o.chunkID,out biome);
-                    result.Objects.Add(new Decoration {Seed=o.seed,Prefab=o.prefabIndex,Biome=biome,Chunk=o.chunkID,PosID=o.posID,GPosID=o.gposID,Pos=o.gpos,Rot=o.rot,Scale=o.scale});
+                    WorldRelocationLedger.Record relocation;
+                    bool relocated=WorldPlacementPolicy.Version>=4 && WorldRelocationLedger.TryGet(2,gen,category,o.gposID,out relocation);
+                    result.Objects.Add(new Decoration {Seed=o.seed,Prefab=o.prefabIndex,Biome=biome,Chunk=o.chunkID,PosID=o.posID,GPosID=o.gposID,Pos=o.gpos,Rot=o.rot,Scale=o.scale,Relocated=relocated});
                 }
                 PhaseTimings.End(PhaseTimings.ObjCollect,collectStart,key);
             }
@@ -892,6 +904,17 @@ namespace TldMp
                 int phase=key!=null && key.StartsWith("r|",StringComparison.Ordinal)?PhaseTimings.ApplyRoad:key!=null && key.StartsWith("p|",StringComparison.Ordinal)?PhaseTimings.ApplyPoi:PhaseTimings.ApplyObj;
                 PhaseTimings.End(phase,start,key);
             }
+        }
+        static void ImportWorldRelocation(int kind,int gen,int category,Vector3d id,WorldRelocationLedger.Record value)
+        {
+            WorldRelocationLedger.Record old;
+            if(WorldRelocationLedger.TryGet(kind,gen,category,id,out old))
+            {
+                if(!SamePosition(old.position,value.position) || old.rotation!=value.rotation || old.aligned!=value.aligned || old.type!=value.type || old.seed!=value.seed)
+                    throw new InvalidOperationException("Conflicting world relocation record.");
+                return;
+            }
+            if(!WorldRelocationLedger.TryRecord(kind,gen,category,id,value))throw new InvalidOperationException("World relocation ledger full; cannot safely apply host chunk.");
         }
         static void ApplyChunk(string key,byte[] bytes)
         {
@@ -934,20 +957,32 @@ namespace TldMp
             else if(parts[0]=="p")
             {
                 var script=Map.poiGens[gen];poiGenScript.chunkClass c;if(!script.chunks.TryGetValue(dto.Position,out c))script.chunks[dto.Position]=c=new poiGenScript.chunkClass();
+                if(dto.Pois==null)throw new InvalidOperationException("Missing generated POI records.");
+                var expected=new HashSet<Vector3d>(positionComparer);
+                foreach(var p in dto.Pois)
+                {
+                    if(p==null || !Numbers.Finite(p.PosID.x) || !Numbers.Finite(p.PosID.y) || !Numbers.Finite(p.PosID.z) ||
+                       !Numbers.Finite(p.Pos.x) || !Numbers.Finite(p.Pos.y) || !Numbers.Finite(p.Pos.z) ||
+                       !Numbers.Finite(p.Rot.x) || !Numbers.Finite(p.Rot.y) || !Numbers.Finite(p.Rot.z) ||
+                       !expected.Add(p.PosID) || (p.State!=null && !SamePosition(p.State.posID,p.PosID)))
+                        throw new InvalidOperationException("Invalid generated POI identity or position.");
+                }
+                if(WorldPlacementPolicy.Version>=4)
+                    foreach(var p in dto.Pois)
+                        if(p.Relocated)ImportWorldRelocation(1,gen,0,p.PosID,new WorldRelocationLedger.Record {position=p.Pos,rotation=p.Rot,aligned=p.Aligned,type=p.ID});
                 // A host manifest that was force-marked generated (or that still had
                 // unplaced POIs) is not authoritative. Never delete local POIs from it.
                 if(CanPrunePois(dto.PoisComplete,dto.Pois==null?0:dto.Pois.Count))
                 {
-                    var expected=new HashSet<Vector3d>();foreach(var p in dto.Pois)expected.Add(mainscript.Snap(p.Pos,script.round));
                     foreach(var p in new List<KeyValuePair<Vector3d,poiGenScript.poiClass>>(c.pois))
                         if(p.Value.id>=0 && SamePosition(mainscript.GetChunkPos(p.Value.pos,script.chunkSize),dto.Position) && !expected.Contains(p.Key))
                         {if(p.Value.pobj!=null)UnityEngine.Object.Destroy(p.Value.pobj.gameObject);c.pois.Remove(p.Key);}
                 }
                 foreach(var p in dto.Pois)
                 {
-                    Vector3d id=mainscript.Snap(p.Pos,script.round);poiGenScript.poiClass current;
+                    Vector3d id=p.PosID;poiGenScript.poiClass current;
                     if(c.pois.TryGetValue(id,out current) && (current.id!=p.ID || !SamePosition(current.pos,p.Pos) || current.rot!=p.Rot)){if(current.pobj!=null)UnityEngine.Object.Destroy(current.pobj.gameObject);c.pois.Remove(id);}
-                    var placed=script.AddPoi(p.Pos,p.Rot,p.ID,p.Aligned);if(p.State!=null){p.State.Load(placed);if(placed.pobj!=null)p.State.Load(placed.pobj);}
+                    var placed=PoiSlopePlacement.AddAtIdentity(script,id,p.Pos,p.Rot,p.ID,p.Aligned);if(p.State!=null){p.State.Load(placed);if(placed.pobj!=null)p.State.Load(placed.pobj);}
                 }
                 c.generated=true;c.poiToPlace=new List<poiGenScript.tempPoiClass>();
                 if(dto.PoisComplete){incompletePois.Remove(key);incompletePoiTries.Remove(key);}
@@ -956,6 +991,17 @@ namespace TldMp
             else
             {
                 var cat=Map.objGens[gen].categories[category];var c=new objGenScript.chunkClass {generated=true};
+                if(dto.Objects==null)throw new InvalidOperationException("Missing generated object records.");
+                foreach(var o in dto.Objects)
+                {
+                    if(o==null || o.Prefab<0 || o.Prefab>=cat.prefabs.Count || !Numbers.Finite(o.Scale) ||
+                       !Numbers.Finite(o.GPosID.x) || !Numbers.Finite(o.GPosID.y) || !Numbers.Finite(o.GPosID.z) ||
+                       !Numbers.Finite(o.Pos.x) || !Numbers.Finite(o.Pos.y) || !Numbers.Finite(o.Pos.z) ||
+                       !Numbers.Finite(o.Rot.x) || !Numbers.Finite(o.Rot.y) || !Numbers.Finite(o.Rot.z))
+                        throw new InvalidOperationException("Invalid generated object record.");
+                    if(WorldPlacementPolicy.Version>=4 && o.Relocated)
+                        ImportWorldRelocation(2,gen,category,o.GPosID,new WorldRelocationLedger.Record {position=o.Pos,rotation=o.Rot,type=o.Prefab,seed=o.Seed});
+                }
                 foreach(var o in dto.Objects)
                 {
                     if(o.Prefab<0 || o.Prefab>=cat.prefabs.Count || !Numbers.Finite(o.Scale))throw new InvalidOperationException("Generated object prefab mismatch.");

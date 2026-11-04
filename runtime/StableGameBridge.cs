@@ -7,19 +7,26 @@ using System.Text;
 using GeneszSteamP2PBase;
 using Steamworks;
 using UnityEngine;
-using Debug=UnityEngine.Debug;
+using Debug=TldMp.RoadworthyLog;
 
 namespace TldMp
 {
+    internal static class RoadworthyLog
+    {
+        internal static void Log(object message){DiagnosticFileLog.Log(message);}
+        internal static void LogWarning(object message){UnityEngine.Debug.LogWarning(message);}
+        internal static void LogError(object message){UnityEngine.Debug.LogError(message);}
+    }
     // Native-restore bridge. The native synchronization, movement, collision and
     // interaction paths are the only active gameplay path; this class contains
     // transport adapters, the world manifest/join handshake, structural packet
     // validation, object-ID collision prevention and diagnostics only.
     public static partial class StableGameBridge
     {
+        internal static StableNode Node{get{return node;}}
+        internal static bool WorldScene(){return WorldSceneAvailable();}
         static StableNode node;static Driver driver;static string fingerprint,lastError;static ContentFingerprint.Job fingerprintJob;static double fingerprintRetryAt;
         static bool dispatching,capturing,captureBounded,captureOverflow;static long captureByteCount;static List<byte[]> captured;
-        static readonly Dictionary<ulong,byte[]> maps=new Dictionary<ulong,byte[]>();
         static readonly Dictionary<ulong,byte[]> lastPlayers=new Dictionary<ulong,byte[]>();
         static readonly Dictionary<uint,MessageState> lastItems=new Dictionary<uint,MessageState>();
         static readonly ReliableOutbox outbox=new ReliableOutbox(TryEnvelope,TransportFailed);
@@ -28,15 +35,15 @@ namespace TldMp
         static readonly ReliableOutbox bulkOutbox=new ReliableOutbox(TryBulkEnvelope,TransportFailed,8*1024*1024,16*1024*1024,8192,8,256*1024,2);
         static readonly NetDeliveryScheduler delivery=new NetDeliveryScheduler();
         static SteamSdrTransport steamTransport;static ulong transportLobby,transportHost;static double nextSdrRetry;static int deliveryPeerCursor;const int TransportVirtualPort=0;
-        static bool hostWorldEvidence;
+        static bool hostWorldEvidence,restartSteamJoin,steamJoinRetried;
         static double nextPulse,nextFailure;static int packetErrors;
         static readonly Dictionary<string,double> diagnosticNext=new Dictionary<string,double>();
         static double nextJoinDiagnostic;
         static double nextSyncHealth;
         static int healthMaxPending,healthMaxPendingBytes;
         static bool loopbackMode;static double loopbackNextRequest;
+        internal static bool RabbitLoopbackTesting{get{return loopbackMode;}}
         static bool loopbackBootstrapReceived;static mapSettingScript loopbackPreviousMap;
-        static readonly HashSet<ulong> loopbackBootstrapSent=new HashSet<ulong>();
 
         static bool WorldSceneAvailable()
         {
@@ -84,7 +91,7 @@ namespace TldMp
             {
                 string managed=Path.GetDirectoryName(typeof(syncScript).Assembly.Location);
                 string assets=Directory.GetParent(managed).FullName;
-                string custom=pathscript.mapPath();string identity=BuildIdentity.Sources;
+                string custom=pathscript.mapPath();string identity=BuildIdentity.Sources+"|debris-ccd="+(debrisSpeculative?"speculative":"native");
                 fingerprintJob=ContentFingerprint.Start(managed,assets,custom,identity);
                 JoinDiagnostic("Fingerprint hashing started asynchronously");
             }
@@ -130,9 +137,16 @@ namespace TldMp
         }
         static void Reset()
         {
+            RabbitFlowDiagnostics.Reset();rabbitRuntimeLogged=false;
+            RabbitMetadataSync.Reset();
+            MovingVehiclePassenger.Reset();
+            ResetBusPair();RabbitContact.Reset();
+            RabbitMotionReset();
+            RabbitPlayers.Reset();
+            SmokeReset();
             ResetNativeSafety();
-            maps.Clear();lastPlayers.Clear();lastItems.Clear();pendingCarBlood.Clear();diagnosticNext.Clear();loopbackBootstrapSent.Clear();loopbackBootstrapReceived=false;loopbackPreviousMap=null;
-            if(steamTransport!=null){steamTransport.Dispose();steamTransport=null;}transportLobby=transportHost=0;nextSdrRetry=0;deliveryPeerCursor=0;delivery.Clear();hostWorldEvidence=false;
+            lastPlayers.Clear();lastItems.Clear();pendingCarBlood.Clear();diagnosticNext.Clear();loopbackBootstrapReceived=false;loopbackPreviousMap=null;
+            if(steamTransport!=null){steamTransport.Dispose();steamTransport=null;}transportLobby=transportHost=0;nextSdrRetry=0;deliveryPeerCursor=0;delivery.Clear();hostWorldEvidence=restartSteamJoin=steamJoinRetried=false;
             outbox.Clear();bulkOutbox.Clear();node=null;StableMap.Configure(null);nextPulse=0;lastError=null;
             nextSyncHealth=0;healthMaxPending=healthMaxPendingBytes=0;ClearSpawnHandoff();
             selection.Clear();
@@ -154,16 +168,23 @@ namespace TldMp
                 lobby=(ulong)networkingScript.s.hood.ConnectedLobbyID;host=(ulong)SteamMatchmaking.GetLobbyOwner(networkingScript.s.hood.ConnectedLobbyID);
                 if(lobby==0 || host==0 || Own==0)return;
             }
+            bool retrying=false;
             if(node!=null && node.Lobby==lobby && node.Host==host)
             {
-                if(!loopbackMode && !EnsureSteamTransport(lobby,host))return;
-                if(!loopbackMode || node.Error==null)return;
-                Reset();
+                if(!loopbackMode)
+                {
+                    if(!restartSteamJoin){if(node.Error==null)EnsureSteamTransport(lobby,host);return;}
+                    if(Now<nextSdrRetry)return;
+                    retrying=true;
+                }
+                else if(node.Error==null)return;
             }
+            if(!loopbackMode && node==null && Now<nextSdrRetry)return;
             // Startup can poll while hashing continues off-thread. ID allocation
             // keeps its explicit barrier in NewKey, so it never uses a partial hash.
             if(!EnsureFingerprint())return;
             Reset();
+            steamJoinRetried=retrying;
             if(!loopbackMode && !EnsureSteamTransport(lobby,host))return;
             ulong session;do{session=BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(),0);}while(session==0);
             var created=new StableNode(Own,host,lobby,session,fingerprint,HighestID());
@@ -174,7 +195,7 @@ namespace TldMp
             node.Trace=JoinDiagnostic;
             node.DeferMapWork=true;
             node.WatermarkChanged=delegate(uint high){if(savedatascript.s!=null && savedatascript.s.data!=null)savedatascript.s.data.lastID=Math.Max(savedatascript.s.data.lastID,high);};
-            node.PeerLeft=delegate(ulong peer){spawnLedgers.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;node.SpawnProgress=delegate(ulong transaction,int next){spawnAttempts=0;};
+            node.PeerLeft=delegate(ulong peer){SmokePeerLeft(peer);spawnLedgers.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;node.SpawnProgress=delegate(ulong transaction,int next){spawnAttempts=0;};
             StableMap.Configure(node);
             if(loopbackMode && !node.IsHost)
             {
@@ -223,7 +244,7 @@ namespace TldMp
         }
         public static void Bootstrap()
         {
-            ApplyLoopback();WorldJump.CarDescriber=RemoteCarSmoothing.Describe;
+            FixedPropConstruction.StartAssetCheck();ApplyLoopback();WorldJump.CarDescriber=RemoteCarSmoothing.Describe;
             // Hash the game content on a worker as soon as networking exists, so a join
             // finds the result ready instead of freezing the main thread while it waits.
             EnsureFingerprintStart();
@@ -271,6 +292,182 @@ namespace TldMp
         static long vehicleImpactTriggers,vehicleImpactSent;
         static long vehicleMotionReceived,vehicleMotionProcessed,vehicleAdmissionRejected,vehicleSceneRejected,vehicleMalformed,vehicleControlIgnored;
         static void ClearVehicleImpacts(){vehicleImpacts.Clear();impactKeys.Clear();impactCursor=0;impactSendFrame=-1;vehicleImpactTriggers=vehicleImpactSent=0;vehicleMotionReceived=vehicleMotionProcessed=vehicleAdmissionRejected=vehicleSceneRejected=vehicleMalformed=vehicleControlIgnored=0;}
+        // ---- paired bus stream (host OR client as actual driver) --------------
+        sealed class BusPairAuthority{internal ulong Origin,Session;internal uint ID;internal tosaveitemscript Item;}
+        sealed class BusPairUpstream{internal ulong Session;internal readonly Dictionary<uint,uint> Seq=new Dictionary<uint,uint>();}
+        static readonly Dictionary<uint,BusPairAuthority> busPairAuthorities=new Dictionary<uint,BusPairAuthority>();
+        static readonly List<uint> busPairAuthorityScratch=new List<uint>();
+        static readonly Dictionary<uint,ulong> busPairGenerations=new Dictionary<uint,ulong>();
+        static readonly Dictionary<ulong,BusPairUpstream> busPairUpstream=new Dictionary<ulong,BusPairUpstream>();
+        static readonly SenderClock busPairClock=new SenderClock();
+        static long busPairReceived,busPairAccepted,busPairRejected,busPairMalformed,busPairRelayed,busPairSent,busPairOwnerLost;
+        static uint busPairSequence;static double busPairNextSend,busPairNextSummary;const double BusPairSendInterval=.05;
+        static ulong PairClockKey(ulong origin,ulong epoch){return origin^(epoch*0x9E3779B97F4A7C15UL);}
+        // The single issuer for authority generations; never wraps and is the
+        // same path for host captures and guest upstream admissions.
+        static bool GrantBusPairGeneration(uint id,out ulong generation)
+        {
+            ulong next;if(!busPairGenerations.TryGetValue(id,out next))next=0;
+            if(next==ulong.MaxValue){generation=0;return false;}
+            busPairGenerations[id]=++next;generation=next;return true;
+        }
+        static void ResetBusPair()
+        {
+            BusPairReplica.Clear();BusSeatClaims.Clear();busPairAuthorities.Clear();busPairAuthorityScratch.Clear();
+            busPairGenerations.Clear();busPairUpstream.Clear();busPairClock.Clear();
+            busPairReceived=busPairAccepted=busPairRejected=busPairMalformed=busPairRelayed=busPairSent=busPairOwnerLost=0;
+            busPairSequence=0;busPairNextSend=busPairNextSummary=0;
+        }
+        internal static string TakeBusPairSummary()
+        {
+            string text="busPair{received="+busPairReceived+" accepted="+busPairAccepted+" rejected="+busPairRejected+" malformed="+busPairMalformed+
+                " relayed="+busPairRelayed+" sent="+busPairSent+" ownerLost="+busPairOwnerLost+" authorities="+busPairAuthorities.Count+"}";
+            busPairReceived=busPairAccepted=busPairRejected=busPairMalformed=busPairRelayed=busPairSent=busPairOwnerLost=0;
+            return text+" "+BusPairReplica.TakeSummary();
+        }
+        // Host-only: the session-bound driver record is re-validated every fixed
+        // step. Seat expiry, readiness loss, session change or a replaced item
+        // revokes the replica immediately instead of waiting on packet TTL.
+        static void RevokeBusPairPeer(ulong peer)
+        {
+            busPairAuthorityScratch.Clear();
+            foreach(var pair in busPairAuthorities)if(pair.Value.Origin==peer)busPairAuthorityScratch.Add(pair.Key);
+            foreach(var id in busPairAuthorityScratch){busPairAuthorities.Remove(id);BusPairReplica.Forget(id);busPairOwnerLost++;}
+            busPairUpstream.Remove(peer);BusSeatClaims.ClearPeer(peer);
+        }
+        static void ValidateBusPairAuthorities()
+        {
+            if(busPairAuthorities.Count==0||node==null)return;
+            busPairAuthorityScratch.Clear();
+            foreach(var pair in busPairAuthorities)
+            {
+                var a=pair.Value;StablePeer peer;
+                bool valid=a.Item!=null&&a.Item.idInSave==a.ID&&a.Item.gameObject.activeInHierarchy;
+                if(!valid){busPairAuthorityScratch.Add(pair.Key);continue;}
+                if(a.Origin==Own)
+                {
+                    var p=mainscript.s==null?null:mainscript.s.player;
+                    if(p==null||p.seat==null||!p.seat.driverSeat0||p.seat.Car!=a.Item.car)busPairAuthorityScratch.Add(pair.Key);
+                    continue;
+                }
+                if(!node.Peers.TryGetValue(a.Origin,out peer)||!peer.Ready||peer.Session!=a.Session||
+                   !BusSeatClaims.DriverOf(a.Origin,a.Item,a.Session,Now))
+                    busPairAuthorityScratch.Add(pair.Key);
+            }
+            foreach(var id in busPairAuthorityScratch){busPairAuthorities.Remove(id);BusPairReplica.Forget(id);busPairOwnerLost++;}
+        }
+        static void TickBusPair()
+        {
+            if(node==null||!node.Compatible){BusPairReplica.FixedTick(false,Now);return;}
+            if(node.IsHost)ValidateBusPairAuthorities();
+            if(DiagnosticMode&&Now>=busPairNextSummary){busPairNextSummary=Now+10;Debug.Log("[TLD MP "+TakeBusPairSummary()+" "+RabbitContact.TakeSummary()+" rabbitOverlapContacts="+RabbitPlayers.OverlapContacts+"]");}
+            // Bounded discovery: only the actual local driver seat can originate
+            // a stream, and only for a canonical articulated BusFront pair.
+            var player=mainscript.s==null?null:mainscript.s.player;
+            var seat=player==null?null:player.seat;
+            var item=seat!=null&&seat.driverSeat0&&seat.Car!=null?seat.Car.tosave:null;
+            if(item!=null&&item.car!=null&&item.GetComponent<BusArticulation>()!=null&&Now>=busPairNextSend)
+            {
+                var sample=BusPairReplica.Capture(item,Own,node.Session,++busPairSequence,ClockMs());
+                if(sample!=null)
+                {
+                    if(node.IsHost)
+                    {
+                        // Host issues its own authority generation on transition.
+                        BusPairAuthority auth;
+                        if(!busPairAuthorities.TryGetValue(sample.ID,out auth)||auth.Origin!=Own||auth.Session!=node.Session)
+                        {
+                            ulong gen;if(!GrantBusPairGeneration(sample.ID,out gen))goto skip;
+                            busPairAuthorities[sample.ID]=new BusPairAuthority{Origin=Own,Session=node.Session,ID=sample.ID,Item=item};
+                            sample.Generation=gen;
+                        }
+                        else sample.Generation=busPairGenerations[sample.ID];
+                        sample.RelaySession=node.Session;
+                    }
+                    var bytes=BusPairProtocol.Encode(sample);
+                    if(bytes!=null&&node.PublishNative(bytes)){busPairSent++;busPairNextSend=Now+BusPairSendInterval;}
+                }
+            }
+            skip:
+            BusPairReplica.FixedTick(Connected,Now);
+        }
+        static bool ReceiveBusPair(ulong source,byte[] bytes)
+        {
+            if(bytes==null||bytes.Length==0||bytes[0]!=BusPairProtocol.Type)return false;
+            busPairReceived++;
+            if(!WorldSceneAvailable()||node==null||!node.Compatible){busPairRejected++;return true;}
+            if(loopbackMode){if(source!=Loopback.Peer){busPairRejected++;return true;}}
+            else if(!SteamP2PNetworkingUnderTheHoodScript.Expected(new CSteamID(source),msgType.carPosGlobal)){busPairRejected++;return true;}
+            BusPairSample sample;
+            if(!BusPairProtocol.Decode(bytes,out sample)){packetErrors++;busPairMalformed++;return true;}
+            tosaveitemscript item;
+            if(!Find(sample.ID,out item)||item==null||item.id!=sample.Prefab){busPairRejected++;return true;}
+            double lateness,mapped;
+            if(node.IsHost)
+            {
+                // Upstream: the transport source must BE the claiming driver,
+                // bound to its live peer session and canonical driver seat.
+                StablePeer peer;
+                if(source!=sample.Origin||source==Own||!node.Peers.TryGetValue(source,out peer)||!peer.Ready||peer.Session!=sample.Epoch||
+                   !BusSeatClaims.DriverOf(sample.Origin,item,sample.Epoch,Now))
+                {busPairRejected++;return true;}
+                // Per-origin session watermarks survive seat/ready lapses but
+                // never cross a genuine peer-session boundary.
+                BusPairUpstream up;
+                if(!busPairUpstream.TryGetValue(source,out up))busPairUpstream[source]=up=new BusPairUpstream();
+                if(up.Session!=peer.Session){up.Session=peer.Session;up.Seq.Clear();}
+                uint seen;if(up.Seq.TryGetValue(sample.ID,out seen)&&!BusPairProtocol.Newer(sample.Sequence,seen)){busPairRejected++;return true;}
+                // Legitimate driver transition (new origin or new session for
+                // this bus) issues the next monotonic authority generation.
+                BusPairAuthority auth;
+                if(!busPairAuthorities.TryGetValue(sample.ID,out auth)||auth.Origin!=source||auth.Session!=peer.Session)
+                {
+                    ulong gen;if(!GrantBusPairGeneration(sample.ID,out gen)){busPairRejected++;return true;}
+                    busPairAuthorities[sample.ID]=auth=new BusPairAuthority{Origin=source,Session=peer.Session,ID=sample.ID,Item=item};
+                }
+                sample.Generation=busPairGenerations[sample.ID];
+                mapped=busPairClock.Map(PairClockKey(sample.Origin,sample.Epoch),sample.ClockMs,Now,out lateness);
+                // Only samples admitted with ordered valid authority relay.
+                if(!BusPairReplica.Accept(sample,item,mapped,Now)){busPairRejected++;return true;}
+                up.Seq[sample.ID]=sample.Sequence;
+                if(BusPairProtocol.StampRelay(bytes,node.Session,sample.Generation))
+                {foreach(var p in node.Peers)if(p.Key!=source)node.PublishNativeTo(p.Key,bytes);busPairRelayed++;}
+                busPairAccepted++;
+                return true;
+            }
+            // Downstream: only the host may relay; the session stamp plus the
+            // issued generation bind the frame to the current authority.
+            if(!node.Ready||source!=node.Host||sample.Origin==Own||sample.RelaySession!=node.HostSession||sample.Generation==0){busPairRejected++;return true;}
+            mapped=busPairClock.Map(PairClockKey(sample.Origin,sample.Epoch),sample.ClockMs,Now,out lateness);
+            if(BusPairReplica.Accept(sample,item,mapped,Now))busPairAccepted++;else busPairRejected++;
+            return true;
+        }
+        // Native RecCarVelocity writes front-body velocity directly; while the
+        // paired replica owns the bus that write must not compete.
+        public static bool BusCarVelocityAllowed(byte[] bytes)
+        {
+            if(!Connected||bytes==null||bytes.Length<5||bytes[0]!=20||savedatascript.s==null||savedatascript.s.items==null)return true;
+            tosaveitemscript item;
+            if(!savedatascript.s.items.TryGetValue(BitConverter.ToUInt32(bytes,1),out item)||item==null)return true;
+            return !BusPairReplica.Owns(item);
+        }
+        // GotUpd entry observer: native playerPos seat claims feed canonical
+        // driver binding for the pair authority (sitting/itemID/seatID args).
+        public static void BusSeatClaim(syncScript.playerSyncClass player,bool sitting,bool sitAtPoi,uint itemID,int seatID)
+        {
+            try
+            {
+                if(player==null||node==null)return;
+                var id=new CSteamID(player.steamID);
+                syncScript.playerSyncClass canonical;
+                StablePeer peer;
+                ulong session=0;
+                if(syncScript.s!=null&&syncScript.s.players.TryGetValue(id,out canonical)&&ReferenceEquals(canonical,player)&&
+                   node.Peers.TryGetValue((ulong)id,out peer)&&peer.Ready&&peer.Session!=0)session=peer.Session;
+                BusSeatClaims.Observe(player,sitting,sitAtPoi,itemID,seatID,session,Now);
+            }
+            catch(Exception){}
+        }
         static void RegisterVehicleImpact(tosaveitemscript item)
         {
             int key=item.GetInstanceID(),role=(int)item.CarWhatDoing();VehicleImpactTrack track;
@@ -472,7 +669,8 @@ namespace TldMp
             if(steamTransport!=null && transportLobby==lobby && transportHost==host)
             {
                 steamTransport.AcceptPeer=delegate(ulong peer){return IsLobbyTransportPeer(lobby,peer);};
-                if(Own!=host && !steamTransport.HasConnection(host))steamTransport.Connect(host,TransportVirtualPort);
+                if(Own!=host && !steamTransport.HasConnection(host) && Now>=nextSdrRetry)
+                {nextSdrRetry=Now+2;steamTransport.Connect(host,TransportVirtualPort);}
                 return true;
             }
             if(Now<nextSdrRetry)return false;
@@ -487,7 +685,7 @@ namespace TldMp
                 steamTransport.PeerDisconnected+=OnSteamPeerDisconnected;
                 if(Own==host)steamTransport.Listen(TransportVirtualPort);
                 // The native password exchange itself needs this connection.
-                else steamTransport.Connect(host,TransportVirtualPort);
+                else{nextSdrRetry=Now+2;steamTransport.Connect(host,TransportVirtualPort);}
                 return true;
             }
             catch(Exception e)
@@ -506,11 +704,28 @@ namespace TldMp
         }
         static void OnSteamPeerDisconnected(ulong peer,int reason,string detail)
         {
+            RevokeBusPairPeer(peer);
             outbox.Drop(peer);bulkOutbox.Drop(peer);delivery.Drop(peer);
             if(node==null)return;
             string message="SDR peer disconnected ("+reason+"): "+(detail??"");
-            if(node.IsHost)node.RemovePeer(peer);else if(peer==node.Host)node.Stop(message);
+            HandleTransportLoss(peer,message);
             Debug.LogWarning("[TLD MP v3] Peer "+peer+" "+message);
+        }
+        static void HandleTransportLoss(ulong peer,string message)
+        {
+            if(node.IsHost)node.RemovePeer(peer);
+            else if(peer==node.Host && node.Error==null)
+            {
+                // A failed first connection can race the host's listener or world load.
+                // Restart on the game update with a fresh session so a retired Hello
+                // from the old connection cannot block the new handshake.
+                if(!node.Compatible && !steamJoinRetried)
+                {
+                    restartSteamJoin=true;nextSdrRetry=Now+2;
+                    Debug.Log("[TLD MP join] Retrying initial Steam connection");
+                }
+                else node.Stop(message);
+            }
         }
         static void DrainDeliveryQueues()
         {
@@ -558,7 +773,8 @@ namespace TldMp
         {
             delivery.Drop(peer);bulkOutbox.Drop(peer);if(steamTransport!=null)steamTransport.Close(peer,reason);
             if(node==null)return;Debug.LogError("[TLD MP v3] Peer "+peer+": "+reason);
-            if(node.IsHost)node.RemovePeer(peer);else node.Stop(reason);
+            if(loopbackMode){if(node.IsHost)node.RemovePeer(peer);else node.Stop(reason);}
+            else HandleTransportLoss(peer,reason);
         }
         // ---- transport adapters ---------------------------------------------------
         // Native message bytes, reliability and order are preserved. The only
@@ -622,12 +838,12 @@ namespace TldMp
             ObserveNativeSafetyOutgoing(bytes);
             if(hood.forceOneSendTarget){RouteTarget(hood.oneSendTarget,bytes,mode);return;}
             if(node==null)return;
+            if(!AllowRabbitState(Own,bytes))return;
             if(bytes[0]==8)
             {
                 if(node.IsHost)
                 {
-                    if(loopbackMode){QueueMap(Loopback.Peer,bytes);return;}
-                    for(int i=0;i<SteamMatchmaking.GetNumLobbyMembers(hood.ConnectedLobbyID);i++){ulong id=(ulong)SteamMatchmaking.GetLobbyMemberByIndex(hood.ConnectedLobbyID,i);if(id!=Own)QueueMap(id,bytes);}
+                    foreach(ulong peer in new List<ulong>(node.Peers.Keys))node.SendBootstrap(peer,bytes);
                 }
                 return;
             }
@@ -646,7 +862,15 @@ namespace TldMp
             if(dispatching && !RepairRequest(bytes[0]))return;
             ObserveNativeSafetyOutgoing(bytes);
             if(node==null)return;
-            if(bytes[0]==8){QueueMap((ulong)target,bytes);return;}
+            if(!AllowRabbitState(Own,bytes))return;
+            if(bytes[0]==8)
+            {
+                // Targeted map packets are the native join callback. A later
+                // callback must not reload the map we already sent for this session.
+                if(WorldSceneAvailable() && node.SendBootstrap((ulong)target,bytes,true))
+                    Debug.Log("[TLD MP join] Sent host world to peer="+(ulong)target);
+                return;
+            }
             if(bytes[0]==9){if(!node.IsHost && !node.Joining && !node.AwaitingSnapshot && (!loopbackMode || WorldSceneAvailable()))node.RequestSnapshot();return;}
             byte[] protectedBytes=ProtectCargoPose(bytes);
             if(protectedBytes==null)return;
@@ -655,8 +879,6 @@ namespace TldMp
             if(node.IsHost)node.PublishNativeTo((ulong)target,protectedBytes,forceReliable);
             else node.PublishNative(protectedBytes,forceReliable);
         }
-        static void QueueMap(ulong peer,byte[] bytes)
-        {if(node==null || !node.IsHost)return;if(node.Peers.ContainsKey(peer))node.SendBootstrap(peer,bytes);else maps[peer]=(byte[])bytes.Clone();}
         // ---- structural validation ------------------------------------------------
         // Lengths, types, embedded IDs and bounded allocations only. Native
         // messages are never rejected for owner/epoch/lease/session reasons.
@@ -717,10 +939,9 @@ namespace TldMp
             {
                 Ensure();if(node==null)return false;
                 node.Receive((ulong)sender,bytes,Now);
-                byte[] map;if(node.IsHost && node.Peers.ContainsKey((ulong)sender) && maps.TryGetValue((ulong)sender,out map)){maps.Remove((ulong)sender);node.SendBootstrap((ulong)sender,map);}
                 return false;
             }
-            if(dispatching)return true;
+            if(dispatching)return AllowRabbitState((ulong)sender,bytes);
             if(!Connected)return false;
             Ensure();
             // While the fingerprint is still being computed there is no
@@ -732,6 +953,7 @@ namespace TldMp
                     (DiagnosticMode && bytes.Length<=96?" hex="+BitConverter.ToString(bytes):""));
                 return false;
             }
+            if(!AllowRabbitState((ulong)sender,bytes))return false;
             if(!AllowNativeSafetyPacket(bytes))return false;
             if(UnsetPaint(bytes))return false;
             if(NotePendingItem(sender,bytes))return false;
@@ -801,12 +1023,14 @@ namespace TldMp
         static void Deliver(ulong origin,byte[] bytes)
         {
             if(!ValidateData(bytes))return;
+            if(!AllowRabbitState(origin,bytes))return;
             if(UnsetPaint(bytes))return;
             NoteCargoPose(bytes);
             if(!AllowNativeSafetyPacket(bytes))return;
             if(node!=null && !node.IsHost && origin==node.Host && bytes[0]==8)
             {
                 hostWorldEvidence=true;
+                Debug.Log("[TLD MP join] Received host world");
                 if(loopbackMode){loopbackPreviousMap=menuhandler.s==null?null:menuhandler.s.currentMainMap;loopbackBootstrapReceived=true;}
             }
             bool previous=dispatching;dispatching=true;
@@ -868,6 +1092,17 @@ namespace TldMp
         public static void SortPlaceOrder(List<Vector3d> order,Vector3d origin){StableMap.SortPlaceOrder(order,origin);}
         public static void TerrainHoleBegin(){TerrainHoleAdjacency.Begin();}
         public static List<int> TerrainHoleNeighbors(int[] triangles,int vertex){return TerrainHoleAdjacency.Get(triangles,vertex);}
+        public static float MountainMinRoad(objGenScript.categoryClass category){return LargeRockClearance.NativeMinDistance(category);}
+        public static void AddGeneratedMountain(Dictionary<Vector3d,objGenScript.objClass> objects,Vector3d key,objGenScript.objClass obj,objGenScript.categoryClass category){LargeRockClearance.AddGenerated(objects,key,obj,category);}
+        public static List<roadGenScript.roadClass> LargeRockRoadsNear(Vector3d position,objGenScript.categoryClass category){return LargeRockClearance.RoadsNear(position,category);}
+        public static List<roadGenScript.roadClass> TerrainRoadsNear(Vector3d position,terrainGenScript terrain)
+        {return WorldPlacementPolicy.EffectiveVersion==0?mapSettingScript.RoadsNear(position):RoadTerrainClearance.RoadsNearTile(position,terrain.tileSize,terrain.vertexDist);}
+        public static double TerrainHeight(terrainGenSettings setting,Vector3d position,List<roadGenScript.roadClass> roads,List<poiGenScript.poiClass> pois)
+        {return RoadTerrainClearance.Height(setting,position,roads,pois,WorldPlacementPolicy.EffectiveVersion>0,WorldPlacementPolicy.RoadClearance);}
+        public static Vector3d PoiIdentitySnap(Vector3d position,float round,poiGenScript gen)
+        {return PoiSlopePlacement.ResolveIdentity(position,round,gen);}
+        public static poiGenScript.poiClass AddRandomPoi(poiGenScript gen,Vector3d pos,Vector3 rot,int type,bool aligned)
+        {return PoiSlopePlacement.AddRandomPoi(gen,pos,rot,(itemdatabase.b)type,aligned);}
         public static List<roadGenScript.roadClass> DedupeTerrainRoads(List<roadGenScript.roadClass> roads){return TerrainRoadSelection.Dedupe(roads);}
         // ---- world streaming hooks ------------------------------------------------
         public static bool RoadUpdate(roadGenScript road,bool more){if(road!=null && !road.isActiveAndEnabled){RoadLiveCache.Clear();RoadFarSkip.Clear();}if(!Connected)return true;return EnsureWorldSession() && StableMap.RoadUpdate(road,more);}
@@ -882,7 +1117,54 @@ namespace TldMp
         // itemPlaceRemoveScript.RemoveStuff measures distance from this point instead of the
         // item's own transform position. Parented items use their root (see ItemStreamPolicy).
         // A nested terrain-align helper is measured from the prefab root; direct children keep the stock localPosition.
-        public static void TerrainAlignLookupRange(poiGenScript.poiClass poi){foreach(var align in poi.terrainAligns){var d=align.gpos-poi.pos;poi.maxAlignEffectRange=TerrainAlignPolicy.LookupRange(poi.maxAlignEffectRange,d.x,d.z,align.maxEffectRange);}}
+        public static void TerrainAlignLookupRange(poiGenScript.poiClass poi){TerrainPadBlend.Prepare(poi);foreach(var align in poi.terrainAligns){var d=align.gpos-poi.pos;poi.maxAlignEffectRange=TerrainAlignPolicy.LookupRange(poi.maxAlignEffectRange,d.x,d.z,align.maxEffectRange);}}
+        public static bool BiomeGrassDecision(newTerrainTileScript tile){return GrassTransition.HasGrass(tile);}
+        public static void BiomeGrassApplied(newTerrainTileScript tile,bool enabled){GrassTransition.Apply(tile,enabled);}
+        public static void BiomeGrassMeshChanged(newTerrainTileScript tile){GrassTransition.MeshChanged(tile);}
+        public static float RabbitHearingFalloff(float from,float to,float squaredDistance,sensoryscript senses){return RabbitAi.HearingFalloff(from,to,squaredDistance,senses);}
+        public static Coroutine RabbitStartFlee(MonoBehaviour owner,IEnumerator routine){return RabbitAi.StartFlee(owner,routine);}
+        public static void RabbitMotionObserve(aiscript ai){RabbitFlowDiagnostics.Observe(ai);RabbitLocomotion.Observe(ai);RabbitContact.ObserveRabbit(ai==null?null:ai.nyul);}
+        public static void RabbitMotionAnimate(nyulscript rabbit,float speed){RabbitLocomotion.Animate(rabbit,speed);}
+        static void BindRabbitPlayers(){RabbitPlayers.Bind(Connected,WorldSceneAvailable(),mainscript.s==null?null:mainscript.s.player,savedatascript.s,node);}
+        public static void RabbitScanComplete(sensoryscript senses){RabbitFlowDiagnostics.Scan();BindRabbitPlayers();RabbitPlayers.Scan(senses);}
+        public static void RabbitPlayerContact(playerdeathtriggerscript trigger,Collider contact){RabbitFlowDiagnostics.Contact(trigger);BindRabbitPlayers();RabbitPlayers.Damage(trigger,contact);}
+        static bool rabbitRuntimeConfigured,rabbitRuntimeLogged;
+        // Attack entry additionally requires a resolved canonical target that is
+        // geometrically inside the actual native hit volume; SeeTarget's angle,
+        // range, roar and cooldown remain native.
+        public static bool RabbitAttackGate(nyulscript nyul){return RabbitNyulGuard(nyul)&&RabbitCombatReach.AllowAttack(nyul);}
+        static void EnsureRabbitRuntime()
+        {
+            if(!rabbitRuntimeConfigured||RabbitMotionGuard==null||RabbitLocomotion.Diagnostics==null||RabbitCombatReach.Resolve==null)
+            {
+                RabbitLocomotion.Diagnostics=delegate(string message){if(loopbackMode||ModDiagnostics.On)Debug.Log(message);};
+                RabbitGuestAnimation.Install();RabbitMotionGuard=RabbitLocomotion.NativeMove;rabbitRuntimeConfigured=true;
+                RabbitPlayers.RemoteRequestObserved=RabbitFlowDiagnostics.RemoteRequest;
+                RabbitMetadataSync.MotionStreamOwnsLivingPoses=true;
+                RabbitCombatReach.Resolve=RabbitPlayers.CombatTarget;
+            }
+            if(!rabbitRuntimeLogged&&(loopbackMode||ModDiagnostics.On))
+            {Debug.Log("[TLD MP rabbit flow] runtime callbacks configured");rabbitRuntimeLogged=true;}
+        }
+        public static void AfterBusStart(carscript car){BusArticulation.Install(car);}
+        public static tosaveitemscript BusAttachedOwner(attachablescript part){tosaveitemscript owner;return BusArticulation.TryAttachedOwner(part,out owner)?owner:null;}
+        public static bool BusRagdollAllowed(byte[] bytes)
+        {
+            return BusRearAuthority.Allow(bytes,Connected,savedatascript.s);
+        }
+        public static Vector3 PassengerVelocity(Rigidbody body){return MovingVehiclePassenger.Velocity(body);}
+        public static void PassengerMove(fpscontroller player)
+        {
+            try{MovingVehiclePassenger.BeginMove(player);}catch(Exception){MovingVehiclePassenger.Reset();}
+            try{player.Move();}finally{MovingVehiclePassenger.EndMove(player);}
+        }
+        static void TickMovingPassenger()
+        {
+            try{MovingVehiclePassenger.FixedTick(mainscript.s==null?null:mainscript.s.player,Connected&&node!=null&&node.Ready&&!node.IsHost);}
+            catch(Exception){MovingVehiclePassenger.Reset();}
+        }
+        public static bool BusColliderNativeUpdate(dinamiccolliderforbus collider){return !BusArticulation.IsManagedCollider(collider);}
+        public static poiGenScript.terrainAlignValueClass TerrainPadValue(Vector3d position,List<poiGenScript.poiClass> pois){return TerrainPadBlend.Value(position,pois);}
         public static Vector3 TerrainAlignLocal(Transform t){var v=TerrainAlignPolicy.UsesRootRelative(t.parent!=null,t.parent==t.root)?t.root.InverseTransformPoint(t.position):t.localPosition;if(t.parent!=null && TerrainAlignPolicy.LevelStartingBusMarker(t.root.name,t.parent.name))v.y=0f;return v;}
         public static Vector3 ItemStreamPosition(Transform t){return ItemStreamPolicy.UsesRootAnchor(t.parent!=null)?t.root.position:t.position;}
         // Guard on tosaveitemscript.DistUnFreezeRB. A kinematic item is kept frozen while no
@@ -892,6 +1174,7 @@ namespace TldMp
         public static bool ItemUnfreezeGate(tosaveitemscript item)
         {
             if(item==null)return true;
+            if(IsRabbitGuest && RabbitReplicas.IsRabbitItem(item))return false;
             int id=item.GetInstanceID();
             if(item.RB==null || !item.RB.isKinematic){itemSettle.Forget(id);return true;}
             pickupable p=item.P;
@@ -959,10 +1242,170 @@ namespace TldMp
             }
             return false;
         }
-        public static void TankPourTick(tankcapscript tank){if(tank==null || !tank.started || tank.ps==null)return;int action=IdlePourPausePolicy.Decide(tank.em.enabled,tank.ps.isPaused,tank.ps.particleCount);if(action==IdlePourPausePolicy.Pause)tank.ps.Pause();else if(action==IdlePourPausePolicy.Resume)tank.ps.Play();}
+        // New numeric identity is appended; all seven native ordinals stay intact.
+        internal const mainscript.fluidenum UrineFluid=(mainscript.fluidenum)7;
+        public static void RegisterUrineFluid(mainscript main)
+        {
+            if(main.fluids.Length>7)
+            {
+                if(main.fluids[7]==null || main.fluids[7].type!=UrineFluid || main.fluids[7].lname!=ls.w.piss)throw new InvalidOperationException("Conflicting fluid identity 7.");
+                return;
+            }
+            if(main.fluids.Length!=7)throw new InvalidOperationException("Unsupported native fluid table.");
+            var table=new mainscript.fluidtype[8];Array.Copy(main.fluids,table,7);
+            table[7]=new mainscript.fluidtype{name="Piss",lname=ls.w.piss,type=UrineFluid,color=new Color(0.85f,0.72f,0.10f,1f),burnColor=new Color(0,0,0,0)};
+            main.fluids=table;
+        }
+        static void ConvertBladderWater(mainscript.fluidcontainer bladder)
+        {UrineLiquid.NormalizeBladder(bladder);}
+        public static float SurvivalFoodRate(survivalscript survival){return SurvivalRates.Food(survival);}
+        public static float SurvivalWaterRate(survivalscript survival){return SurvivalRates.Water(survival);}
+        public static void ResetSurvivalSickness(survivalscript survival){SurvivalRates.Clear(survival);}
+        public static void ConvertWaterToUrine(survivalscript survival,float amount)
+        {
+            survival.water=Mathf.Clamp(survival.water-amount,0f,survival.maxWater);
+            var bladder=survival.player.piss.Tank.F;ConvertBladderWater(bladder);
+            bladder.ChangeOne(amount*survival.waterToPissRatio,UrineFluid);
+        }
+        public static void BladderOverflow(mainscript.fluidcontainer bladder,float amount,bool useSleep)
+        {
+            ConvertBladderWater(bladder);
+            bladder.ChangeOne(amount*(useSleep?mainscript.s.sleepModifier:1f),UrineFluid);
+        }
+        static bool ContainsUrine(tankscript tank)
+        {return tank!=null && tank.F.GetPercent(UrineFluid)>0f;}
+        struct ChunkSortEntry {internal Vector3d Position;internal double Distance;internal int Order;}
+        sealed class ChunkSortScratch
+        {
+            internal ChunkSortEntry[] Entries=new ChunkSortEntry[0];
+        }
+        sealed class ChunkEntryComparer:IComparer<ChunkSortEntry>
+        {
+            internal static readonly ChunkEntryComparer Instance=new ChunkEntryComparer();
+            public int Compare(ChunkSortEntry a,ChunkSortEntry b)
+            {int c=a.Distance.CompareTo(b.Distance);return c!=0?c:a.Order.CompareTo(b.Order);}
+        }
+        static readonly System.Runtime.CompilerServices.ConditionalWeakTable<mapSettingScript,ChunkSortScratch> chunkScratch=new System.Runtime.CompilerServices.ConditionalWeakTable<mapSettingScript,ChunkSortScratch>();
+        public static List<Vector3d> GetChunksNeededWithoutLinq(mapSettingScript map,float chunkSize,int edge)
+        {
+            // Return a fresh list: road callers remove entries from it.
+            var result=new List<Vector3d>();
+            for(int i=0;i<map.genArounds.Count;i++)
+                for(int j=-edge/2;j<=edge/2;j++)for(int k=-edge/2;k<=edge/2;k++)
+                    result.Add(mainscript.GetChunkPos(map.genArounds[i].upos,k,j,chunkSize));
+            if(map.genArounds.Count==0)return result;
+            Vector3d orderTo=mainscript.GlobalFromUnityPos(map.genArounds[0].upos);
+            var scratch=chunkScratch.GetOrCreateValue(map);int count=result.Count;
+            var entries=count>8192?new ChunkSortEntry[count]:scratch.Entries;
+            if(entries.Length<count){entries=new ChunkSortEntry[count];scratch.Entries=entries;}
+            for(int i=0;i<count;i++)entries[i]=new ChunkSortEntry{Position=result[i],Distance=(result[i]-orderTo).sqrMagnitude,Order=i};
+            Array.Sort(entries,0,count,ChunkEntryComparer.Instance);
+            for(int i=0;i<count;i++)result[i]=entries[i].Position;
+            return result;
+        }
+        public static void SetWheelVisualPosition(Transform target,Vector3 value)
+        {
+            var current=target.position;
+            if(current.x!=value.x || current.y!=value.y || current.z!=value.z)target.position=value;
+        }
+        static readonly Predicate<mainscript.fluid> spentTankFluid=delegate(mainscript.fluid fluid){return fluid.amount<=0f;};
+        public static void PruneSpentTankFluids(tankscript tank,bool dontSync)
+        {tank.F.fluids.RemoveAll(spentTankFluid);}
+        public static void ParticleDrinkTransfer(mainscript.fluidcontainer receiver,mainscript.fluidcontainer donor,float amount,bool direct,bool filter,List<mainscript.fluidenum> drinkFilter,tankcapparticledetectionscript detector,tankcapscript destination)
+        {ParticleFluidDrinking.Transfer(receiver,donor,amount,direct,filter,drinkFilter,detector,destination);}
+        static double urineConsumedMl,urineHydration,urineDamage;
+        static long urineTraceNext;
+        public static void TraceUrineDrink(float consumed,float hydration,float damage)
+        {
+            urineConsumedMl+=consumed*1000.0;urineHydration+=hydration;urineDamage+=damage;
+            long now=DateTime.UtcNow.Ticks;if(now<urineTraceNext)return;urineTraceNext=now+TimeSpan.TicksPerSecond*2;
+            Debug.Log("[Roadworthy urine] cumulative consumed_ml="+urineConsumedMl.ToString("F2",System.Globalization.CultureInfo.InvariantCulture)+" hydration="+urineHydration.ToString("F4",System.Globalization.CultureInfo.InvariantCulture)+" damage="+urineDamage.ToString("F4",System.Globalization.CultureInfo.InvariantCulture));
+        }
+        static fpscontroller fluidDrinker;
+        public static float BadFluidAmount(mainscript.fluidcontainer container)
+        {float total=0;for(int i=0;i<container.fluids.Count;i++){var f=container.fluids[i];int type=(int)f.type;if(type==0 || type==1 || type==5)total+=f.amount;}return total;}
+        public static void NoteBadFluidDrink(survivalscript survival,float amount){SurvivalRates.AddSickness(survival,amount);}
+        static float UrineAmount(mainscript.fluidcontainer container)
+        {float total=0;for(int i=0;i<container.fluids.Count;i++)if(container.fluids[i].type==UrineFluid)total+=container.fluids[i].amount;return total;}
+        public static void DrinkTransfer(mainscript.fluidcontainer receiver,mainscript.fluidcontainer donor,float amount,bool direct,bool filter,List<mainscript.fluidenum> drinkFilter)
+        {
+            var player=fluidDrinker;fluidDrinker=null;
+            float before=player==null?0:UrineAmount(donor),mouthBefore=player==null?0:UrineAmount(receiver);
+            float toxicBefore=player==null?0:BadFluidAmount(donor);
+            receiver.pour(donor,amount,direct,filter,drinkFilter);
+            if(player==null)return;
+            NoteBadFluidDrink(player.survival,Mathf.Max(0f,toxicBefore-BadFluidAmount(donor)));
+            float swallowed=Mathf.Max(0f,before-UrineAmount(donor));
+            float retained=Mathf.Max(0f,UrineAmount(receiver)-mouthBefore);
+            if(retained>0f)receiver.ChangeOne(-retained,UrineFluid);
+            if(swallowed>0f){player.survival.Drink(swallowed*0.25f);player.survival.Damage(swallowed*player.survival.maxHp*0.02f,Vector3.zero);TraceUrineDrink(swallowed,swallowed*0.25f,swallowed*player.survival.maxHp*0.02f);}
+        }
+        sealed class FluidPromptState
+        {
+            internal fpscontroller Controller;
+            internal tankcapscript Cap;
+            internal int Frame;
+            internal bool Reverse;
+        }
+        static readonly Dictionary<tankscript,FluidPromptState> fluidPromptStates=new Dictionary<tankscript,FluidPromptState>();
+        static bool fluidReverse;
+        static int fluidToggleFrame=-1;
+        static bool PrepareFluidPrompt(fpscontroller player,tankscript held,tankcapscript cap)
+        {
+            if(player==null || held==null || cap==null || cap==player.drink || cap.Tank==null || cap.Tank==held || cap.valve<=0f || mainscript.s==null || !mainscript.s.crsrLocked)return false;
+            bool forward=!held.noFillFrom && !cap.Tank.noFillThis;
+            bool reverse=!cap.Tank.noFillFrom && !held.noFillThis;
+            if(!forward && !reverse)return false;
+            int frame=Time.frameCount;
+            FluidPromptState state;
+            if(!fluidPromptStates.TryGetValue(held,out state))
+            {
+                if(fluidPromptStates.Count>=64)fluidPromptStates.Clear();
+                state=new FluidPromptState();fluidPromptStates.Add(held,state);
+            }
+            if(state.Controller!=player || state.Cap!=cap || frame-state.Frame>1)
+            {state.Controller=player;state.Cap=cap;state.Reverse=false;}
+            state.Frame=frame;
+            if(reverse && forward && fluidToggleFrame!=frame && UnityEngine.Input.GetKeyDown(KeyCode.Semicolon))
+            {state.Reverse=!state.Reverse;fluidToggleFrame=frame;}
+            if(!forward)state.Reverse=true;
+            if(!reverse)state.Reverse=false;
+            fluidReverse=state.Reverse;
+            player.LMB=(fluidReverse?"Drain into held container":ls.l.g(ls.w.fill))+((forward && reverse)?" [;: reverse flow]":"");
+            player.selectedCap=cap;player.drank=true;player.noLMBUse=true;player.BLMB=true;
+            return true;
+        }
+        public static void FluidFillPrompt(fpscontroller player,pickupable item,bool hand)
+        {
+            if(player==null || item==null || item.tank==null)return;
+            // DrinkFill consumes the physically picked-up tank when both paths
+            // run, so its prompt owns the toggle for this frame.
+            if(hand && player.pickedUp!=null && player.pickedUp!=item && player.pickedUp.tank!=null)return;
+            var cap=player.pointedCap;
+            if(cap==null && player.lookedCap!=null)cap=player.lookedCap;
+            if(PrepareFluidPrompt(player,item.tank,cap))player.filled=true;
+        }
+        // Guard returns true to retain the complete stock forward/drinking path.
+        public static bool NativeFluidFillAllowed(fpscontroller player,tankscript held,tankcapscript cap,bool drinking)
+        {
+            fluidDrinker=drinking?player:null;
+            if(drinking || cap==null || cap==player.drink)return true;
+            if(!PrepareFluidPrompt(player,held,cap) || !fluidReverse)return true;
+            if(held.noFillThis || cap.Tank.noFillFrom || !player.input.lmb || !mainscript.s.crsrLocked || cap.valve<=0f || !(held.F.GetAmount()<held.F.maxC) || !(cap.Tank.F.GetAmount()>0f))return false;
+            float amount=mainscript.s.pourSpeed*cap.valve*Time.deltaTime*cap.flowA;
+            if(cap.Tank.F.GetPercent(mainscript.fluidenum.oil)>0.25f && held.slowOil)
+            {
+                float current=held.F.GetAmount();
+                if(current>0.05f && held.F.GetPercent(mainscript.fluidenum.oil)<1f)amount=Mathf.Clamp(amount*current*mainscript.s.slowOilModifier,0.0001f,amount);
+            }
+            held.F.pour(cap.Tank.F,amount,true,false,null);
+            cap.Filling();cap.PlayFillSound();held.Upd();cap.Tank.Upd();
+            return false;
+        }
+        public static void TankPourTick(tankcapscript tank){if(tank!=null && mainscript.s!=null && mainscript.s.player!=null && mainscript.s.player.piss==tank && tank.Tank!=null)ConvertBladderWater(tank.Tank.F);if(tank==null || !tank.started || tank.ps==null)return;int action=IdlePourPausePolicy.Decide(tank.em.enabled,tank.ps.isPaused,tank.ps.particleCount);if(action==IdlePourPausePolicy.Pause)tank.ps.Pause();else if(action==IdlePourPausePolicy.Resume)tank.ps.Play();}
         public static void WornItemDestroyed(pickupable item){WornItemGuard.Destroyed(item);}
         public static void HideListPrune(makeinvisible hide){WornItemGuard.PruneHide(hide);}
-        public static void SafeSlice(randomSlice slice,bool darabForce,bool darabAlsoVagas,Vector3 terrainNormal,Vector3 lossyScale){try{slice.SSSLiceee(darabForce,darabAlsoVagas,terrainNormal,lossyScale);}catch(Exception error){SliceGuard.Failed(error);}}
+        public static void SafeSlice(randomSlice slice,bool darabForce,bool darabAlsoVagas,Vector3 terrainNormal,Vector3 lossyScale){try{slice.SSSLiceee(darabForce,darabAlsoVagas,terrainNormal,lossyScale);}catch(Exception error){SliceGuard.Failed(error);}finally{SliceGeometryEnd();SlicePairsEnd();}}
         public static bool MirrorVisible(Renderer renderer,Camera camera){return MirrorOnScreen.Visible(renderer,camera);}
         public static bool CarPoseNeedsBurst(tosaveitemscript item){return CarPosePolicy.NeedsBurst(item);}
         public static bool CarPoseMoreUpd(tosaveitemscript item){return item.MoreUpd() || CarPosePolicy.NeedsBurst(item);}
@@ -1019,8 +1462,8 @@ namespace TldMp
         }
         public static void IgnoreCollisionSafe(mpplayerscript script,Transform target,bool ignore){PlayerLeaveSafety.IgnoreCollision(script,target,ignore);}
         internal static long DeliveryCoalesced{get{return delivery.Coalesced;}}
-        public static bool CreatureMoveGate(movecreaturescript creature){return WildlifeWeather.CreatureMove(creature);}
-        public static bool CreatureJumpGate(movecreaturescript creature){return WildlifeWeather.CreatureJump(creature);}
+        public static bool CreatureMoveGate(movecreaturescript creature){if(RabbitReplicas.GuestMove(creature))return false;return RabbitLocomotion.NativeMove(creature)&&WildlifeWeather.CreatureMove(creature);}
+        public static bool CreatureJumpGate(movecreaturescript creature){if(RabbitReplicas.GuestMove(creature))return false;return RabbitLocomotion.NativeJump(creature)&&WildlifeWeather.CreatureJump(creature);}
         // Guard on tosaveitemscript.ThisOneInChargeCar(carWhatDoing). False = this
         // machine is not in charge (CarOwnershipPolicy); true = the native rule.
         public static bool CarChargeGate(tosaveitemscript item,tosaveitemscript.carWhatDoing remote)
@@ -1164,7 +1607,7 @@ namespace TldMp
                     {if(pair.Value!=null)UnityEngine.Object.Destroy(pair.Value.gameObject);save.items.Remove(pair.Key);}
                 }
                 save.data.itemData=frame.Items;save.itemChunks.Clear();
-                foreach(var item in frame.Items.items)save.AddToChunk(mainscript.UnityPosFromGlobal(item.transform.pos),item.id);
+                foreach(var item in frame.Items.items)save.AddToChunk(item.transform.pos,item.id);
                 foreach(var active in frame.Active)
                 {
                     save_item definition=definitions[active.ID];tosaveitemscript item;
@@ -1190,6 +1633,9 @@ namespace TldMp
             steamTransport.Poll(delegate(ulong source,byte[] b)
             {
                 hood.dataIn+=b.Length;NetStats.Received(b);var sender=new CSteamID(source);
+                if(ReceiveRabbitMotion(source,b))return;
+                if(ReceiveSmoke(source,b))return;
+                if(ReceiveBusPair(source,b))return;
                 if(ReceiveVehicleMotion(source,b))return;
                 if(!AcceptSequenced(source,ref b))return;
                 if(!SteamP2PNetworkingUnderTheHoodScript.Expected(sender,(msgType)b[0]))return;
@@ -1213,6 +1659,7 @@ namespace TldMp
                 LoopbackEvent item;if(!transport.TryDequeue(out item))break;
                 if(item.Disconnected)
                 {
+                    RevokeBusPairPeer(item.From);
                     outbox.Drop(item.From);bulkOutbox.Drop(item.From);delivery.Drop(item.From);
                     if(node!=null)
                     {
@@ -1223,6 +1670,9 @@ namespace TldMp
                 }
                 if(item.Connected || item.Bytes==null || item.Bytes.Length==0)continue;
                 hood.dataIn+=item.Bytes.Length;NetStats.Received(item.Bytes);
+                if(ReceiveRabbitMotion(item.From,item.Bytes))continue;
+                if(ReceiveSmoke(item.From,item.Bytes))continue;
+                if(ReceiveBusPair(item.From,item.Bytes))continue;
                 if(ReceiveVehicleMotion(item.From,item.Bytes))continue;
                 byte[] received=item.Bytes;if(!AcceptSequenced(item.From,ref received))continue;item.Bytes=received;
                 // Same entry point Steam uses: AllowIncoming then the stock dispatch.
@@ -1264,23 +1714,19 @@ namespace TldMp
             Debug.Log("[TLD MP net] slow bridge update ms="+NetStats.Ms(e-a)+" farPlace="+NetStats.Ms(b-a)+" pulse="+NetStats.Ms(c-b)+
                 " (drain="+NetStats.Ms(pulseDrainTicks)+" nodeTick="+NetStats.Ms(pulseTickTicks)+") spawnSafety="+NetStats.Ms(d-c)+" wildlife="+NetStats.Ms(e-d));
         }
+        static void SendJoinMap(ulong peer){syncScript.s.SendMapStuff(new CSteamID(peer));}
         internal static void Pulse()
         {
             pulseDrainTicks=pulseTickTicks=0;
-            Ensure();CargoDiagnostics.Tick();TickCarBlood();GroundDiagnostics.TickBusPlacement();if(DiagnosticMode)GroundDiagnostics.Tick();if(node==null)return;ReplayPendingItems();TickSpawnHandoff();
+            Ensure();CargoDiagnostics.Tick();TickCarBlood();GroundDiagnostics.TickBusPlacement();if(DiagnosticMode)GroundDiagnostics.Tick();if(node==null || restartSteamJoin)return;ReplayPendingItems();TickSpawnHandoff();
             long drainStart=Stopwatch.GetTimestamp();
             TickVehicleImpactBursts();vehiclePairs.Flush(Now,PublishVehiclePacket);SettleLiveUsables();DrainDeliveryQueues();outbox.Flush(Now);bulkOutbox.Flush(Now);
             pulseDrainTicks=Stopwatch.GetTimestamp()-drainStart;
-            if(loopbackMode && node.IsHost && WorldSceneAvailable() && syncScript.s!=null)
-            {
-                foreach(ulong peer in new List<ulong>(node.Peers.Keys))
-                {
-                    if(loopbackBootstrapSent.Contains(peer))continue;
-                    syncScript.s.SendMapStuff(new CSteamID(peer));
-                    loopbackBootstrapSent.Add(peer);
-                    JoinDiagnostic("sent native map bootstrap to peer="+peer);
-                }
-            }
+            // The native lobby callback can run before the fingerprint and Hello
+            // handshake complete. Send the current world once each peer is ready
+            // to receive it, even when that callback has already fired.
+            if(node.IsHost && WorldSceneAvailable() && syncScript.s!=null)
+                node.SendPendingBootstraps(SendJoinMap);
             if(!node.IsHost && !loopbackMode && !SteamP2PNetworkingUnderTheHoodScript.HasCorrectPassword())return;
             if(!node.IsHost && !node.HostWorldLoaded && (loopbackMode?WorldSceneAvailable():hostWorldEvidence))node.HostWorldLoaded=true;
             long tickStart=Stopwatch.GetTimestamp();node.Tick(Now);pulseTickTicks=Stopwatch.GetTimestamp()-tickStart;
@@ -1316,7 +1762,7 @@ namespace TldMp
         }
         static void RemovePlayer(ulong peer)
         {
-            outbox.Drop(peer);bulkOutbox.Drop(peer);delivery.Drop(peer);loopbackBootstrapSent.Remove(peer);poseFilter.Forget(peer);senderClock.Forget(peer);liveUsables.Drop(peer);
+            outbox.Drop(peer);bulkOutbox.Drop(peer);delivery.Drop(peer);poseFilter.Forget(peer);senderClock.Forget(peer);liveUsables.Drop(peer);
             vehicleClock.Forget(peer);
             if(syncScript.s==null || syncScript.s.players==null)return;
             lastPlayers.Remove(peer);
@@ -1352,8 +1798,8 @@ namespace TldMp
         }
         public static void NativeSystemBegin(int slot){FrameDiagnostics.NativeBegin(slot);}
         public static void NativeSystemEnd(int slot){FrameDiagnostics.NativeEnd(slot);}
-        public static void NativeMainBegin(){RenderSwitches.MainFrame();CargoGhost.Frame();FrameDiagnostics.RegisterMainThread();FrameDiagnostics.NativeBegin(0);}
-        public static void NativeMainEnd(){FrameDiagnostics.NativeEnd(0);}
+        public static void NativeMainBegin(){SurvivalHud.Begin();RenderSwitches.MainFrame();CargoGhost.Frame();FrameDiagnostics.RegisterMainThread();FrameDiagnostics.NativeBegin(0);}
+        public static void NativeMainEnd(){SurvivalHud.End();FrameDiagnostics.NativeEnd(0);}
         public static void NativeMapBegin(){FrameDiagnostics.RegisterMainThread();FrameDiagnostics.NativeBegin(1);}
         public static void NativeMapEnd(){FrameDiagnostics.NativeEnd(1);}
         public static void NativeObjectsBegin(){FrameDiagnostics.NativeBegin(2);}
@@ -1631,6 +2077,80 @@ namespace TldMp
             string applyReason;
             if(!VerifyPendingSpawnConstruction(out applyReason))throw new InvalidOperationException("[TLD MP construction] "+reason+": "+applyReason);
         }
+        sealed class TerrainBiomeBinding {internal readonly int Mode;internal TerrainBiomeBinding(int mode){Mode=mode;}}
+        static readonly System.Runtime.CompilerServices.ConditionalWeakTable<terrainGenSettings,TerrainBiomeBinding> terrainBiomeBindings=new System.Runtime.CompilerServices.ConditionalWeakTable<terrainGenSettings,TerrainBiomeBinding>();
+        static int terrainBiomeEpoch;
+        [ThreadStatic] static terrainGenSettings cachedBiomeTerrain;
+        [ThreadStatic] static TerrainBiomeBinding cachedBiomeBinding;
+        [ThreadStatic] static int cachedBiomeEpoch;
+        public static void RegisterTerrainBiome(terrainGenSettings setting)
+        {
+            if((object)setting==null)return;
+            lock(terrainBiomeBindings)
+            {
+                TerrainBiomeBinding old;int mode=WorldBiomePolicy.Mode;
+                if(terrainBiomeBindings.TryGetValue(setting,out old) && old.Mode==mode)return;
+                terrainBiomeBindings.Remove(setting);terrainBiomeBindings.Add(setting,new TerrainBiomeBinding(mode));
+                System.Threading.Interlocked.Increment(ref terrainBiomeEpoch);
+            }
+        }
+        public static void SetWorldBiomeMode(int mode)
+        {
+            if(WorldBiomePolicy.Mode!=mode)TerrainWorker.Clear();
+            WorldBiomePolicy.SetMode(mode);
+            StableMap.RefreshBiomeConfig();
+        }
+        public static void SetWorldPlacementVersion(int value)
+        {if(WorldPlacementPolicy.Version!=value)TerrainWorker.Clear();WorldPlacementPolicy.SetVersion(value);StableMap.RefreshBiomeConfig();}
+        public static void ConfigureWorldBiome()
+        {
+            var scene=DataFromMenuScript.s;
+            if(scene==null || scene.mainmenu){WorldRelocationLedger.Restore(null);SetWorldPlacementVersion(0);SetWorldBiomeMode(0);return;}
+            if(scene.multi){WorldRelocationLedger.Restore(null);return;} // HostConfig was received before native map bootstrap.
+            int mode=0;
+            int placement=0;
+            if(!scene.load)WorldRelocationLedger.Restore(null);
+            if(scene.load)
+            {
+                if(savedatascript.s==null || savedatascript.s.data==null || savedatascript.s.data.properties==null)
+                    throw new InvalidOperationException("Cannot determine the saved world biome.");
+                mode=WorldBiomePolicy.ModeFromVersion(savedatascript.s.data.properties.version);
+                placement=WorldPlacementPolicy.ReadVersion(savedatascript.s.data.properties.version);
+                WorldRelocationLedger.Restore(savedatascript.s.data.properties.version);
+            }
+            else if(scene.newgame && gamemodesettingsscript.s!=null && gamemodesettingsscript.s.S!=null)
+            {
+                mode=gamemodesettingsscript.s.S.biome;
+                placement=WorldPlacementPolicy.CurrentVersion;
+                if(mode<0 || mode>3)throw new InvalidOperationException("Invalid selected world biome.");
+            }
+            SetWorldPlacementVersion(placement);
+            SetWorldBiomeMode(mode);
+            if(ModDiagnostics.On)Debug.Log("[TLD MP biome] world mode="+mode+" seed="+scene.seed+" source="+(scene.load?"save":scene.newgame?"new":"default"));
+        }
+        public static string SaveVersionLabel(string version)
+        {
+            if(version==null)return null;
+            const string marker=" [Roadworthy relocation: ";
+            int start=version.IndexOf(marker,StringComparison.Ordinal);
+            if(start<0)return version;
+            int end=version.IndexOf(']',start+marker.Length);
+            return end<0?version.Substring(0,start)+" [relocation data damaged]":version.Remove(start,end-start+1);
+        }
+        public static void StampBiomeVersion(saveproperties properties)
+        {if(properties!=null)properties.version=WorldRelocationLedger.Stamp(WorldPlacementPolicy.StampVersion(WorldBiomePolicy.StampVersion(properties.version,WorldBiomePolicy.Mode),WorldPlacementPolicy.Version));}
+        public static Color ApplyWorldBiome(Color original,terrainGenSettings setting)
+        {
+            if(WorldBiomePolicy.HasWorkerMode)return WorldBiomePolicy.Apply(original);
+            if((object)setting==null)return WorldBiomePolicy.Apply(original);
+            int epoch=System.Threading.Volatile.Read(ref terrainBiomeEpoch);
+            if(!object.ReferenceEquals(cachedBiomeTerrain,setting) || cachedBiomeEpoch!=epoch)
+            {
+                TerrainBiomeBinding binding;terrainBiomeBindings.TryGetValue(setting,out binding);
+                cachedBiomeTerrain=setting;cachedBiomeBinding=binding;cachedBiomeEpoch=epoch;
+            }
+            return cachedBiomeBinding==null?WorldBiomePolicy.Apply(original):WorldBiomePolicy.ApplyMode(original,cachedBiomeBinding.Mode);
+        }
         public static void BeforeNativeSaveData(){ConstructionFence("savedatascript.SaveToData");}
         public static void BeforeNativeSaveScreen(){ConstructionFence("newSaveScreenScript.Save");}
         public static void BeforeNativeExport(){ConstructionFence("construction export");}
@@ -1653,6 +2173,130 @@ namespace TldMp
         static readonly Stack<List<Rigidbody>> fixedBodyLists=new Stack<List<Rigidbody>>();
         static readonly Stack<List<tosaveitemscript>> fixedItemLists=new Stack<List<tosaveitemscript>>();
         static readonly Stack<List<randomTypeSelector>> fixedSelectorLists=new Stack<List<randomTypeSelector>>();
+
+        // Arrays are scratch only: every native entry is overwritten before use.
+        // Nested category selection rents separate buffers until its caller exits.
+        static readonly Dictionary<int,Stack<int[]>> propWeights=new Dictionary<int,Stack<int[]>>();
+        static int[] RentPropWeights(int length)
+        {
+            Stack<int[]> pool;if(propWeights.TryGetValue(length,out pool) && pool.Count>0)return pool.Pop();
+            return new int[length];
+        }
+        static void ReturnPropWeights(int[] value)
+        {
+            if(value==null || value.Length>1024)return;
+            Stack<int[]> pool;if(!propWeights.TryGetValue(value.Length,out pool))
+            {if(propWeights.Count>=64)return;propWeights.Add(value.Length,pool=new Stack<int[]>());}
+            if(pool.Count<4)pool.Push(value);
+        }
+	public static int SelectPropCategory(int categoryId)
+	{
+        int[] array=null,array2=null;try
+        {
+		int num = 0;
+		if (itemdatabase.s.categories[categoryId].items != null)
+		{
+			array = RentPropWeights(itemdatabase.s.categories[categoryId].items.Length);
+			if (itemdatabase.s.categories[categoryId].itemchances == null)
+			{
+				for (int i = 0; i < array.Length; i++)
+				{
+					array[i] = 1;
+				}
+			}
+			else
+			{
+				for (int j = 0; j < array.Length; j++)
+				{
+					array[j] = itemdatabase.s.categories[categoryId].itemchances[j];
+				}
+			}
+			for (int k = 0; k < itemdatabase.s.categories[categoryId].items.Length; k++)
+			{
+				num = (array[k] = num + array[k]);
+			}
+		}
+		int num2 = 0;
+		if (itemdatabase.s.categories[categoryId].categories != null)
+		{
+			array2 = RentPropWeights(itemdatabase.s.categories[categoryId].categories.Length);
+			if (itemdatabase.s.categories[categoryId].categorychances == null)
+			{
+				for (int l = 0; l < array2.Length; l++)
+				{
+					array2[l] = 1;
+				}
+			}
+			else
+			{
+				for (int m = 0; m < array2.Length; m++)
+				{
+					array2[m] = itemdatabase.s.categories[categoryId].categorychances[m];
+				}
+			}
+			for (int n = 0; n < itemdatabase.s.categories[categoryId].categories.Length; n++)
+			{
+				num2 = (array2[n] = num2 + array2[n]);
+			}
+		}
+		int num3 = UnityEngine.Random.Range(1, num + num2 + 1);
+		if (num3 <= num)
+		{
+			if (itemdatabase.s.categories[categoryId].dependOnCar)
+			{
+				if (UnityEngine.Random.Range(0, 100) < 25 && itemdatabase.s.carTypeToCarID[(int)mainscript.s.currentCar] < itemdatabase.s.categories[categoryId].items.Length)
+				{
+					return itemdatabase.s.categories[categoryId].items[itemdatabase.s.carTypeToCarID[(int)mainscript.s.currentCar]];
+				}
+				int num4 = 0;
+				int num5;
+				do
+				{
+					num5 = UnityEngine.Random.Range(0, itemdatabase.s.categories[categoryId].items.Length);
+					num4++;
+				}
+				while (num5 == itemdatabase.s.carTypeToCarID[(int)mainscript.s.currentCar] && num4 < 10);
+				return itemdatabase.s.categories[categoryId].items[num5];
+			}
+			for (int num6 = 0; num6 < array.Length; num6++)
+			{
+				if (num3 <= array[num6])
+				{
+					return itemdatabase.s.categories[categoryId].items[num6];
+				}
+			}
+		}
+		else
+		{
+			if (itemdatabase.s.categories[categoryId].dependOnCar)
+			{
+				if (UnityEngine.Random.Range(0, 100) < 25 && itemdatabase.s.carTypeToCarID[(int)mainscript.s.currentCar] < itemdatabase.s.categories[categoryId].categories.Length)
+				{
+					return itemdatabase.s.categories[categoryId].categories[itemdatabase.s.carTypeToCarID[(int)mainscript.s.currentCar]];
+				}
+				int num7 = 0;
+				int num8;
+				do
+				{
+					num8 = UnityEngine.Random.Range(0, itemdatabase.s.categories[categoryId].categories.Length);
+					num7++;
+				}
+				while (num8 == itemdatabase.s.carTypeToCarID[(int)mainscript.s.currentCar] && num7 < 10);
+				return itemdatabase.s.categories[categoryId].categories[num8];
+			}
+			for (int num9 = 0; num9 < array2.Length; num9++)
+			{
+				if (num3 <= array2[num9])
+				{
+					return SelectPropCategory(itemdatabase.s.categories[categoryId].categories[num9]);
+				}
+			}
+		}
+		return 0;
+	        }finally{ReturnPropWeights(array);ReturnPropWeights(array2);}
+}
+        public static GameObject ConstructFixedProps(GameObject source,Vector3 position,Quaternion rotation,Transform parent)
+        {return FixedPropConstruction.Instantiate(source,position,rotation,parent);}
         public static void FixedSpawnFStart(fixedSpawnScript script)
         {
             if(script.useStartCar)
@@ -1691,6 +2335,696 @@ namespace TldMp
         public static void NativePoiItemsEnd(){FrameDiagnostics.NativePoiItemsEnd();}
         public static void NativePoiFixedBegin(){FrameDiagnostics.NativePoiFixedBegin();}
         public static void NativePoiFixedEnd(){FrameDiagnostics.NativePoiFixedEnd();}
+        sealed class BreakProbeRow
+        {
+            internal string Name; internal int Frame,G0,G1,G2; internal long Start;
+            internal readonly long[] Stages=new long[15],Starts=new long[15];
+        }
+        static readonly BreakProbeRow[] breakProbeRows=MakeBreakProbeRows();
+        static BreakProbeRow[] MakeBreakProbeRows(){var rows=new BreakProbeRow[8];for(int i=0;i<rows.Length;i++)rows[i]=new BreakProbeRow();return rows;}
+        static readonly string[] breakStageNames=new[]{"State","SeatQuery","SeatExit","ComponentQuery","Drop","LegacyDeath","Death","Register","Bury","Audio","ReflectionQuery","ReflectionOff","Slice","Destroy","Instantiate"};
+        static int breakProbeDepth,breakProbeFrame=-1,breakLastFrame=-100,breakProbeLogs,breakProbeSuppressed;
+        static double breakProbeWindow;
+        public static void BreakProbeBegin(breakablescript item)
+        {
+            if(!ModDiagnostics.On)return;
+            try
+            {
+                int frame=Time.frameCount;
+                if(frame!=breakProbeFrame){breakProbeDepth=0;breakProbeSuppressed=0;breakProbeFrame=frame;}
+                if(breakProbeDepth==breakProbeRows.Length){breakProbeSuppressed++;return;}
+                var row=breakProbeRows[breakProbeDepth++];row.Frame=frame;
+                row.Name=item==null?"null":item.name+" slice="+item.sliceOnDestroy+" cuts="+item.sliceCuts+" alreadyDestroyed="+item.destroyed;
+                Array.Clear(row.Stages,0,15);Array.Clear(row.Starts,0,15);
+                row.G0=GC.CollectionCount(0);row.G1=GC.CollectionCount(1);row.G2=GC.CollectionCount(2);row.Start=Stopwatch.GetTimestamp();
+                breakLastFrame=frame;
+            }catch { }
+        }
+        static void BreakProbeStageBegin(int stage)
+        {if(ModDiagnostics.On && breakProbeDepth>0 && breakProbeSuppressed==0)breakProbeRows[breakProbeDepth-1].Starts[stage]=Stopwatch.GetTimestamp();}
+        static void BreakProbeStageEnd(int stage)
+        {if(ModDiagnostics.On && breakProbeDepth>0 && breakProbeSuppressed==0){var row=breakProbeRows[breakProbeDepth-1];long start=row.Starts[stage];if(start!=0){row.Stages[stage]+=Stopwatch.GetTimestamp()-start;row.Starts[stage]=0;}}}
+        public static void BreakProbeEnd()
+        {
+            if(!ModDiagnostics.On)return;
+            if(breakProbeSuppressed>0){breakProbeSuppressed--;return;}
+            if(breakProbeDepth==0)return;
+            var row=breakProbeRows[--breakProbeDepth];long elapsed=Stopwatch.GetTimestamp()-row.Start;
+            try
+            {
+                double now=Time.realtimeSinceStartup;
+                if(now<breakProbeWindow || now-breakProbeWindow>=5){breakProbeWindow=now;breakProbeLogs=0;}
+                // Keep all slow breaks; cap fast-break details independently.
+                bool slow=elapsed*1000.0/Stopwatch.Frequency>=3;
+                if(!slow && breakProbeLogs>=8)return;
+                if(breakProbeLogs++>=32)return;
+                var text=new StringBuilder("[TLD MP break-detail] frame=").Append(row.Frame).Append(" object=").Append(row.Name)
+                    .Append(" totalMs=").Append((elapsed*1000.0/Stopwatch.Frequency).ToString("F3",System.Globalization.CultureInfo.InvariantCulture))
+                    .Append(" gcDelta=").Append(GC.CollectionCount(0)-row.G0).Append('/').Append(GC.CollectionCount(1)-row.G1).Append('/').Append(GC.CollectionCount(2)-row.G2);
+                long measured=0;
+                for(int i=0;i<15;i++){measured+=row.Stages[i];text.Append(' ').Append(breakStageNames[i]).Append("Ms=").Append((row.Stages[i]*1000.0/Stopwatch.Frequency).ToString("F3",System.Globalization.CultureInfo.InvariantCulture));}
+                text.Append(" remainderMs=").Append((Math.Max(0,elapsed-measured)*1000.0/Stopwatch.Frequency).ToString("F3",System.Globalization.CultureInfo.InvariantCulture)).Append(" stages inclusive; limit=32/5s");
+                Debug.Log(text.ToString());
+            }catch { }
+            finally{row.Name=null;}
+        }
+        public static void BreakStateBegin(){BreakProbeStageBegin(0);}
+        public static void BreakStateEnd(){BreakProbeStageEnd(0);}
+        public static void BreakSeatQueryBegin(){BreakProbeStageBegin(1);}
+        public static void BreakSeatQueryEnd(){BreakProbeStageEnd(1);}
+        public static void BreakSeatExitBegin(){BreakProbeStageBegin(2);}
+        public static void BreakSeatExitEnd(){BreakProbeStageEnd(2);}
+        public static void BreakComponentQueryBegin(){BreakProbeStageBegin(3);}
+        public static void BreakComponentQueryEnd(){BreakProbeStageEnd(3);}
+        public static void BreakDropBegin(){BreakProbeStageBegin(4);}
+        public static void BreakDropEnd(){BreakProbeStageEnd(4);}
+        public static void BreakLegacyDeathBegin(){BreakProbeStageBegin(5);}
+        public static void BreakLegacyDeathEnd(){BreakProbeStageEnd(5);}
+        public static void BreakDeathBegin(){BreakProbeStageBegin(6);}
+        public static void BreakDeathEnd(){BreakProbeStageEnd(6);}
+        public static void BreakRegisterBegin(){BreakProbeStageBegin(7);}
+        public static void BreakRegisterEnd(){BreakProbeStageEnd(7);}
+        public static void BreakBuryBegin(){BreakProbeStageBegin(8);}
+        public static void BreakBuryEnd(){BreakProbeStageEnd(8);}
+        public static void BreakAudioBegin(){BreakProbeStageBegin(9);}
+        public static void BreakAudioEnd(){BreakProbeStageEnd(9);}
+        public static void BreakReflectionQueryBegin(){BreakProbeStageBegin(10);}
+        public static void BreakReflectionQueryEnd(){BreakProbeStageEnd(10);}
+        public static void BreakReflectionOffBegin(){BreakProbeStageBegin(11);}
+        public static void BreakReflectionOffEnd(){BreakProbeStageEnd(11);}
+        public static void BreakSliceBegin(){BreakProbeStageBegin(12);}
+        public static void BreakSliceEnd(){BreakProbeStageEnd(12);}
+        public static void BreakDestroyBegin(){BreakProbeStageBegin(13);}
+        public static void BreakDestroyEnd(){BreakProbeStageEnd(13);}
+        static readonly int[] breakPhaseFrames=new int[16];
+        static readonly long[,] breakPhaseTicks=new long[16,6];
+        static readonly int[,] breakPhaseCalls=new int[16,6];
+        static int breakFrameGc0,breakFrameGc1,breakFrameGc2,breakFrameLogs;
+        static double breakFrameWindow;
+        static bool breakFrameGcStarted;
+        internal static void BreakProbePhase(int frame,int phase,long start,long end)
+        {
+            int index=frame&15;
+            if(breakPhaseFrames[index]!=frame){breakPhaseFrames[index]=frame;for(int i=0;i<6;i++){breakPhaseTicks[index,i]=0;breakPhaseCalls[index,i]=0;}}
+            breakPhaseTicks[index,phase]+=end-start;breakPhaseCalls[index,phase]++;
+        }
+        internal static void BreakProbeFrame(int frame)
+        {
+            try
+            {
+                int g0=GC.CollectionCount(0),g1=GC.CollectionCount(1),g2=GC.CollectionCount(2),index=frame&15;
+                if(!breakFrameGcStarted){breakFrameGc0=g0;breakFrameGc1=g1;breakFrameGc2=g2;breakFrameGcStarted=true;}
+                double now=Time.realtimeSinceStartup;
+                if(now<breakFrameWindow || now-breakFrameWindow>=5){breakFrameWindow=now;breakFrameLogs=0;}
+                bool near=frame>=breakLastFrame && frame-breakLastFrame<=3;
+                if(breakFrameLogs<32 && breakPhaseFrames[index]==frame && (near || breakPhaseTicks[index,0]*1000.0/Stopwatch.Frequency>=25 || breakPhaseTicks[index,2]*1000.0/Stopwatch.Frequency>=10))
+                {
+                    breakFrameLogs++;
+                    var text=new StringBuilder("[TLD MP break-frame] frame=").Append(frame).Append(" lastBreakFrame=").Append(breakLastFrame)
+                        .Append(" gcSincePreviousFrameComplete=").Append(g0-breakFrameGc0).Append('/').Append(g1-breakFrameGc1).Append('/').Append(g2-breakFrameGc2);
+                    for(int i=0;i<6;i++)text.Append(' ').Append(NativeLoopTimings.Labels[i]).Append('=').Append((breakPhaseTicks[index,i]*1000.0/Stopwatch.Frequency).ToString("F3",System.Globalization.CultureInfo.InvariantCulture)).Append("ms/").Append(breakPhaseCalls[index,i]);
+                    Debug.Log(text.ToString());
+                }
+                breakFrameGc0=g0;breakFrameGc1=g1;breakFrameGc2=g2;
+            }catch { }
+        }
+        public static void AddIgnoredCollider(List<Collider> list,Collider collider)
+        {if(!list.Contains(collider))list.Add(collider);}
+        public static void SetIgnoredCollider(Collider a,Collider b,bool ignore)
+        {
+            // Inspect native state: disabling a collider can erase its ignore flags.
+            if(a==null || b==null || a==b || Physics.GetIgnoreCollision(a,b)!=ignore)Physics.IgnoreCollision(a,b,ignore);
+        }
+        // Pool only collision call sites whose native return is discarded. Hearing
+        // stimuli retain one emitter per event until saturation; overload replaces
+        // a silent emitter instead of allocating unbounded native sound objects.
+        const int ImpactCapacity=2048,ImpactVoiceLimit=48,ImpactStartsPerWindow=12;
+        sealed class ImpactEmitter
+        {
+            internal GameObject Object;internal AudioSource Audio;internal stimulscript Stimulus;
+            internal AudioClip Clip;internal UnityEngine.Audio.AudioMixerGroup Group;
+            internal float End,Volume,Pitch,Min,Max,Score;internal byte Priority;
+            internal bool Pending,Voiced;
+        }
+        static readonly ImpactEmitter[] impactPool=new ImpactEmitter[ImpactCapacity];
+        static readonly Stack<int> impactFree=new Stack<int>(ImpactCapacity);
+        static readonly List<int> impactActive=new List<int>(ImpactCapacity);
+        static mainscript impactOwner;static GameObject impactRoot,impactPrefab;
+        static int impactCreated,impactVoices,impactStarts,impactRequests,impactFallback,impactPlayed,impactLimited;
+        static float impactWindow,impactReport;static bool impactFailed;
+        static int impactReplaced,impactVictimCursor;
+        static void ClearImpactPool()
+        {
+            for(int i=0;i<impactCreated;i++)
+            {var e=impactPool[i];if(e!=null && e.Object!=null)UnityEngine.Object.Destroy(e.Object);impactPool[i]=null;}
+            if(impactRoot!=null)UnityEngine.Object.Destroy(impactRoot);
+            impactFree.Clear();impactActive.Clear();impactCreated=impactVoices=impactStarts=0;
+            impactOwner=null;impactPrefab=null;impactRoot=null;
+        }
+        static void ImpactFailure(Exception error)
+        {if(!impactFailed){impactFailed=true;Debug.LogWarning("[TLD MP impact-audio] pool fallback: "+error.GetType().Name+": "+error.Message);}}
+        static void ReleaseImpact(int activeIndex)
+        {
+            int id=impactActive[activeIndex];var e=impactPool[id];
+            if(e.Voiced)impactVoices--;
+            e.Pending=e.Voiced=false;e.Clip=null;e.Group=null;
+            if(e.Object!=null)
+            {
+                e.Audio.Stop();e.Audio.clip=null;e.Audio.enabled=false;e.Object.SetActive(false);
+                if(impactRoot!=null)e.Object.transform.SetParent(impactRoot.transform,false);
+                impactFree.Push(id);
+            }
+            int last=impactActive.Count-1;impactActive[activeIndex]=impactActive[last];impactActive.RemoveAt(last);
+        }
+        static void TickImpactAudio(bool warm,bool flush)
+        {
+            try
+            {
+                if(impactOwner!=mainscript.s || (impactOwner!=null && impactPrefab!=impactOwner.Audio))ClearImpactPool();
+                if(warm && impactOwner==null && mainscript.s!=null && mainscript.s.Audio!=null)
+                {
+                    impactOwner=mainscript.s;impactPrefab=impactOwner.Audio;
+                    impactRoot=new GameObject("Roadworthy inactive impact pool");impactRoot.SetActive(false);
+                    impactRoot.transform.SetParent(impactOwner.transform,false);
+                    impactWindow=Time.unscaledTime;impactReport=Time.unscaledTime;
+                }
+                float now=Time.time;
+                for(int i=impactActive.Count-1;i>=0;i--)
+                {var e=impactPool[impactActive[i]];if(e.Object==null || now>=e.End)ReleaseImpact(i);}
+                if(warm && impactRoot!=null && impactCreated<ImpactCapacity)
+                {
+                    long start=Stopwatch.GetTimestamp();
+                    for(int count=0;count<8 && impactCreated<ImpactCapacity;count++)
+                    {
+                        GameObject obj=UnityEngine.Object.Instantiate(impactPrefab,impactRoot.transform,false);
+                        try
+                        {
+                            var audio=obj.GetComponent<AudioSource>();var stimulus=obj.GetComponent<stimulscript>();
+                            if(audio==null || stimulus==null || !stimulus.DontStartCheckingAudioSources)throw new InvalidOperationException("Unexpected impact prefab");
+                            obj.SetActive(false);audio.enabled=false;
+                            impactPool[impactCreated]=new ImpactEmitter{Object=obj,Audio=audio,Stimulus=stimulus,Min=audio.minDistance,Max=audio.maxDistance};
+                            impactFree.Push(impactCreated++);
+                        }
+                        catch{UnityEngine.Object.Destroy(obj);throw;}
+                        if((Stopwatch.GetTimestamp()-start)*1000.0/Stopwatch.Frequency>=1)break;
+                    }
+                }
+                if(flush)
+                {
+                    float clock=Time.unscaledTime;
+                    if(clock<impactWindow || clock-impactWindow>=0.05f){impactWindow=clock;impactStarts=0;}
+                    while(impactStarts<ImpactStartsPerWindow && impactVoices<ImpactVoiceLimit)
+                    {
+                        ImpactEmitter best=null;
+                        for(int i=0;i<impactActive.Count;i++)
+                        {var e=impactPool[impactActive[i]];if(e.Pending && (best==null || e.Score>best.Score))best=e;}
+                        if(best==null)break;
+                        best.Pending=false;
+                        var audio=best.Audio;
+                        audio.priority=best.Priority;audio.outputAudioMixerGroup=best.Group;audio.clip=best.Clip;
+                        audio.minDistance=best.Min;audio.maxDistance=best.Max;
+                        if(best.Volume>1){audio.volume=1;audio.minDistance*=best.Volume-1;audio.maxDistance*=best.Volume-1;}
+                        else audio.volume=best.Volume;
+                        audio.pitch=best.Pitch;audio.spatialBlend=1;audio.enabled=true;audio.Play();
+                        best.Voiced=true;impactVoices++;impactStarts++;impactPlayed++;
+                    }
+                    // No delayed sound backlog: unselected emitters remain AI stimuli.
+                    for(int i=0;i<impactActive.Count;i++)
+                    {var e=impactPool[impactActive[i]];if(e.Pending){e.Pending=false;impactLimited++;}}
+                }
+                if(warm && ModDiagnostics.On && Time.unscaledTime-impactReport>=5)
+                {
+                    impactReport=Time.unscaledTime;
+                    Debug.Log("[TLD MP impact-audio] requests="+impactRequests+" nativeFallback="+impactFallback+" played="+impactPlayed+" budgeted="+impactLimited+" replacedSilent="+impactReplaced+" emitters="+impactActive.Count+" voices="+impactVoices+" warmed="+impactCreated+" capacity="+ImpactCapacity+" voiceLimit="+ImpactVoiceLimit+" startsPer50ms="+ImpactStartsPerWindow+" stimuli=bounded-overload");
+                    impactRequests=impactFallback=impactPlayed=impactLimited=impactReplaced=0;
+                }
+            }
+            catch(Exception e){ImpactFailure(e);}
+        }
+        static GameObject PlayImpact(AudioClip clip,Vector3 position,float volume,float pitch,UnityEngine.Audio.AudioMixerGroup group,byte priority)
+        {
+            impactRequests++;
+            if(clip!=null && impactOwner!=null && impactOwner==mainscript.s && impactPrefab==impactOwner.Audio && impactFree.Count==0 && impactActive.Count>ImpactVoiceLimit && !float.IsNaN(volume) && !float.IsInfinity(volume))
+            {
+                // At most 48 emitters can be voiced: 49 inspected entries must
+                // include a silent one. Work stays bounded even during catch-up.
+                int victim=-1;float score=float.PositiveInfinity;
+                for(int n=0;n<=ImpactVoiceLimit;n++)
+                {
+                    int index=(impactVictimCursor+n)%impactActive.Count;
+                    var candidate=impactPool[impactActive[index]];
+                    if(!candidate.Voiced && candidate.Score<score){victim=index;score=candidate.Score;}
+                }
+                if(victim>=0){ReleaseImpact(victim);impactReplaced++;impactVictimCursor=(victim+1)%impactActive.Count;}
+            }
+            if(clip!=null && impactOwner!=null && impactOwner==mainscript.s && impactPrefab==impactOwner.Audio && impactFree.Count>0 && !float.IsNaN(volume) && !float.IsInfinity(volume))
+            {
+                int id=impactFree.Pop();var e=impactPool[id];
+                try
+                {
+                    if(e.Object==null)throw new InvalidOperationException("Destroyed pooled emitter");
+                    e.Object.transform.SetParent(null,false);e.Object.transform.SetPositionAndRotation(position,Quaternion.identity);
+                    e.Object.transform.localScale=impactPrefab.transform.localScale;
+                    e.Clip=clip;e.Group=group;e.Volume=volume;e.Pitch=pitch;e.Priority=priority;
+                    e.End=Time.time+clip.length;e.Pending=true;e.Voiced=false;
+                    float distance=0;
+                    if(impactOwner.player!=null)distance=(position-impactOwner.player.transform.position).sqrMagnitude;
+                    e.Score=volume/(1+0.01f*distance);
+                    e.Stimulus.SetAudioValue(volume);e.Object.SetActive(true);impactActive.Add(id);
+                    return e.Object;
+                }
+                catch(Exception error){if(e.Object!=null)UnityEngine.Object.Destroy(e.Object);ImpactFailure(error);}
+            }
+            // Cold-start/invalid-prefab fallback retains native behavior.
+            impactFallback++;
+            return mainscript.PlayClipAtPoint(clip,position,volume,pitch,group,1f,priority);
+        }
+        static long npcVehicleImpactCount,npcVehicleImpactNext;
+        public static void ConfigureRabbitImpact(ragdollactivatescript ragdoll){NpcVehicleImpact.ConfigureRabbit(ragdoll);RabbitReplicas.EndMutation(ragdoll);RabbitContact.ObserveRabbit(ragdoll==null?null:ragdoll.GetComponent<nyulscript>());}
+        public static bool RabbitImpactGate(breakablescript victim,Collision collision){return NpcVehicleImpact.AdmitRabbitCollision(victim,collision);}
+        public static Vector3 NpcVehicleVelocity(Collision collision,breakablescript victim)
+        {
+            Vector3 original=collision.relativeVelocity;
+            Vector3 result=NpcVehicleImpact.RelativeVelocity(collision,victim);
+            if(result.sqrMagnitude>original.sqrMagnitude)
+            {
+                npcVehicleImpactCount++;
+                long now=DateTime.UtcNow.Ticks;
+                if(now>=npcVehicleImpactNext)
+                {
+                    npcVehicleImpactNext=now+TimeSpan.TicksPerSecond*2;
+                    Debug.Log("[Roadworthy NPC impact] cumulative_scaled="+npcVehicleImpactCount+" native_speed="+original.magnitude.ToString("F2",System.Globalization.CultureInfo.InvariantCulture)+" adjusted_speed="+result.magnitude.ToString("F2",System.Globalization.CultureInfo.InvariantCulture));
+                }
+            }
+            return result;
+        }
+        public static int NpcImpactLayer(GameObject hit)
+        {
+            int layer=hit.layer;
+            if(layer==15 || layer==17)
+            {
+                if(hit.GetComponentInParent<newAiScript>()!=null || hit.GetComponentInParent<aiscript>()!=null)return layer;
+                if(hit.GetComponentInParent<carscript>()!=null || hit.GetComponentInParent<fpscontroller>()!=null)return 0;
+            }
+            return layer;
+        }
+        public static bool HasCollisionContacts(Collision collision)
+        {return collision!=null && collision.contactCount>0;}
+        public static GameObject PickupImpactSound(AudioClip clip,Vector3 position,float volume,byte priority)
+        {return PlayImpact(clip,position,volume,1,mainscript.s.defGroup,priority);}
+        public static GameObject CarImpactSound(AudioClip clip,Vector3 position,float volume,bool randomPitch,UnityEngine.Audio.AudioMixerGroup group,byte priority)
+        {
+            float pitch=randomPitch?UnityEngine.Random.Range(0.85f,1.15f):1;
+            return PlayImpact(clip,position,volume,pitch,group,priority);
+        }
+        // Only sibling colliders from one audited crate break are delayed. External
+        // contacts remain enabled. A global queue bounds both work and retained pairs.
+        struct CrateContact
+        {
+            internal Collider A,B;
+            internal float Ready,Deadline;
+        }
+        static readonly List<CrateContact> crateContacts=new List<CrateContact>(8192);
+        static readonly List<Collider> crateColliderScratch=new List<Collider>(64);
+        static int crateContactCursor;
+        static bool crateContactFailed;
+        static void PrepareCrateDebris(GameObject group)
+        {
+            if(group==null || (group.name!="crateGib(Clone)" && group.name!="R_crateGib(Clone)"))return;
+            long started=Stopwatch.GetTimestamp();
+            try
+            {
+                group.GetComponentsInChildren<Collider>(false,crateColliderScratch);
+                int count=crateColliderScratch.Count;
+                // Reject unexpected prefab layouts before changing any pair.
+                if(count<2 || count>64 || crateContacts.Count+count*(count-1)/2>8192)return;
+                for(int i=0;i<count;i++)
+                {
+                    Collider col=crateColliderScratch[i];
+                    if(!(col is BoxCollider) || col.attachedRigidbody==null)return;
+                    var item=col.attachedRigidbody.GetComponent<tosaveitemscript>();
+                    if(item==null || item.id<280 || item.id>291 || item.car!=null || item.attachable!=null || item.attachgrip!=null)return;
+                }
+                float ready=Time.fixedTime+2*Time.fixedDeltaTime,deadline=Time.fixedTime+1;
+                int added=0;
+                for(int i=0;i<count;i++)for(int j=i+1;j<count;j++)
+                {
+                    Collider a=crateColliderScratch[i],b=crateColliderScratch[j];
+                    if(a==null || b==null || !a.enabled || !b.enabled || a.isTrigger || b.isTrigger ||
+                        a.attachedRigidbody==null || b.attachedRigidbody==null || a.attachedRigidbody==b.attachedRigidbody || Physics.GetIgnoreCollision(a,b))continue;
+                    // Add first: if the native call throws, cleanup still owns the pair.
+                    crateContacts.Add(new CrateContact{A=a,B=b,Ready=ready,Deadline=deadline});
+                    Physics.IgnoreCollision(a,b,true);added++;
+                }
+                if(ModDiagnostics.On)Debug.Log("[TLD MP crate-contacts] colliders="+count+" deferredPairs="+added+" queued="+crateContacts.Count+" setupMs="+((Stopwatch.GetTimestamp()-started)*1000.0/Stopwatch.Frequency).ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+" graceSteps=2 deadlineSeconds=1 checksPerStep=256 restoresPerStep=128 overlapRestoresPerStep=8");
+            }
+            catch(Exception e){CrateContactFailure(e);}
+            finally{crateColliderScratch.Clear();}
+        }
+        static void CrateContactFailure(Exception e)
+        {if(!crateContactFailed){crateContactFailed=true;Debug.LogWarning("[TLD MP crate-contacts] "+e.GetType().Name+": "+e.Message);}}
+        static bool CratePairSeparated(Collider a,Collider b)
+        {
+            if(!a.enabled || !b.enabled || !a.gameObject.activeInHierarchy || !b.gameObject.activeInHierarchy)return true;
+            if(!a.bounds.Intersects(b.bounds))return true;
+            Vector3 direction;float distance;
+            return !Physics.ComputePenetration(a,a.transform.position,a.transform.rotation,b,b.transform.position,b.transform.rotation,out direction,out distance);
+        }
+        static void TickCrateContacts()
+        {
+            int checks=Math.Min(256,crateContacts.Count),restores=0,overlapRestores=0;
+            float now=Time.fixedTime;
+            while(checks-->0 && crateContacts.Count>0 && restores<128)
+            {
+                if(crateContactCursor>=crateContacts.Count)crateContactCursor=0;
+                CrateContact pair=crateContacts[crateContactCursor];bool remove=false;
+                try
+                {
+                    if(pair.A==null || pair.B==null)remove=true;
+                    else if(now>=pair.Ready)
+                    {
+                        bool separated=CratePairSeparated(pair.A,pair.B);
+                        if(separated || (now>=pair.Deadline && overlapRestores<8))
+                        {
+                            Physics.IgnoreCollision(pair.A,pair.B,false);restores++;remove=true;
+                            if(!separated)overlapRestores++;
+                        }
+                    }
+                }
+                catch(Exception e){CrateContactFailure(e);}
+                if(remove){int last=crateContacts.Count-1;crateContacts[crateContactCursor]=crateContacts[last];crateContacts.RemoveAt(last);}
+                else crateContactCursor++;
+            }
+        }
+        static void ClearCrateContacts()
+        {
+            for(int i=0;i<crateContacts.Count;i++)
+            {var pair=crateContacts[i];try{if(pair.A!=null && pair.B!=null)Physics.IgnoreCollision(pair.A,pair.B,false);}catch(Exception e){CrateContactFailure(e);}}
+            crateContacts.Clear();crateContactCursor=0;
+        }
+        // The native slicer only reads these arrays until SliceMesh returns. Refill
+        // reusable exact-length buffers on every call, including mutable meshes.
+        static readonly List<Vector3> sliceVertexList=new List<Vector3>();
+        static readonly List<Vector2> sliceUvList=new List<Vector2>();
+        static readonly List<int> sliceIndexList=new List<int>();
+        static readonly Dictionary<int,Vector3[]> sliceVertexBuffers=new Dictionary<int,Vector3[]>();
+        static readonly Dictionary<int,Vector2[]> sliceUvBuffers=new Dictionary<int,Vector2[]>();
+        static readonly Dictionary<int,int[]> sliceIndexBuffers=new Dictionary<int,int[]>();
+        static T[] SliceBuffer<T>(List<T> source,Dictionary<int,T[]> buffers)
+        {
+            T[] result;int count=source.Count;
+            if(!buffers.TryGetValue(count,out result))
+            {
+                result=new T[count];
+                if(count<=32768 && buffers.Count<8)buffers.Add(count,result);
+            }
+            source.CopyTo(result);
+            if(source.Capacity>65536){source.Clear();source.Capacity=0;}
+            return result;
+        }
+        public static Vector3[] SliceVertices(Mesh mesh)
+        {if(mesh==null)return mesh.vertices;mesh.GetVertices(sliceVertexList);return SliceBuffer(sliceVertexList,sliceVertexBuffers);}
+        public static Vector2[] SliceUv(Mesh mesh)
+        {if(mesh==null)return mesh.uv;mesh.GetUVs(0,sliceUvList);return SliceBuffer(sliceUvList,sliceUvBuffers);}
+        public static int[] SliceTriangles(Mesh mesh)
+        {
+            if(mesh==null || mesh.subMeshCount!=1)return mesh.triangles;
+            mesh.GetTriangles(sliceIndexList,0,true);return SliceBuffer(sliceIndexList,sliceIndexBuffers);
+        }
+        static readonly List<float> sliceSortKeys=new List<float>(16);
+        public static List<Mesh> SortSliceMeshes(List<Mesh> meshes)
+        {
+            sliceSortKeys.Clear();
+            try
+            {
+                for(int i=0;i<meshes.Count;i++)sliceSortKeys.Add(meshes[i].bounds.size.magnitude);
+                // Stable insertion sort: native OrderBy keeps ties in input order.
+                for(int i=1;i<meshes.Count;i++)
+                {
+                    Mesh mesh=meshes[i];float key=sliceSortKeys[i];int j=i;
+                    while(j>0 && Comparer<float>.Default.Compare(sliceSortKeys[j-1],key)>0)
+                    {meshes[j]=meshes[j-1];sliceSortKeys[j]=sliceSortKeys[j-1];j--;}
+                    meshes[j]=mesh;sliceSortKeys[j]=key;
+                }
+                return meshes;
+            }
+            finally{sliceSortKeys.Clear();}
+        }
+        static readonly Dictionary<Vector3,Vector3> slicePoints=new Dictionary<Vector3,Vector3>();
+        static readonly Dictionary<Vector3,float> sliceSides=new Dictionary<Vector3,float>();
+        static bool slicePointsActive;
+        static int slicePointTransform;
+        static readonly HashSet<ulong> sliceCollisionPairs=new HashSet<ulong>();
+        static bool slicePairsActive;
+        public static void SliceGeometryBegin(){sliceSides.Clear();slicePoints.Clear();slicePointsActive=true;slicePointTransform=0;}
+        public static void SliceGeometryEnd(){slicePointsActive=false;sliceSides.Clear();slicePoints.Clear();slicePointTransform=0;}
+        public static float SlicePlaneSide(ref MeshSlicer.CustomPlane plane,Vector3 point)
+        {
+            if(!slicePointsActive)return plane.GetSide(point);
+            float side;
+            if(sliceSides.TryGetValue(point,out side))return side;
+            side=plane.GetSide(point);
+            if(sliceSides.Count<8192)sliceSides.Add(point,side);
+            return side;
+        }
+        public static Vector3 SliceTransformPoint(Transform transform,Vector3 point)
+        {
+            if(!slicePointsActive || transform==null)return transform.TransformPoint(point);
+            int id=transform.GetInstanceID();
+            if(slicePointTransform==0)slicePointTransform=id;
+            if(id!=slicePointTransform)return transform.TransformPoint(point);
+            Vector3 result;
+            if(slicePoints.TryGetValue(point,out result))return result;
+            result=transform.TransformPoint(point);
+            if(slicePoints.Count<8192)slicePoints.Add(point,result);
+            return result;
+        }
+        public static void SlicePairsBegin(){sliceCollisionPairs.Clear();slicePairsActive=true;}
+        public static void SlicePairsEnd(){slicePairsActive=false;sliceCollisionPairs.Clear();}
+        public static void SliceIgnoreCollision(Collider a,Collider b)
+        {
+            if(!slicePairsActive || a==null || b==null || a==b){Physics.IgnoreCollision(a,b);return;}
+            uint first=unchecked((uint)a.GetInstanceID()),second=unchecked((uint)b.GetInstanceID());
+            ulong key=first<second?((ulong)first<<32)|second:((ulong)second<<32)|first;
+            if(sliceCollisionPairs.Contains(key))return;
+            FrameDiagnostics.NativeBegin(130);
+            try{Physics.IgnoreCollision(a,b);}
+            finally{FrameDiagnostics.NativeEnd(130);}
+            if(sliceCollisionPairs.Count<32768)sliceCollisionPairs.Add(key);
+        }
+        public static void DebrisNormalsBegin(){FrameDiagnostics.NativeBegin(126);}
+        public static void DebrisNormalsEnd(){FrameDiagnostics.NativeEnd(126);}
+        public static void DebrisBoundsBegin(){FrameDiagnostics.NativeBegin(127);}
+        public static void DebrisBoundsEnd(){FrameDiagnostics.NativeEnd(127);}
+        public static void DebrisConvexBegin(){FrameDiagnostics.NativeBegin(128);}
+        public static void DebrisConvexEnd(){FrameDiagnostics.NativeEnd(128);}
+        public static void DebrisColliderMeshBegin(){FrameDiagnostics.NativeBegin(129);}
+        public static void DebrisColliderMeshEnd(){FrameDiagnostics.NativeEnd(129);}
+        public static void DebrisComponentsBegin(){FrameDiagnostics.NativeBegin(131);}
+        public static void DebrisComponentsEnd(){FrameDiagnostics.NativeEnd(131);}
+        // Captured once per process so physics mode and the session fingerprint cannot diverge.
+        static readonly bool debrisSpeculative=ReadDebrisCcdMode();
+        static bool debrisCcdLogged,debrisCcdFailed;
+        static readonly Stack<List<tosaveitemscript>> debrisItemScratch=new Stack<List<tosaveitemscript>>();
+        static bool ReadDebrisCcdMode()
+        {
+            try
+            {
+                string managed=Path.GetDirectoryName(typeof(StableGameBridge).Assembly.Location);
+                return File.Exists(Path.Combine(Directory.GetParent(managed).Parent.FullName,"tldmp-debris-speculative.on"));
+            }catch{return false;}
+        }
+        internal static bool IsComparisonDebris(int prefabId)
+        {return prefabId==69 || (prefabId>=280 && prefabId<=291);}
+        internal static bool IsSolverDebris(int id)
+        {return id==67 || id==68 || id==69 || (id>=203 && id<=210) || (id>=280 && id<=291) || (id>=322 && id<=332);}
+        static void SetDebrisSolver(Rigidbody body)
+        {
+            if(body==null)return;
+            if(body.solverIterations!=8)body.solverIterations=8;
+            if(body.solverVelocityIterations!=2)body.solverVelocityIterations=2;
+        }
+        public static void DebrisItemInitialized(tosaveitemscript item)
+        {
+            if(item==null || !IsSolverDebris(item.id) || item.car!=null || item.attachable!=null || item.attachgrip!=null)return;
+            try
+            {
+                Rigidbody body=item.RB;
+                if(body==null)body=item.GetComponent<Rigidbody>();
+                SetDebrisSolver(body);
+                DebrisContactFilter.Register(body);
+                if(debrisSpeculative && IsComparisonDebris(item.id))SetComparisonDebrisMode(body);
+            }catch(Exception e){DebrisCcdFailure(e);}
+        }
+        static void SetComparisonDebrisMode(Rigidbody body)
+        {
+            if(body==null || body.collisionDetectionMode!=CollisionDetectionMode.ContinuousDynamic)return;
+            body.collisionDetectionMode=CollisionDetectionMode.ContinuousSpeculative;
+            if(!debrisCcdLogged){debrisCcdLogged=true;Debug.Log("[TLD MP debris-ccd] comparison=speculative; cactus/crate fragments and runtime slices only; all peers require matching mode; restart to switch.");}
+        }
+        static void DebrisCcdFailure(Exception error)
+        {if(!debrisCcdFailed){debrisCcdFailed=true;Debug.LogWarning("[TLD MP debris-ccd] comparison setup failed; "+error.GetType().Name+": "+error.Message);}}
+        static GameObject CreateBreakDebris(GameObject prefab,Vector3 position,Quaternion rotation)
+        {
+            GameObject result=UnityEngine.Object.Instantiate(prefab,position,rotation);
+            // Pair exclusions replace the former sibling-contact restoration queue.
+            if(result==null)return result;
+            List<tosaveitemscript> items=debrisItemScratch.Count==0?new List<tosaveitemscript>():debrisItemScratch.Pop();
+            try
+            {
+                result.GetComponentsInChildren<tosaveitemscript>(true,items);
+                for(int i=0;i<items.Count;i++)DebrisItemInitialized(items[i]);
+            }
+            catch(Exception e){DebrisCcdFailure(e);}
+            finally{items.Clear();if(debrisItemScratch.Count<4)debrisItemScratch.Push(items);}
+            return result;
+        }
+        public static void SetSliceCollisionMode(Rigidbody body,CollisionDetectionMode requested)
+        {
+            SetDebrisSolver(body);
+            DebrisContactFilter.Register(body);
+            body.collisionDetectionMode=debrisSpeculative && requested==CollisionDetectionMode.ContinuousDynamic?CollisionDetectionMode.ContinuousSpeculative:requested;
+        }
+        static double debrisLogWindow;
+        // Bounded pair exclusions run on the main thread before simulation.
+        static class DebrisContactFilter
+        {
+            const int Capacity=256,ChecksPerFrame=2048;
+            struct Job{internal int A,B,GA,GB;}
+            sealed class Entry{internal Collider Col;internal Rigidbody Body;internal int Generation;internal bool Active;}
+            static readonly Entry[] entries=new Entry[Capacity];
+            static readonly bool[,] owned=new bool[Capacity,Capacity],queued=new bool[Capacity,Capacity];
+            static readonly Queue<Job> jobs=new Queue<Job>(Capacity*Capacity/2);
+            static readonly HashSet<Rigidbody> pending=new HashSet<Rigidbody>();
+            static readonly List<Collider> scratch=new List<Collider>();
+            static int frame=-1,checks,changed,overflow;static long spent;static float report;
+            static bool failed;
+            internal static void Register(Rigidbody body){if(body!=null && pending.Count<Capacity)pending.Add(body);}
+            static bool Active(Entry e){return e!=null && e.Col!=null && e.Col.enabled && !e.Col.isTrigger && e.Col.gameObject.activeInHierarchy && e.Body!=null && e.Col.attachedRigidbody==e.Body && !e.Body.isKinematic;}
+            static void Row(int slot)
+            {
+                for(int other=0;other<Capacity;other++)
+                {
+                    if(other==slot || entries[other]==null)continue;
+                    int a=Math.Min(slot,other),b=Math.Max(slot,other);
+                    if(queued[a,b])continue;
+                    queued[a,b]=true;jobs.Enqueue(new Job{A=a,B=b,GA=entries[a].Generation,GB=entries[b].Generation});
+                }
+            }
+            static void Add(Collider col,Rigidbody body)
+            {
+                if(col==null || col.isTrigger || col.attachedRigidbody!=body)return;
+                int free=-1;
+                for(int i=0;i<Capacity;i++)
+                {
+                    if(entries[i]!=null && object.ReferenceEquals(entries[i].Col,col))return;
+                    if(free<0 && (entries[i]==null || entries[i].Col==null))free=i;
+                }
+                if(free<0 || jobs.Count>=Capacity*Capacity/2){overflow++;return;}
+                int generation=entries[free]==null?1:entries[free].Generation+1;
+                // The previous collider is destroyed: PhysX already discarded its pairs.
+                for(int i=0;i<Capacity;i++){owned[Math.Min(i,free),Math.Max(i,free)]=false;queued[Math.Min(i,free),Math.Max(i,free)]=false;}
+                entries[free]=new Entry{Col=col,Body=body,Generation=generation};
+                entries[free].Active=Active(entries[free]);Row(free);
+            }
+            internal static void Tick()
+            {
+                if(failed)return;
+                try
+                {
+                    foreach(var body in pending)
+                    {if(body==null)continue;scratch.Clear();body.GetComponentsInChildren<Collider>(true,scratch);foreach(var col in scratch)Add(col,body);}
+                    pending.Clear();scratch.Clear();
+                    for(int i=0;i<Capacity;i++)
+                    {var e=entries[i];if(e==null)continue;bool active=Active(e);if(active!=e.Active){e.Active=active;Row(i);}}
+                    if(frame!=Time.frameCount){frame=Time.frameCount;checks=0;spent=0;}
+                    long start=Stopwatch.GetTimestamp();
+                    while(jobs.Count>0 && checks<ChecksPerFrame && (spent+Stopwatch.GetTimestamp()-start)*1000.0/Stopwatch.Frequency<2)
+                    {
+                        var job=jobs.Dequeue();checks++;
+                        var a=entries[job.A];var b=entries[job.B];
+                        if(a==null || b==null || a.Generation!=job.GA || b.Generation!=job.GB)continue;
+                        queued[job.A,job.B]=false;
+                        bool valid=a.Col!=null && b.Col!=null;
+                        bool desired=valid && a.Active && b.Active && a.Body!=b.Body;
+                        if(valid)
+                        {
+                            bool ignored=Physics.GetIgnoreCollision(a.Col,b.Col);
+                            if(desired && !ignored){owned[job.A,job.B]=true;Physics.IgnoreCollision(a.Col,b.Col,true);changed++;}
+                            else if(!desired && owned[job.A,job.B]){if(ignored)Physics.IgnoreCollision(a.Col,b.Col,false);owned[job.A,job.B]=false;}
+                        }
+                        else owned[job.A,job.B]=false;
+                    }
+                    spent+=Stopwatch.GetTimestamp()-start;
+                    if(ModDiagnostics.On && Time.unscaledTime-report>=5)
+                    {report=Time.unscaledTime;Debug.Log("[TLD MP debris-pairs] excluded="+changed+" queued="+jobs.Count+" capacitySkips="+overflow+" checksPerFrame="+ChecksPerFrame+" softBudgetMs=2 policy=debris-only");changed=overflow=0;}
+                }
+                catch(Exception e){Clear();failed=true;Debug.LogWarning("[TLD MP debris-pairs] native fallback: "+e.GetType().Name+": "+e.Message);}
+            }
+            internal static void Clear()
+            {
+                for(int a=0;a<Capacity;a++)for(int b=a+1;b<Capacity;b++)
+                {
+                    if(owned[a,b] && entries[a]!=null && entries[b]!=null && entries[a].Col!=null && entries[b].Col!=null)Physics.IgnoreCollision(entries[a].Col,entries[b].Col,false);
+                    owned[a,b]=queued[a,b]=false;
+                }
+                Array.Clear(entries,0,entries.Length);jobs.Clear();pending.Clear();scratch.Clear();frame=-1;checks=0;spent=0;
+            }
+        }
+        // End debris contact filter.
+        public static GameObject BuildBoxSlice(GameObject original,Transform originalTransform,Mesh mesh)
+        {
+            mesh.RecalculateNormals();mesh.RecalculateBounds();
+            var fragment=new GameObject();
+            fragment.transform.SetPositionAndRotation(originalTransform.position,originalTransform.rotation);
+            fragment.transform.localScale=original.transform.lossyScale;
+            fragment.AddComponent<MeshFilter>().sharedMesh=mesh;
+            var renderer=fragment.AddComponent<MeshRenderer>();
+            renderer.shadowCastingMode=UnityEngine.Rendering.ShadowCastingMode.Off;
+            renderer.sharedMaterial=original.GetComponentInChildren<MeshRenderer>().sharedMaterial;
+            fragment.AddComponent<randomSlice>().dedestroy=true;
+            var box=fragment.AddComponent<BoxCollider>();
+            var bounds=mesh.bounds;box.center=bounds.center;
+            var size=bounds.size;
+            box.size=new Vector3(Mathf.Max(size.x,0.001f),Mathf.Max(size.y,0.001f),Mathf.Max(size.z,0.001f));
+            return fragment;
+        }
+        static int debrisLogCount;
+        public static GameObject InstantiateBreakDebris(GameObject prefab,Vector3 position,Quaternion rotation)
+        {
+            if(!ModDiagnostics.On)return CreateBreakDebris(prefab,position,rotation);
+            int frame=Time.frameCount;
+            int gc0=GC.CollectionCount(0),gc1=GC.CollectionCount(1),gc2=GC.CollectionCount(2);
+            long start=Stopwatch.GetTimestamp();bool completed=false;
+            FrameDiagnostics.NativeBegin(125);
+            BreakProbeStageBegin(14);
+            try
+            {
+                GameObject result=CreateBreakDebris(prefab,position,rotation);
+                completed=true;return result;
+            }
+            finally
+            {
+                long end=Stopwatch.GetTimestamp();
+                BreakProbeStageEnd(14);
+                FrameDiagnostics.NativeEnd(125);
+                // Diagnostics must preserve the native return and exception behavior.
+                try
+                {
+                    double ms=(end-start)*1000.0/Stopwatch.Frequency;
+                    int d0=GC.CollectionCount(0)-gc0,d1=GC.CollectionCount(1)-gc1,d2=GC.CollectionCount(2)-gc2;
+                    if(ms>=3 || d0!=0 || d1!=0 || d2!=0 || !completed)
+                    {
+                        double now=Time.realtimeSinceStartup;
+                        if(now<debrisLogWindow || now-debrisLogWindow>=5){debrisLogWindow=now;debrisLogCount=0;}
+                        if(debrisLogCount++<16)Debug.Log("[TLD MP debris-spike] t="+now.ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+
+                            " frame="+frame+" prefab="+(prefab==null?"null":prefab.name)+" instantiateMs="+ms.ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+
+                            " gcDelta="+d0+"/"+d1+"/"+d2+" completed="+completed+" at="+position+" limit=16/5s");
+                    }
+                }
+                catch { }
+            }
+        }
         public static void NativePoiFixedInstantiateBegin(){FrameDiagnostics.NativePoiFixedInstantiateBegin();}
         public static void NativePoiFixedInstantiateEnd(){FrameDiagnostics.NativePoiFixedInstantiateEnd();}
         public static void NativePoiRemoveBegin(){FrameDiagnostics.NativePoiRemoveBegin();}
@@ -1829,22 +3163,67 @@ namespace TldMp
         public static void NativeRoadPoleEnd(){FrameDiagnostics.NativeRoadPoleEnd();}
         public static void NativeRoadDestroyBegin(){FrameDiagnostics.NativeRoadDestroyBegin();}
         public static void NativeRoadDestroyEnd(){FrameDiagnostics.NativeRoadDestroyEnd();}
+        internal static long DiagnosticStageBegin(){return UpdateCoverage.Begin();}
+        internal static void DiagnosticStageEnd(string name,long start){UpdateCoverage.End(name,start);}
+        // Fixed storage; diagnostics-only, with bounded delayed output. No per-call allocations.
+        static class UpdateCoverage
+        {
+            struct Row{internal string Name;internal int Frame;internal double Ms;internal int G0,G1,G2;}
+            static readonly Row[] rows=new Row[64];static int write,count,dropped,emitted;
+            static double window;static int depth;
+            static readonly long[] starts=new long[64];
+            static readonly int[,] collections=new int[64,3];
+            internal static long Begin(){if(!ModDiagnostics.On || depth==64)return 0;collections[depth,0]=GC.CollectionCount(0);collections[depth,1]=GC.CollectionCount(1);collections[depth,2]=GC.CollectionCount(2);long start=Stopwatch.GetTimestamp();starts[depth++]=start;return start;}
+            internal static void End(string name,long start)
+            {
+                if(start==0)return;
+                if(depth==0 || starts[depth-1]!=start){depth=0;dropped++;return;}
+                depth--;
+                double ms=(Stopwatch.GetTimestamp()-start)*1000.0/Stopwatch.Frequency;
+                if(ms<10)return;
+                if(count==rows.Length){dropped++;return;}
+                rows[write]=new Row{Name=name,Frame=Time.frameCount,Ms=ms,G0=GC.CollectionCount(0)-collections[depth,0],G1=GC.CollectionCount(1)-collections[depth,1],G2=GC.CollectionCount(2)-collections[depth,2]};
+                write=(write+1)%rows.Length;count++;
+            }
+            internal static void Flush()
+            {
+                if(!ModDiagnostics.On)return;
+                double now=Time.realtimeSinceStartup;
+                if(now<window || now-window>=5){window=now;emitted=0;}
+                if(count==0 || emitted>=8)return;
+                var row=rows[(write-count+rows.Length)%rows.Length];count--;emitted++;
+                Debug.Log("[TLD MP update-coverage] frame="+row.Frame+" stage="+row.Name+" ms="+row.Ms.ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+" gcDelta="+row.G0+"/"+row.G1+"/"+row.G2+" dropped="+dropped+" thresholdMs=10 delayed=true");
+                // No self-reporting loop: enqueue cost is not logged recursively.
+            }
+        }
         [DefaultExecutionOrder(10000)]public sealed class Driver:MonoBehaviour
         {
-            void Awake(){FrameDiagnostics.RegisterMainThread();}
+            void Awake(){EnsureRabbitRuntime();FrameDiagnostics.RegisterMainThread();}
             void Update()
             {
-                long a=Stopwatch.GetTimestamp();FrameDiagnostics.BeginFrame();FarPlaceQueue.Drain();
-                long b=Stopwatch.GetTimestamp();FrameDiagnostics.PulseBegin();Pulse();
-                long c=Stopwatch.GetTimestamp();TickNativeSpawnSafety(false);FrameDiagnostics.PulseEnd();
-                try{GroundDiagnostics.TickLoadingOverlay(!Connected || (node!=null && (node.IsHost || (node.Ready && spawnFinished))));}catch(Exception e){GroundDiagnostics.LoadingOverlayFailed(e);}
-                TickNewsChangelog();
-                long d=Stopwatch.GetTimestamp();WildlifeWeather.Tick(Connected);TickPlayerRate();
-                NoteSlowUpdate(a,b,c,d,Stopwatch.GetTimestamp());
+                EnsureRabbitRuntime();RabbitFlowDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node!=null&&node.IsHost,savedatascript.s,Now);
+                RabbitAttackDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node,savedatascript.s,mainscript.s==null?null:mainscript.s.player,Now);
+                UpdateCoverage.Flush();
+                long constructionStage=UpdateCoverage.Begin();try{FixedPropConstruction.Tick();}finally{UpdateCoverage.End("Bridge.FixedPropPreparation",constructionStage);}
+                long stage=UpdateCoverage.Begin();try{TickImpactAudio(true,false);}finally{UpdateCoverage.End("Bridge.ImpactAudioWarm",stage);}
+                stage=UpdateCoverage.Begin();try{FrameDiagnostics.BeginFrame();}finally{UpdateCoverage.End("Diagnostics.BeginFrameAndReport",stage);}
+                stage=UpdateCoverage.Begin();try{FarPlaceQueue.Drain();}finally{UpdateCoverage.End("Bridge.FarPlaceDrain",stage);}
+                FrameDiagnostics.PulseBegin();
+                stage=UpdateCoverage.Begin();try{Pulse();}finally{UpdateCoverage.End("Bridge.Pulse",stage);}
+                stage=UpdateCoverage.Begin();try{TickNativeSpawnSafety(false);}finally{UpdateCoverage.End("Bridge.SpawnSafety",stage);}
+                FrameDiagnostics.PulseEnd();
+                stage=UpdateCoverage.Begin();
+                try{try{GroundDiagnostics.TickLoadingOverlay(!Connected || (node!=null && (node.IsHost || (node.Ready && spawnFinished))));}catch(Exception e){GroundDiagnostics.LoadingOverlayFailed(e);}}
+                finally{UpdateCoverage.End("Bridge.LoadingOverlay",stage);}
+                stage=UpdateCoverage.Begin();try{TickNewsChangelog();}finally{UpdateCoverage.End("Bridge.News",stage);}
+                stage=UpdateCoverage.Begin();try{WildlifeWeather.Tick(Connected);}finally{UpdateCoverage.End("Bridge.Wildlife",stage);}
+                stage=UpdateCoverage.Begin();try{TickPlayerRate();}finally{UpdateCoverage.End("Bridge.PlayerRate",stage);}
+                RabbitMetadataSync.Tick(Connected&&PatchOptions.Rabbits,WorldSceneAvailable(),mainscript.s==null?null:mainscript.s.player,savedatascript.s,node,Now);
+                RabbitReplicas.Tick(IsRabbitGuest);
             }
-            void FixedUpdate(){TickJoinPhysics();TickNativeSpawnSafety(true);TickVehicleImpactSamples();TickVehicleImpactBursts();}
-            void LateUpdate(){TickNativeSeatSafety();TickJoinPhysics();try{RemoteCarSmoothing.CheckDrift();CarCargo.HoldTick(RemoteCarSmoothing.IsSmoothed);WorldJump.Tick(Connected);PartsCensus.Tick(Connected);}catch(Exception e){if(!worldJumpFailed){worldJumpFailed=true;Debug.LogWarning("[TLD MP world] diagnostics disabled after error: "+e.GetType().Name);}}}
-            void OnDestroy(){FrameDiagnostics.Shutdown();if(loopbackMode)Loopback.Stop();Reset();}
+            void FixedUpdate(){TickBusPair();RabbitContact.FixedTick(Connected,Now);TickMovingPassenger();DebrisContactFilter.Tick();TickImpactAudio(false,false);TickCrateContacts();TickJoinPhysics();TickNativeSpawnSafety(true);TickVehicleImpactSamples();TickVehicleImpactBursts();RabbitReplicas.Tick(IsRabbitGuest);}
+            void LateUpdate(){RabbitMotionTick();SmokeTick();TickImpactAudio(false,true);TickNativeSeatSafety();TickJoinPhysics();try{RemoteCarSmoothing.CheckDrift();CarCargo.HoldTick(RemoteCarSmoothing.IsSmoothed);WorldJump.Tick(Connected);PartsCensus.Tick(Connected);}catch(Exception e){if(!worldJumpFailed){worldJumpFailed=true;Debug.LogWarning("[TLD MP world] diagnostics disabled after error: "+e.GetType().Name);}}RabbitReplicas.Tick(IsRabbitGuest);}
+            void OnDestroy(){FixedPropConstruction.Clear();DebrisContactFilter.Clear();ClearImpactPool();ClearCrateContacts();FrameDiagnostics.Shutdown();if(loopbackMode)Loopback.Stop();Reset();}
         }
         static readonly HashSet<uint> announcedSpawns=new HashSet<uint>();
         sealed class SpawnApplyLedger

@@ -18,18 +18,16 @@ namespace TldMp
         internal const float SandstormMinSeconds = 600f;
         internal const float SandstormMaxSeconds = 1800f;
         internal const float SandstormRadius = 1500f;
+        internal static bool OnlineRabbitPopulation(bool released,bool loopback){return released||loopback;}
 
-        // Rabbits run in single-player only. In multiplayer the guest receives each
-        // rabbit's ragdoll several times a second: every update teleports its frozen
-        // bones (which can fling a car the guest is riding in) and logs a warning
-        // per bone, costing 30-45 ms per message. Vanilla never spawned them online.
+        // The native spawner is used in single-player. Multiplayer population
+        // runs through RabbitPopulation, which admits spawns only on the host.
         internal static bool RabbitsShouldRun(bool option, bool connected, bool worldStarted, bool hasPlayer, bool hasSpawner)
         {
             return option && !connected && worldStarted && hasPlayer && hasSpawner;
         }
 
-        // A host removes rabbits left in the world (from single-player play) so
-        // guests never receive them; the native destroy broadcasts the removal.
+        // Legacy fallback used when multiplayer population is unavailable.
         internal static bool RemoveRabbits(bool connected, bool isHost, bool rabbitPrefabKnown)
         {
             return connected && isHost && rabbitPrefabKnown;
@@ -91,6 +89,13 @@ namespace TldMp
         static void TickRabbits(fpscontroller player, bool connected, bool worldStarted)
         {
             aispawn spawner = FindSpawner(player);
+            if (connected && WildlifeWeatherPolicy.OnlineRabbitPopulation(RabbitPopulation.OnlineReady, StableGameBridge.RabbitLoopbackTesting))
+            {
+                if (startedSpawner != null && startedSpawner.started) startedSpawner.started = false;
+                StableGameBridge.TickRabbitPopulation(spawner, player, worldStarted);
+                return;
+            }
+            RabbitPopulation.Reset();
             bool run = WildlifeWeatherPolicy.RabbitsShouldRun(PatchOptions.Rabbits, connected, worldStarted, player != null, spawner != null);
             if (run && !spawner.started)
             {

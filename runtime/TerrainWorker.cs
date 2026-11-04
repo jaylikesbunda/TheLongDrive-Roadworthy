@@ -73,7 +73,7 @@ namespace TldMp
                     int i2 = j + 1 + (i + 1) * (resolution + 2);
                     Vector3 currentPos = new Vector3(j, 0f, i) * vertexDist + offset;
                     Vector3d currentGPos = gpos + currentPos;
-                    currentGPos.y = setting.Height(currentGPos, roadlist, poiList);
+                    currentGPos.y = RoadTerrainClearance.Height(setting, currentGPos, roadlist, poiList, WorldPlacementPolicy.EffectiveVersion > 0, WorldPlacementPolicy.RoadClearance);
                     currentPos.y = (float)currentGPos.y;
                     v2[i2] = currentPos;
                     if (j >= 0 && j < resolution && i >= 0 && i < resolution)
@@ -138,6 +138,8 @@ namespace TldMp
             internal List<poiGenScript.poiClass> Pois;
             internal terrainGenScript.smesh Mesh;
             internal Exception Error;
+            internal int BiomeMode;
+            internal int PlacementVersion;
         }
 
         sealed class GenState
@@ -183,14 +185,15 @@ namespace TldMp
             // Full: stop this pass without generating synchronously.
             if (state.Pending.Count >= MaxInFlight) return true;
             // Same calls, same moment, as the start of stock GenerateTileMesh.
-            List<roadGenScript.roadClass> roads = gen.roadAffectsThis ? mapSettingScript.RoadsNear(gpos) : null;
+            List<roadGenScript.roadClass> roads = gen.roadAffectsThis ?
+                (WorldPlacementPolicy.Version > 0 ? RoadTerrainClearance.RoadsNearTile(gpos, gen.tileSize, state.Snapshot.VertexDist) : mapSettingScript.RoadsNear(gpos)) : null;
             List<poiGenScript.poiClass> pois = gen.poiAffectsThis ? mapSettingScript.POIsNear(gpos, gen.tileSize) : null;
             if (HasHole(pois, gpos, state.Snapshot))
             {
                 fallback++;
                 return Vanilla(gen, gpos, regen, async);
             }
-            var job = new Job { State = state, Gpos = gpos, Roads = roads, Pois = pois };
+            var job = new Job { State = state, Gpos = gpos, Roads = roads, Pois = pois, BiomeMode = WorldBiomePolicy.Mode, PlacementVersion = WorldPlacementPolicy.Version };
             state.Pending.Add(gpos, job);
             jobs++;
             ThreadPool.QueueUserWorkItem(RunJob, job);
@@ -377,7 +380,14 @@ namespace TldMp
             {
                 try
                 {
-                    job.Mesh = TerrainTileMesh.Generate(job.State.Snapshot, job.Gpos, job.Roads, job.Pois);
+                    WorldBiomePolicy.BeginWorker(job.BiomeMode);
+                    try
+                    {
+                        WorldPlacementPolicy.BeginWorker(job.PlacementVersion);
+                        try { job.Mesh = TerrainTileMesh.Generate(job.State.Snapshot, job.Gpos, job.Roads, job.Pois); }
+                        finally { WorldPlacementPolicy.EndWorker(); }
+                    }
+                    finally { WorldBiomePolicy.EndWorker(); }
                 }
                 catch (Exception e)
                 {
@@ -419,3 +429,4 @@ namespace TldMp
         }
     }
 }
+

@@ -269,6 +269,8 @@ namespace TldMp
                 lastSampledFrame[phase]=completed;
             }
         }
+        internal static double PreviousPhysicsMs(int frame)
+        {return enabled && available[2] && lastUpdateEnd==frame-1?frameBuffer.Read(frame-1,2):-1;}
         static string Summary(int phase)
         {
             if(!available[phase])return "unavailable"+(String.IsNullOrEmpty(failure)?"":"("+failure+")");

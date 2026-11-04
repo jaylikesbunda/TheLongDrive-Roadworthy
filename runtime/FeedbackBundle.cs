@@ -14,7 +14,7 @@ namespace TldMp
     public sealed class FeedbackHotkey:MonoBehaviour
     {
         const string DiagnosticDirVariable="TLD_MP_DIAGNOSTIC_DIR";
-        sealed class Job {public string LogPath,DiagnosticDir,Info;public DateTime Local,Utc;}
+        sealed class Job {public string LogPath,DiagnosticDir,DiagnosticLog,Info;public DateTime Local,Utc;}
         readonly object gate=new object();
         double lastAccepted=double.NegativeInfinity;
         volatile bool busy;bool inputUnavailable;string finished;
@@ -46,7 +46,7 @@ namespace TldMp
             try{var s=settingsscript.s;if(s!=null && s.S!=null){drawDistance=s.S.FDrawDistance;mirrors=s.S.BMirrors;}}catch(Exception){}
             string info=FeedbackPolicy.InfoText(BuildIdentity.Sources,UnityEngine.Application.unityVersion,UnityEngine.SystemInfo.operatingSystem,
                 UnityEngine.Screen.width,UnityEngine.Screen.height,drawDistance,mirrors,StableGameBridge.SessionRole(),PatchInfo.Display,utc);
-            return new Job{LogPath=logPath,DiagnosticDir=Environment.GetEnvironmentVariable(DiagnosticDirVariable),Info=info,Local=local,Utc=utc};
+            return new Job{DiagnosticLog=DiagnosticFileLog.CurrentPath,LogPath=logPath,DiagnosticDir=Environment.GetEnvironmentVariable(DiagnosticDirVariable),Info=info,Local=local,Utc=utc};
         }
 
         // Worker thread.
@@ -86,6 +86,7 @@ namespace TldMp
                     foreach(var pick in FeedbackPolicy.SelectDiagnostics(candidates,job.Utc))
                         AddFile(zip,FeedbackPolicy.EntryName(false,pick.Name),Path.Combine(job.DiagnosticDir,pick.Name));
                 }
+                if(!String.IsNullOrEmpty(job.DiagnosticLog) && File.Exists(job.DiagnosticLog))AddFile(zip,"diagnostics/roadworthy-runtime.log",job.DiagnosticLog);
                 using(var writer=new StreamWriter(zip.CreateEntry(FeedbackPolicy.InfoEntry).Open(),new System.Text.UTF8Encoding(false)))writer.Write(job.Info);
             }
             File.Move(partial,finalPath);

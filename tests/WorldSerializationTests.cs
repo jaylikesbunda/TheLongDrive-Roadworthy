@@ -61,15 +61,16 @@ public static class WorldSerializationTests
         line.Elements.Add(new StableMap.Element {Biome=2,Road=3,Bones=new List<Vector3d>{p,equal}});
         chunk.Road.Lines.Add(line);
         chunk.Road.Inner.Add(new StableMap.Inner {Pos=p,Roads=new List<roadGenScript.roadChunk>{new roadGenScript.roadChunk {roadId=4,roadElements=new List<int>{2}}}});
-        chunk.Pois.Add(new StableMap.Poi {ID=5,Pos=p,State=new save_poi {posID=p}});
-        chunk.Objects.Add(new StableMap.Decoration {Prefab=6,Pos=p,Scale=1.5f});
+        var moved=new Vector3d(p.x+37,p.y,p.z+22);
+        chunk.Pois.Add(new StableMap.Poi {ID=5,PosID=p,Pos=moved,State=new save_poi {posID=p}});
+        chunk.Objects.Add(new StableMap.Decoration {Prefab=6,GPosID=p,Pos=moved,Scale=1.5f,Relocated=true});
         var copy=StableJson.Read<StableMap.Chunk>(StableJson.Write(chunk));
         Check(copy.Key==chunk.Key && copy.Seed==-123 && StableMap.SamePosition(copy.Position,p),"Chunk identity lost");
         Check(copy.Road.Dots.Count==1 && copy.Road.Dots[0].Connected.Count==2,"Road dots lost");
         Check(copy.Road.Lines[0].Elements[0].Bones.Count==2,"Road geometry lost");
         Check(copy.Road.Inner[0].Roads[0].roadElements[0]==2,"Inner road records lost");
-        Check(copy.Pois.Count==1 && copy.Pois[0].State!=null,"Chunk POI list lost");
-        Check(copy.Objects.Count==1 && copy.Objects[0].Scale==1.5f,"Decoration list lost");
+        Check(copy.Pois.Count==1 && copy.Pois[0].State!=null && StableMap.SamePosition(copy.Pois[0].PosID,p) && StableMap.SamePosition(copy.Pois[0].Pos,moved) && StableMap.SamePosition(copy.Pois[0].State.posID,p),"Relocated chunk POI identity/state lost");
+        Check(copy.Objects.Count==1 && copy.Objects[0].Scale==1.5f && copy.Objects[0].Relocated && StableMap.SamePosition(copy.Objects[0].GPosID,p) && StableMap.SamePosition(copy.Objects[0].Pos,moved),"Relocated decoration identity lost");
         var packed=StableJson.Write(chunk);
         Check(packed.Length<BitConverter.ToInt32(packed,0),"Expected repetitive chunk JSON to compress");
         bool rejected=false;try{StableJson.Read<StableMap.Chunk>(packed,8);}catch(InvalidOperationException){rejected=true;}

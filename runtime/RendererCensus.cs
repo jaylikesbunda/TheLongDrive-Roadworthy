@@ -39,7 +39,7 @@ namespace TldMp
             if (now < (runs == 0 ? FirstCensusAt : SecondCensusAt)) return;
             runs++;
             try { Run(now); }
-            catch (Exception error) { UnityEngine.Debug.Log("[TLD MP render] census failed: " + error.GetType().Name + ": " + error.Message); }
+            catch (Exception error) { DiagnosticFileLog.Log("[TLD MP render] census failed: " + error.GetType().Name + ": " + error.Message); }
         }
 
         static string Key(Renderer renderer, Mesh mesh, Material[] materials, int submeshes, bool propertyBlock)
@@ -204,7 +204,7 @@ namespace TldMp
                 .Append(" gpu=").Append(SystemInfo.graphicsDeviceName)
                 .Append(" vramMB=").Append(SystemInfo.graphicsMemorySize)
                 .Append(" cpus=").Append(SystemInfo.processorCount);
-            UnityEngine.Debug.Log(text.ToString());
+            DiagnosticFileLog.Log(text.ToString());
             RoadCensus(now);
         }
 
@@ -297,7 +297,7 @@ namespace TldMp
                 elementTicks += Stopwatch.GetTimestamp() - start;
             }
             double perMs = 1000.0 / Stopwatch.Frequency;
-            UnityEngine.Debug.Log("[TLD MP roads] t=" + now.ToString("F3", CultureInfo.InvariantCulture) +
+            DiagnosticFileLog.Log("[TLD MP roads] t=" + now.ToString("F3", CultureInfo.InvariantCulture) +
                 " gens=" + map.roadGens.Count +
                 " needed=" + needed + " existing=" + existing + " inner=" + inner +
                 " nearCells=" + nearCells + " farCells=" + farCells +

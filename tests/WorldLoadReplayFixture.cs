@@ -336,7 +336,9 @@ public class savedatascript:UnityEngine.MonoBehaviour
   if(item.P!=null){item.P.tosave=item;}
   items[key]=item;return item;
  }
- public void AddToChunk(UnityEngine.Vector3 upos,uint id){}
+ public readonly Dictionary<uint,UnityEngine.Vector3d> indexedPositions=new Dictionary<uint,UnityEngine.Vector3d>();
+ public void AddToChunk(UnityEngine.Vector3 upos,uint id){AddToChunk(mainscript.GlobalFromUnityPos(upos),id);}
+ public void AddToChunk(UnityEngine.Vector3d global,uint id){indexedPositions[id]=global;}
  // Bodies replaced by extracted production IL (pass "worldnative").
  public static void SaveToDictionary(tosaveitemscript tosave,itemDataClass data){throw new Exception("production IL missing");}
  public void LoadStuff(savedata data,uint key){throw new Exception("production IL missing");}
@@ -956,6 +958,18 @@ public static class WorldLoadReplayFixture
   if(!printedB){printedB=true;Console.WriteLine("PASS: scenario B - fresh native load -> host Resync -> production CaptureWorld/SendWorld -> client ApplyWorld -> readiness -> Ack/Live, root+children+slot/storage+player state in the snapshot.");}
  }
 
+ static void DistantItemIndex()
+ {
+  NewSession(true);
+  SetupPlayer(BuildCar(true,true,true));
+  const uint distantID=600;
+  var distantPosition=new UnityEngine.Vector3d(4000000.125,1,2000);
+  hostSave.data.itemData.items.Add(new save_item(distantID,43,distantPosition,new UnityEngine.Vector3()));
+  Handshake();transfer.Clear();Join(20);
+  Check(clientNode.Ready,"distant saved item does not prevent joining");
+  Check(clientSave.indexedPositions[distantID].x==distantPosition.x,"the joining client indexes distant items without rounding their saved global position");
+ }
+
  // Scenario C: save/reload must not revive or lose items.
  static void ReloadNoReviveNoLoss()
  {
@@ -1046,6 +1060,7 @@ public static class WorldLoadReplayFixture
   {
    AnnouncementsBeforeChild();
    FreshLoadAndJoin();
+   DistantItemIndex();
    ReloadNoReviveNoLoss();
    DelayedChildCreation();
    JoinBeforeHostLoad();

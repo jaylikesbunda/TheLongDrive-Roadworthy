@@ -50,7 +50,7 @@ $exe=Join-Path $BuildDirectory 'TerrainWorkDiagnosticsTests.exe'
 Run $csc (@('/nologo','/optimize+',('/out:'+$exe))+$nativeRefs+@((Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\TerrainWorkDiagnostics.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'runtime\ModDiagnostics.cs'),(Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tests\TerrainWorkDiagnosticsTests.cs')))
 Run $exe @($managed,(Join-Path $managed 'Assembly-CSharp.dll'))
 $exe=Join-Path $BuildDirectory 'ContentFingerprintTests.exe'
-$sources=@('runtime\NetCore.cs','runtime\StableCore.cs','runtime\StablePackets.cs','runtime\ContentFingerprint.cs','tests\ContentFingerprintTests.cs') | ForEach-Object {Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) $_}
+$sources=@('runtime\NetCore.cs','runtime\StableCore.cs','runtime\StablePackets.cs','runtime\BusPairProtocol.cs','runtime\ContentFingerprint.cs','tests\ContentFingerprintTests.cs') | ForEach-Object {Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) $_}
 Run $csc (@('/nologo','/optimize+',('/out:'+$exe))+$sources)
 Run $exe @()
 $exe=Join-Path $BuildDirectory 'ContentFingerprintBridgeTests.exe'

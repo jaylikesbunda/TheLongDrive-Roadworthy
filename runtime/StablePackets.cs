@@ -52,6 +52,7 @@ namespace TldMp
         public static bool Valid(byte[] b)
         {
             if(b!=null && b.Length>0 && b[0]==VehicleMotionCodec.Type)return VehicleMotionCodec.Valid(b);
+            if(b!=null && b.Length>0 && b[0]==BusPairProtocol.Type)return BusPairProtocol.ValidPacket(b);
             if(b==null || b.Length==0 || b.Length>58000 || b[0]>48)return false;
             if((b[0]==10 || b[0]==18 || b[0]==40 || b[0]==41 || b[0]==45) && b.Length<3)return false;
             string spec;
@@ -101,7 +102,20 @@ namespace TldMp
                 case 48:spec="ii[b][c]";break;
                 default:return false;
             }
-            try {var c=new Cursor(b);return c.Fields(spec,0,spec.Length)==b.Length;}catch(ArgumentException){return false;}
+            try {var c=new Cursor(b);return c.Fields(spec,0,spec.Length)==b.Length && (b[0]!=43 || EqualVectorCounts(b));}catch(ArgumentException){return false;}
+        }
+        static bool EqualVectorCounts(byte[] b)
+        {
+            long at=5,expected=-1;
+            for(int i=0;i<4;i++)
+            {
+                if(at+4>b.Length)return false;
+                int count=BitConverter.ToInt32(b,(int)at);
+                if(count<0 || count>4096)return false;
+                if(expected<0)expected=count;else if(count!=expected)return false;
+                at+=4+(long)count*12;
+            }
+            return at==b.Length;
         }
         // Object ID carried by a native message (diagnostics and transport
         // coalescing only; it grants no authority).
@@ -110,6 +124,7 @@ namespace TldMp
             switch(b[0])
             {
                 case VehicleMotionCodec.Type:return VehicleMotionCodec.Item(b);
+                case BusPairProtocol.Type:return b.Length>=BusPairProtocol.IDOffset+4?BitConverter.ToUInt32(b,BusPairProtocol.IDOffset):0;
                 case 18:return BitConverter.ToUInt32(b,10);
                 case 29:return BitConverter.ToUInt32(b,9);
                 case 40:case 41:return b[1]==0?BitConverter.ToUInt32(b,2):0;
@@ -126,7 +141,7 @@ namespace TldMp
             if(bytes==null || bytes.Length==0)return true;
             switch(bytes[0])
             {
-                case 10:case 11:case 14:case 16:case 17:case 18:case 19:case 20:case 29:case 39:case 43:case 46:case VehicleMotionCodec.Type:return false;
+                case 10:case 11:case 14:case 16:case 17:case 18:case 19:case 20:case 29:case 39:case 43:case 46:case 251:case 252:case VehicleMotionCodec.Type:case BusPairProtocol.Type:return false;
                 default:return true;
             }
         }
@@ -142,7 +157,7 @@ namespace TldMp
             if(bytes==null || bytes.Length<5)return 0;
             switch(bytes[0])
             {
-                case 16:case 19:case 20:case 39:case VehicleMotionCodec.Type:return StreamKey(bytes);
+                case 16:case 19:case 20:case 39:case VehicleMotionCodec.Type:case BusPairProtocol.Type:return StreamKey(bytes);
                 default:return 0;
             }
         }
