@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Long Drive: Roadworthy</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="brand">
+      <span class="mark">Roadworthy</span>
+      <span class="sub" id="subtitle">The Long Drive</span>
+    </header>
+
+    <section class="page active" data-page="loading">
+      <div class="spinner" aria-hidden="true"></div>
+      <h2>Looking for The Long Drive</h2>
+      <p class="lead">One moment...</p>
+    </section>
+
+    <section class="page" data-page="folder">
+      <h2>Where is The Long Drive?</h2>
+      <p class="lead" id="folderLead">Choose the game folder.</p>
+      <div class="row">
+        <input id="path" list="games" spellcheck="false" autocomplete="off" placeholder="C:\Program Files (x86)\Steam\steamapps\common\The Long Drive" aria-label="Game folder">
+        <datalist id="games"></datalist>
+        <button id="browse" class="btn" type="button">Browse</button>
+      </div>
+      <p id="folderError" class="error" role="alert"></p>
+      <div class="actions"><button id="continue" class="btn primary" type="button" data-focus>Continue</button></div>
+    </section>
+
+    <section class="page" data-page="home">
+      <h2 id="homeTitle">Ready to install</h2>
+      <p class="lead" id="homeText"></p>
+      <p class="muted" id="homeNote"></p>
+      <div class="actions">
+        <button id="primary" class="btn primary" type="button" data-focus>Install</button>
+      </div>
+      <div class="quiet">
+        <button id="restore" class="link" type="button">Restore original</button>
+        <button id="change" class="link" type="button">Change folder</button>
+      </div>
+      <p id="updateNote" class="update" hidden><span id="updateText"></span> <button id="getNewer" class="link accent" type="button">Get it</button></p>
+    </section>
+
+    <section class="page" data-page="working">
+      <h2 id="workTitle">Installing</h2>
+      <p class="lead" id="workPhase">Starting...</p>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="fill" class="fill"></div></div>
+      <button id="workDetails" class="link small" type="button" aria-expanded="false">Show details</button>
+      <pre id="workLog" class="log" hidden></pre>
+    </section>
+
+    <section class="page" data-page="done">
+      <div id="doneIcon" class="icon ok" aria-hidden="true"></div>
+      <h2 id="doneTitle">Done</h2>
+      <p class="lead" id="doneText"></p>
+      <div class="actions">
+        <button id="back" class="btn" type="button" hidden>Back</button>
+        <button id="close" class="btn primary" type="button" data-focus>Close</button>
+      </div>
+      <button id="doneDetails" class="link small" type="button" aria-expanded="false" hidden>Show details</button>
+      <pre id="doneLog" class="log" hidden></pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

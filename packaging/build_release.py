@@ -80,6 +80,15 @@ def embedded_icon(text: str) -> str:
     raise RuntimeError("installer_template.py has no APP_ICON_PNG_B64 constant")
 
 
+def write_payload(path) -> str:
+    """Write only the embedded source payload zip (no release folder changes); returns its SHA-256."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = make_zip(source_entries())
+    path.write_bytes(data)
+    return hashlib.sha256(data).hexdigest().upper()
+
+
 def main():
     if RELEASE.exists():
         shutil.rmtree(RELEASE)
@@ -115,4 +124,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 3 and sys.argv[1] == "--payload-only":
+        print(write_payload(sys.argv[2]))
+    else:
+        main()

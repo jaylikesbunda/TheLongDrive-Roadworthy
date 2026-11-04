@@ -1,0 +1,11 @@
+pub const VERSION: &str = "0.2.0";
+pub const BETA: &str = "2024.11.26b_test";
+pub const ORIGINAL_SHA256: &str = "CF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000";
+pub const CECIL_SHA256: &str = "D2A23832AAA948BA9A01ACC42B5726E34C5F995958F1B30D45C0E7C70B3A72D5";
+pub const CECIL_DLL_SHA256: &str = "C41BDB9FFD3C5F6E17D2382C1012D73703E035E3F1100245FDD4E08C8DC6EB5B";
+pub const APP_ID: &str = "1017180";
+pub const V4_RECEIPT: &str = "tldmp-v4-receipt.json";
+pub const V4_BACKUP: &str = "Assembly-CSharp.tldmp-v4-original.bin";
+pub const SINGLEPLAYER_SOURCES: &[&str] = &["Checks.cs","Expected.cs","Invariants.cs","PatchV4.cs","TldStable.cs","VerifyV4.cs"];
+pub const UPDATES_API: &str = "https://api.github.com/repos/jaylikesbunda/TheLongDrive-Roadworthy/releases?per_page=100&page={}";
+pub const RELEASE_PAGE: &str = "https://github.com/jaylikesbunda/TheLongDrive-Roadworthy/releases/tag/";

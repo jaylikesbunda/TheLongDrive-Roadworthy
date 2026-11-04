@@ -3,3 +3,6 @@
 release/
 __pycache__/
 *.pyc
+installer/target/
+installer/payload/
+installer/app/gen/

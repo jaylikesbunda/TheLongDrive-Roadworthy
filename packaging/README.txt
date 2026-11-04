@@ -5,22 +5,24 @@ See CHANGELOG.txt for what changed.
 INSTALL
 - Needs Windows 10/11 x64 and .NET Framework 4.x. No Python needed.
 - Close the game.
-- Run TheLongDrive-Roadworthy.exe and click the button. It finds your Steam
+- Run TheLongDrive-Roadworthy.exe and follow the page. It finds your Steam
   folder, builds the patch from the embedded sources for your game files, verifies
-  it, and installs it. If detection misses the game, paste the game folder path.
+  it, and installs it. If detection misses the game, the first page asks for the
+  game folder. The window needs Microsoft Edge WebView2, included with Windows 10/11.
 - The host and every joining player must run this same build.
 - Saves are not changed.
 
 RESTORE
-- Run the EXE again and click Restore original, or run "Restore Original.cmd".
-- The window shows the installed release/build next to the bundled one and
-  offers Install Roadworthy, Update to v0.2.0, Up to date, or Newer version
-  installed. Recognized older installs (the legacy release version may be unknown) update automatically: the new build is
+- Run the EXE again and choose Restore original, or run "Restore Original.cmd".
+- The window is a short set of pages: the first page offers only what applies
+  (Install, Update to v0.2.0, Close when up to date or when a newer version is
+  installed, plus Restore original when a patch is installed). Recognized older
+  installs (the legacy release version may be unknown) update automatically: the new build is
   fully built and verified before any previous patch is touched, and recovery
   copies of the replaced files are kept under the installer cache.
-- Details expands the live log; the progress bar reports real install stages.
-- The window checks GitHub releases once on open and offers Get newer
-  installer when a newer published release exists; it never downloads or
+- The progress page reports real install stages; Show details opens the live log.
+- The window checks GitHub releases once on open and mentions a newer
+  published release on the first page; it never downloads or
   installs anything by itself, and works fully offline.
 - TheLongDrive-Roadworthy.exe --check-updates checks for a newer release
 - TheLongDrive-Roadworthy.exe --status       reports installed vs bundled build
