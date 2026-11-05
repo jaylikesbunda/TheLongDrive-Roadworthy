@@ -30,7 +30,7 @@ import urllib.request
 import zipfile
 
 APP_TITLE = "The Long Drive: Roadworthy"
-VERSION = "0.2.0"
+VERSION = "0.2.0-pre1"
 BETA = "2024.11.26b_test"
 ORIGINAL_SHA256 = "CF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000"
 CECIL_SHA256 = "D2A23832AAA948BA9A01ACC42B5726E34C5F995958F1B30D45C0E7C70B3A72D5"
@@ -290,13 +290,24 @@ def installed_state(game: Path) -> str:
 
 
 def _version_tuple(value) -> tuple | None:
-    """Strict numeric X.Y.Z only; anything else is an unknown version."""
+    """Strict X.Y.Z or X.Y.Z-preN only; anything else is an unknown version.
+
+    Returns (major, minor, patch, rank, pre): rank 1 marks a final X.Y.Z
+    release, which ranks above every -preN of the same X.Y.Z; rank 0 marks a
+    -preN prerelease, where pre is N.
+    """
     if not isinstance(value, str):
         return None
-    parts = value.split(".")
-    if len(parts) != 3 or any(not re.fullmatch(r"[0-9]+", part) for part in parts):
+    match = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:-pre([0-9]+))?", value)
+    if not match:
         return None
-    return tuple(int(part) for part in parts)
+    major, minor, patch, pre = match.groups()
+    return (int(major), int(minor), int(patch), 1 if pre is None else 0, int(pre or 0))
+
+
+def _version_string(value: tuple) -> str:
+    major, minor, patch, rank, pre = value
+    return f"{major}.{minor}.{patch}" if rank else f"{major}.{minor}.{patch}-pre{pre}"
 
 
 def installation_info(game: Path) -> dict:
@@ -377,7 +388,7 @@ def check_updates() -> dict:
     if best is None:
         return {"version": None, "tag": None, "newer": False, "url": None}
     newer = bundled is not None and best > bundled
-    return {"version": ".".join(str(part) for part in best), "tag": best_tag, "newer": newer,
+    return {"version": _version_string(best), "tag": best_tag, "newer": newer,
             "url": RELEASE_PAGE + urllib.parse.quote(best_tag, safe="")}
 
 

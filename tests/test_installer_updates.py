@@ -75,6 +75,18 @@ class CheckUpdatesTests(unittest.TestCase):
         result, _ = self.check([release("nightly"), release("v1.2"), "junk", 42, release("v0.1.1")])
         self.assertEqual(result["version"], "0.1.1")
 
+    def test_pre_suffixes_parse_and_rank_below_the_release(self):
+        with mock.patch.object(app, "VERSION", "0.2.0-pre1"):
+            result, _ = self.check([release("v0.2.0-pre1")])
+            self.assertEqual(result["version"], "0.2.0-pre1")
+            self.assertFalse(result["newer"])
+            result, _ = self.check([release("v0.2.0-pre1"), release("v0.2.0-pre2")])
+            self.assertEqual(result["version"], "0.2.0-pre2")
+            self.assertTrue(result["newer"])
+            result, _ = self.check([release("v0.2.0-pre2"), release("v0.2.0")])
+            self.assertEqual(result["version"], "0.2.0")
+            self.assertTrue(result["newer"])
+
     def test_empty_list_means_no_published_release(self):
         result, _ = self.check([])
         self.assertIsNone(result["version"])
@@ -123,6 +135,20 @@ class CheckUpdatesTests(unittest.TestCase):
         self.assertEqual(seen["timeout"], 5)
         self.assertIn(app.VERSION, seen["ua"])
         self.assertEqual(seen["accept"], "application/vnd.github+json")
+
+
+class VersionTupleTests(unittest.TestCase):
+    def test_pre_suffixes_parse_order_and_render(self):
+        pre1, pre2, final = (app._version_tuple(v) for v in ("0.2.0-pre1", "0.2.0-pre2", "0.2.0"))
+        self.assertLess(pre1, pre2)
+        self.assertLess(pre2, final)
+        self.assertLess(final, app._version_tuple("0.2.1-pre9"))
+        self.assertEqual(app._version_string(pre1), "0.2.0-pre1")
+        self.assertEqual(app._version_string(final), "0.2.0")
+
+    def test_other_suffixes_stay_unknown(self):
+        for bad in ("0.2.0-beta", "0.2.0-pre", "0.2.0-pre1x", "0.2.0-pre-1", "1.2.3.4", "0.2.0 "):
+            self.assertIsNone(app._version_tuple(bad), bad)
 
 
 class CheckUpdatesCliTests(unittest.TestCase):

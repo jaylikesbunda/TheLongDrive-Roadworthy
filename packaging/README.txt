@@ -1,4 +1,4 @@
-THE LONG DRIVE: ROADWORTHY v0.2.0 (EXPERIMENTAL)
+THE LONG DRIVE: ROADWORTHY v0.2.0-pre1 (EXPERIMENTAL)
 Multiplayer and performance patch for The Long Drive, beta 2024.11.26b_test only.
 See CHANGELOG.txt for what changed.
 
@@ -15,7 +15,7 @@ INSTALL
 RESTORE
 - Run the EXE again and choose Restore original, or run "Restore Original.cmd".
 - The window is a short set of pages: the first page offers only what applies
-  (Install, Update to v0.2.0, Close when up to date or when a newer version is
+  (Install, Update to v0.2.0-pre1, Close when up to date or when a newer version is
   installed, plus Restore original when a patch is installed). Recognized older
   installs (the legacy release version may be unknown) update automatically: the new build is
   fully built and verified before any previous patch is touched, and recovery

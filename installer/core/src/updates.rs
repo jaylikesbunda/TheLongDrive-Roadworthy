@@ -139,6 +139,23 @@ mod tests {
     }
 
     #[test]
+    fn pre_suffixes_parse_and_rank_below_the_release() {
+        let fetch = |tags: Vec<&str>| {
+            let page = Value::Array(tags.iter().map(|t| release(t, false, "2026-01-01T00:00:00Z")).collect());
+            check_updates_with("0.2.0-pre1", &move |_| Ok(serde_json::to_vec(&page).unwrap()))
+        };
+        let r = fetch(vec!["v0.2.0-pre1"]).unwrap();
+        assert_eq!(r.version.as_deref(), Some("0.2.0-pre1"));
+        assert!(!r.newer);
+        let r = fetch(vec!["v0.2.0-pre1", "v0.2.0-pre2"]).unwrap();
+        assert_eq!(r.version.as_deref(), Some("0.2.0-pre2"));
+        assert!(r.newer);
+        let r = fetch(vec!["v0.2.0-pre2", "v0.2.0"]).unwrap();
+        assert_eq!(r.version.as_deref(), Some("0.2.0"));
+        assert!(r.newer);
+    }
+
+    #[test]
     fn short_page_stops_and_full_pages_fetch_up_to_three() {
         let (_, calls) = check(vec![json!([release("v0.1.0", false, "x")])]);
         assert_eq!(calls.len(), 1);

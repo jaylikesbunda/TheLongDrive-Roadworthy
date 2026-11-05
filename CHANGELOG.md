@@ -2,7 +2,7 @@
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
-## v0.2.0
+## v0.2.0-pre1
 
 ### Joining and playing together
 
@@ -10,7 +10,7 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - The game retries once if the first Steam connection drops during joining.
 - Large objects spawned by guests are more likely to appear for everyone.
 - Other players can see your cigarette smoke.
-- The game, Steam lobby, and installer show Roadworthy v0.2.0.
+- The game, Steam lobby, and installer show Roadworthy v0.2.0-pre1.
 
 ### Driving and riding
 
