@@ -5,7 +5,7 @@ namespace TldMp
     // still use it.
     internal static class PatchInfo
     {
-        internal const string Version = "0.2.0-pre1";
+        internal const string Version = "0.2.0-pre2";
         internal const string Name = "Roadworthy";
 
         internal static string Display
