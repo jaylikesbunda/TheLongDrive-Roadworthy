@@ -48,6 +48,13 @@ namespace TldMp
         static readonly HashSet<Vector3d> sameCellsScratch=new HashSet<Vector3d>(positionComparer);
         static readonly HashSet<roadGenScript> activeRoadNative=new HashSet<roadGenScript>();
         static readonly HashSet<poiGenScript> activePoiAdd=new HashSet<poiGenScript>();
+        // Host/single-player POI placement is spread over frames by chunk. The
+        // serving path (Provide) and any other caller that needs a chunk complete
+        // now sets synchronousPoiAdd and gets the stock whole-list behaviour.
+        static readonly bool streamBudgetEnabled=StreamingBudget.EnabledFrom(Environment.GetEnvironmentVariable("TLD_MP_STREAM_BUDGET"));
+        static readonly StreamingFrameBudget poiBudget=new StreamingFrameBudget(StreamingBudget.DefaultPoiBudgetMs);
+        static readonly List<Vector3d> poiBatchScratch=new List<Vector3d>(1);
+        static int synchronousPoiAdd;
         static bool proximityCachesDirty;
         static readonly FieldInfo lastTerrainDistance=typeof(terrainGenScript).GetField("lastDrawDistance",BindingFlags.Instance|BindingFlags.NonPublic);
         static readonly Dictionary<terrainGenScript,float> colliderDistances=new Dictionary<terrainGenScript,float>();
@@ -200,13 +207,41 @@ namespace TldMp
             try
             {
                 var before=PoiDependencyStamp(gen,gen.chunksNeeded);activePoiAdd.Add(gen);
-                try{gen.AddPois();}
+                try{if(streamBudgetEnabled && synchronousPoiAdd==0)AddPoisWithinBudget(gen);else gen.AddPois();}
                 finally{activePoiAdd.Remove(gen);}
                 if(DependencyChanged(before,PoiDependencyStamp(gen,gen.chunksNeeded)))InvalidateProximityCaches();
                 FlushProximityCaches();
                 return false;
             }
             finally{FrameDiagnostics.NativePoiAddEnd();}
+        }
+        // Runs native AddPois one chunk at a time, in chunksNeeded order, until the
+        // frame's POI budget is spent. Native AddPois drains a chunk's poiToPlace in
+        // one pass, so a chunk is either fully placed or untouched here. Chunks left
+        // over keep their poiToPlace and are placed on a later frame, in the same
+        // order the stock loop would use. The reentrant AddPois call is admitted by
+        // activePoiAdd, so the stock body runs for each chunk.
+        static void AddPoisWithinBudget(poiGenScript gen)
+        {
+            var needed=gen.chunksNeeded;
+            if(needed==null || needed.Count==0)return;
+            int frame=Time.frameCount;
+            for(int i=0;i<needed.Count;i++)
+            {
+                if(!poiBudget.HasRoom(frame))break;
+                if(!HasPendingPois(gen,needed[i]))continue;
+                long started=Stopwatch.GetTimestamp();
+                poiBatchScratch.Clear();poiBatchScratch.Add(needed[i]);
+                gen.chunksNeeded=poiBatchScratch;
+                try{gen.AddPois();}
+                finally{gen.chunksNeeded=needed;}
+                poiBudget.Charge(frame,StreamingBudget.ElapsedMs(started,Stopwatch.GetTimestamp(),Stopwatch.Frequency));
+            }
+        }
+        static bool HasPendingPois(poiGenScript gen,Vector3d cell)
+        {
+            poiGenScript.chunkClass chunk;
+            return gen.chunks.TryGetValue(cell,out chunk) && chunk!=null && chunk.poiToPlace!=null && chunk.poiToPlace.Count>0;
         }
         static bool DependencyChanged(long before,long after){return before!=after;}
         static int Mix(int hash,int value){unchecked{return (hash^value)*16777619;}}
@@ -817,7 +852,7 @@ namespace TldMp
                 long depsStart=PhaseTimings.Begin();
                 if(script.roadgen!=null)GenerateRoadData(script.roadgen,pos,true);
                 PhaseTimings.End(PhaseTimings.PoiRoadDeps,depsStart,key);long generateStart=PhaseTimings.Begin();
-                script.GenChunk(pos);var old=new List<Vector3d>(script.chunksNeeded);try{script.chunksNeeded=new List<Vector3d>{pos};script.AddPois();}finally{script.chunksNeeded=old;}
+                script.GenChunk(pos);var old=new List<Vector3d>(script.chunksNeeded);try{script.chunksNeeded=new List<Vector3d>{pos};synchronousPoiAdd++;try{script.AddPois();}finally{synchronousPoiAdd--;}}finally{script.chunksNeeded=old;}
                 PhaseTimings.End(PhaseTimings.PoiGenerate,generateStart,key);
                 poiGenScript.chunkClass c;if(!script.chunks.TryGetValue(pos,out c))return null;
                 long collectStart=PhaseTimings.Begin();
@@ -944,7 +979,7 @@ namespace TldMp
             }
             if(parts[0]=="r")
             {
-                var road=Map.roadGens[gen];var r=dto.Road;if(r==null)throw new InvalidOperationException("Missing road data.");
+                var road=Map.roadGens[gen];RoadStateEpoch.Bump();var r=dto.Road;if(r==null)throw new InvalidOperationException("Missing road data.");
                 var c=new roadGenScript.dotChunkClass {seed=r.Seed,insideConnected=r.Inside,outsideUConnected=r.U,outsideRConnected=r.R,innerChunkGenerated=true,mainRoad=r.Main};
                 foreach(var d in r.Dots)c.dots.Add(new roadGenScript.dotClass(d.Pos){connectedDotIDsInSameChunk=d.Connected});c.dotCount=c.dots.Count;
                 foreach(var l in r.Lines)

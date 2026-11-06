@@ -34,7 +34,10 @@ namespace TldMp
     // Session, handshake, liveness, world-manifest transfer and join journal.
     // There is no ownership/lease/epoch authority here: native gameplay bytes are
     // relayed as opaque transport payloads and native handlers decide everything.
-    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18, Spawn=19, SpawnAck=20, SpawnChunk=21, SpawnChunkAck=22, RabbitRequest=23, RabbitState=24 }
+    // 26-28 are the mode-gated experimental world-snapshot frames. They are only
+    // ever produced when TLD_MP_EXPERIMENTAL_JOIN=1 and the experimental backend is
+    // active; a native session never sends or decodes them as anything else.
+    public enum StableOp:byte { Hello=1, Welcome=2, Data=7, Begin=8, Part=9, End=10, Ack=11, Live=12, Reject=13, Resync=14, MapRequest=15, MapPart=16, Heartbeat=17, CarBlood=18, Spawn=19, SpawnAck=20, SpawnChunk=21, SpawnChunkAck=22, RabbitRequest=23, RabbitState=24, Authority=25, ExpSnapshotBegin=26, ExpSnapshotPart=27, ExpSnapshotEnd=28, ExpItemEvent=29 }
 
     public sealed class StableMessage
     {
@@ -52,7 +55,7 @@ namespace TldMp
             {
                 if(r.ReadByte()!=254 || r.ReadUInt32()!=0x33444C54 || r.ReadByte()!=3) return null;
                 var m=new StableMessage { Op=(StableOp)r.ReadByte(),Lobby=r.ReadUInt64(),Session=r.ReadUInt64(),Origin=r.ReadUInt64(),Epoch=r.ReadUInt64(),Sequence=r.ReadUInt64(),WorldRevision=r.ReadUInt64(),Key=r.ReadString() };
-                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.RabbitState) return null;
+                int n=r.ReadInt32();if(m.Key.Length>256 || n<0 || n>58000 || n!=s.Length-s.Position || (int)m.Op<1 || (int)m.Op>(int)StableOp.ExpItemEvent) return null;
                 m.Data=r.ReadBytes(n);return m;
             }} catch(Exception e) { if(e is IOException || e is ArgumentException || e is OverflowException) return null;throw; }
         }
@@ -66,6 +69,10 @@ namespace TldMp
             public byte[] Bytes;public bool Reliable;public int Size;public ulong Key;
         }
         public ulong Session;public bool Ready,Syncing;internal bool BootstrapSent;public uint First,Last;public ulong LastRabbitRequest;
+        // Host only: the in-flight transfer is the mode-gated experimental one. A dead
+        // experimental transfer may be superseded by a fresh request; a native one
+        // keeps the existing per-peer coalescing.
+        public bool ExternalSync;
         public double Seen;public ulong Transfer;public List<Entry> Journal=new List<Entry>();public int JournalBytes;
         public bool JournalOverflowNoticed;
         public StableNode.SpawnIn SpawnIn;
@@ -100,6 +107,8 @@ namespace TldMp
         public Action<byte[]> ApplySnapshot;
         public Action<ulong> SnapshotRequested;
         public Action<uint,bool> CarBloodReceived;
+        // Experimental backend only: host-issued vehicle motion ownership.
+        public Action<uint,ulong,ulong> AuthorityReceived;
         public Action<ulong,byte[]> RabbitRequestReceived;
         public Action<byte[]> RabbitStateReceived;
         public Func<ulong,ulong,byte[],bool> SpawnReceived;
@@ -391,6 +400,21 @@ namespace TldMp
         }
         static bool ValidCarBlood(StableMessage m)
         {return m.Key=="" && m.Data.Length==5 && BitConverter.ToUInt32(m.Data,0)!=0 && m.Data[4]<=1;}
+        // Experimental backend only. The host broadcasts authoritative vehicle
+        // motion ownership; native peers never reach this because the mode tag in
+        // the compatibility signature rejects them at Hello.
+        public bool PublishAuthority(uint carId,ulong owner,ulong epoch)
+        {
+            if(!IsHost || !Compatible || Error!=null || carId==0 || owner==0 || epoch==0)return false;
+            var data=new byte[20];
+            Buffer.BlockCopy(BitConverter.GetBytes(carId),0,data,0,4);
+            Buffer.BlockCopy(BitConverter.GetBytes(owner),0,data,4,8);
+            Buffer.BlockCopy(BitConverter.GetBytes(epoch),0,data,12,8);
+            var message=Message(StableOp.Authority,"",data);message.Epoch=Session;
+            byte[] encoded=message.Encode();
+            foreach(var pair in Peers)SendNativeTo(pair.Key,pair.Value,encoded,true);
+            return true;
+        }
         ulong rabbitRequestSeq,rabbitStateSeq,lastHostRabbitState;
         public bool SendRabbitRequest(byte[] bytes)
         {
@@ -540,7 +564,7 @@ namespace TldMp
                 if(m.Op==StableOp.Hello)
                 {
                     HashSet<ulong> old;if(m.Session==0 || (retired.TryGetValue(sender,out old) && old.Contains(m.Session)))return;
-                    if(Encoding.UTF8.GetString(m.Data)!=fingerprint){Reject(sender,m.Session,"Patch/game content mismatch. Install the same build and map content on every peer.");return;}
+                    {string remote=Encoding.UTF8.GetString(m.Data);if(remote!=fingerprint){Reject(sender,m.Session,JoinCompatibility.Describe(fingerprint,remote));return;}}
                     StablePeer peer;if(Peers.TryGetValue(sender,out peer) && peer.Session!=m.Session){RemovePeer(sender);peer=null;}
                     if(peer==null){if(Peers.Count>=64)return;peer=new StablePeer {Session=m.Session,Seen=now};Allocate(sender,peer);Peers[sender]=peer;}
                     peer.Seen=now;byte[] ids=PackIDs(peer.First,peer.Last);var config=new byte[ids.Length+HostConfig.Length];Buffer.BlockCopy(ids,0,config,0,8);Buffer.BlockCopy(HostConfig,0,config,8,HostConfig.Length);var welcome=Message(StableOp.Welcome,"",config);welcome.Epoch=m.Session;Emit(sender,welcome,true);
@@ -548,6 +572,7 @@ namespace TldMp
                 }
                 StablePeer p;if(!Peers.TryGetValue(sender,out p) || p.Session!=m.Session || m.Origin!=sender)return;p.Seen=now;
                 if(m.Op==StableOp.Heartbeat)return;
+                if(m.Op==StableOp.Authority)return;
                 if(m.Op==StableOp.Spawn)
                 {
                     if(!p.Ready || m.Sequence==0 || m.Epoch!=p.Session)return;
@@ -607,7 +632,11 @@ namespace TldMp
                 }
                 if(m.Op==StableOp.Resync)
                 {
-                    if(p.Syncing)return;
+                    // A native transfer in flight still coalesces duplicate requests.
+                    // An experimental transfer can be superseded: a guest that refused
+                    // the frames drops back to Requested and re-requests, and the host
+                    // must be able to serve it again instead of blocking until timeout.
+                    if(p.Syncing && !p.ExternalSync)return;
                     if(SnapshotRequested!=null)SnapshotRequested(sender);return;
                 }
                 if(m.Op==StableOp.Ack)
@@ -615,7 +644,7 @@ namespace TldMp
                     if(!p.Syncing || m.Epoch!=p.Transfer)return;
                     TraceJoin("Ack received peer="+sender+" transfer="+p.Transfer+" journal="+p.Journal.Count);
                     foreach(var entry in p.Journal)EmitNative(sender,entry.Bytes,entry.Reliable);
-                    p.Journal.Clear();p.JournalBytes=0;p.JournalOverflowNoticed=false;p.Syncing=false;p.Ready=true;
+                    p.Journal.Clear();p.JournalBytes=0;p.JournalOverflowNoticed=false;p.Syncing=false;p.ExternalSync=false;p.Ready=true;
                     var live=Message(StableOp.Live,"",null);live.Epoch=p.Transfer;Emit(sender,live,true);TraceJoin("Live sent peer="+sender+" transfer="+p.Transfer);
                     return;
                 }
@@ -634,6 +663,14 @@ namespace TldMp
             }
             if(!Compatible || m.Session!=HostSession)return;lastHost=now;
             if(m.Op==StableOp.Heartbeat)return;
+            if(m.Op==StableOp.Authority)
+            {
+                if(m.Origin!=Host || m.Epoch!=HostSession || m.Key!="" || m.Data.Length!=20)return;
+                uint carId=BitConverter.ToUInt32(m.Data,0);ulong owner=BitConverter.ToUInt64(m.Data,4),epoch=BitConverter.ToUInt64(m.Data,12);
+                if(carId==0 || owner==0 || epoch==0)return;
+                if(AuthorityReceived!=null)AuthorityReceived(carId,owner,epoch);
+                return;
+            }
             if(m.Op==StableOp.SpawnAck)
             {
                 if(Ready && m.Origin==Host && m.Epoch==Session && m.Sequence!=0 && m.Data.Length==0)
@@ -819,7 +856,7 @@ namespace TldMp
             StablePeer p;if(!Peers.TryGetValue(peer,out p))return;
             // The snapshot is the world baseline. Live native bytes produced after
             // this point are journaled and replayed after Ack in original order.
-            p.Ready=false;p.Syncing=true;p.Transfer=++transfer;p.Journal.Clear();p.JournalBytes=0;p.JournalOverflowNoticed=false;
+            p.Ready=false;p.Syncing=true;p.ExternalSync=false;p.Transfer=++transfer;p.Journal.Clear();p.JournalBytes=0;p.JournalOverflowNoticed=false;
             TraceJoin("BeginSnapshot peer="+peer+" transfer="+p.Transfer+" bytes="+bytes.Length);
             var header=new byte[40];Buffer.BlockCopy(BitConverter.GetBytes(bytes.Length),0,header,0,4);Buffer.BlockCopy(BitConverter.GetBytes((bytes.Length+47999)/48000),0,header,4,4);
             using(var sha=SHA256.Create())Buffer.BlockCopy(sha.ComputeHash(bytes),0,header,8,32);
@@ -827,7 +864,123 @@ namespace TldMp
             for(int offset=0;offset<bytes.Length;offset+=48000){int n=Math.Min(48000,bytes.Length-offset);var part=new byte[n];Buffer.BlockCopy(bytes,offset,part,0,n);var m=Message(StableOp.Part,"",part);m.Epoch=p.Transfer;m.Sequence=(ulong)offset;Emit(peer,m,true);}
             var end=Message(StableOp.End,"",null);end.Epoch=p.Transfer;Emit(peer,end,true);
         }
+        // ---- experimental external snapshot (mode-gated) ---------------------------
+        // The experimental join reuses the native capture/apply path and the native
+        // join journal; only the world-snapshot transfer itself differs. Every entry
+        // point below is host- or guest-only and never sends a native Begin/Part/End,
+        // so a session that does not use these methods (the default) is unchanged.
+        // Host: opens the journal barrier for one peer and returns the transfer id the
+        // snapshot frames carry. Returns 0 when the peer is unknown.
+        public ulong BeginExternalSync(ulong peer)
+        {
+            if(!IsHost)return 0;
+            StablePeer p;if(!Peers.TryGetValue(peer,out p))return 0;
+            // The snapshot is still the world baseline: ready is withdrawn and native
+            // bytes produced from now on are journaled for the post-Ack replay.
+            p.Ready=false;p.Syncing=true;p.ExternalSync=true;p.Transfer=++transfer;
+            p.Journal.Clear();p.JournalBytes=0;p.JournalOverflowNoticed=false;
+            TraceJoin("BeginExternalSync peer="+peer+" transfer="+p.Transfer);
+            return p.Transfer;
+        }
+        // Guest: a snapshot chunk arrived; refresh the join-stage deadline without
+        // changing the phase.
+        public void NoteExternalProgress()
+        {
+            if(IsHost)return;
+            JoinStageProgress(clock);
+        }
+        // Guest: the experimental Begin frame for transferId arrived. Any native
+        // snapshot assembly is cancelled (a stale native End can no longer apply) and
+        // the join moves into Receiving, which makes Joining true so the guest stops
+        // re-requesting.
+        public void BeginExternalReceive(ulong transferId)
+        {
+            if(IsHost || !Compatible || transferId==0)return;
+            if(snapshot!=null){snapshot.Dispose();snapshot=null;}
+            snapshotID=transferId;snapshotHash=null;snapshotSize=0;
+            joinTransfer=transferId;joinPhase=JoinPhase.Receiving;Ready=false;
+            // The host had a world to capture, so the waiting-for-host-load stage is over.
+            hostWorldLoaded=true;
+            JoinStageProgress(clock);
+            TraceJoin("External snapshot receiving transfer="+transferId);
+        }
+        // Guest: reassembly failed or the frames stopped making progress. Returns to
+        // the normal request stage so RequestSnapshot retries after its own window
+        // instead of leaving the join stuck in Receiving until the stage deadline.
+        public void AbandonExternalReceive()
+        {
+            if(IsHost || joinPhase!=JoinPhase.Receiving)return;
+            joinPhase=JoinPhase.Requested;joinTransfer=0;Ready=false;
+            JoinStageProgress(clock);
+            TraceJoin("External snapshot abandoned transfer="+snapshotID);
+        }
+        // Guest: the snapshot applied; only the host's Live confirmation is missing.
+        public void AwaitExternalLive(ulong transferId)
+        {
+            if(IsHost || transferId==0)return;
+            joinTransfer=transferId;joinPhase=JoinPhase.AwaitingLive;
+            JoinStageProgress(clock);
+            TraceJoin("External snapshot applied transfer="+transferId);
+        }
+        // Guest: the native Ack (Epoch=transfer) makes the host replay its join journal
+        // and send Live; the host-side Ack branch is reused unchanged.
+        public void SendExternalAck(ulong transferId)
+        {
+            if(IsHost || !Compatible || transferId==0)return;
+            var ack=Message(StableOp.Ack,"",null);ack.Epoch=transferId;
+            Emit(Host,ack,true);
+            TraceJoin("External Ack sent transfer="+transferId);
+        }
     }
+    // Join compatibility signature: "RW2|ver=<Roadworthy version>|build=<mod build>|game=<game content>|net=<transport>"
+    // plus optional flags (e.g. the experimental "exp-mp-1" tag). Only these must match:
+    // extra DLLs, local Maps and local physics options are deliberately not part of it.
+    // Describe() turns a mismatch into one plain sentence that the host sends with Reject.
+    public static class JoinCompatibility
+    {
+        public const string Prefix="RW2";
+        public static string Compose(string version,string build,string game,string net)
+        {return Prefix+"|ver="+version+"|build="+Short(build)+"|game="+Short(game)+"|net="+net;}
+        static string Short(string hash){return hash==null?"":hash.Length>16?hash.Substring(0,16):hash;}
+        internal static Dictionary<string,string> Parse(string signature)
+        {
+            var fields=new Dictionary<string,string>(StringComparer.Ordinal);if(signature==null)return fields;
+            string[] parts=signature.Split('|');
+            for(int i=1;i<parts.Length;i++)
+            {
+                if(parts[i].Length==0)continue;int eq=parts[i].IndexOf('=');
+                if(eq<0)fields["flag:"+parts[i]]="on";else fields[parts[i].Substring(0,eq)]=parts[i].Substring(eq+1);
+            }
+            return fields;
+        }
+        static string Get(Dictionary<string,string> fields,string key){string value;return fields.TryGetValue(key,out value)?value:"?";}
+        public static string Describe(string host,string guest)
+        {
+            var h=Parse(host);
+            if(guest==null || !guest.StartsWith(Prefix+"|",StringComparison.Ordinal))
+                return "The host runs Roadworthy v"+Get(h,"ver")+" and you run an older version. Install the same Roadworthy release on both PCs.";
+            var g=Parse(guest);
+            if(Get(h,"ver")!=Get(g,"ver"))return "Roadworthy versions differ: host v"+Get(h,"ver")+", you v"+Get(g,"ver")+". Install the same release on both PCs.";
+            if(Get(h,"build")!=Get(g,"build"))return "Roadworthy builds differ (both v"+Get(h,"ver")+"). Reinstall the same release on both PCs.";
+            if(Get(h,"game")!=Get(g,"game"))return "Your game files differ from the host's. Update the game on both PCs, or use Steam's Verify integrity of game files.";
+            if(Get(h,"net")!=Get(g,"net"))return "Network transport settings differ (host "+Get(h,"net")+", you "+Get(g,"net")+"). Remove TLD_MP_TRANSPORT on both PCs.";
+            foreach(var key in h.Keys)if(key.StartsWith("flag:",StringComparison.Ordinal) && !g.ContainsKey(key))return "The host has Experimental multiplayer on and you do not. Use the same setting on both PCs.";
+            foreach(var key in g.Keys)if(key.StartsWith("flag:",StringComparison.Ordinal) && !h.ContainsKey(key))return "You have Experimental multiplayer on and the host does not. Use the same setting on both PCs.";
+            return "Multiplayer compatibility check failed. Install the same Roadworthy release on both PCs.";
+        }
+        // Short, player-facing text for a guest's join failure (shown in the native popup).
+        public static string Friendly(string error)
+        {
+            if(String.IsNullOrEmpty(error))return "Couldn't join the host.";
+            if(error.IndexOf("Patch/game content mismatch",StringComparison.Ordinal)>=0)
+                return "The host runs a different Roadworthy release. Install the same release on both PCs.";
+            if(error.IndexOf("SDR peer disconnected",StringComparison.Ordinal)>=0 || error.IndexOf("No answer from host",StringComparison.Ordinal)>=0 ||
+               error.IndexOf("Steam P2P session failed",StringComparison.Ordinal)>=0 || error.IndexOf("No traffic from peer",StringComparison.Ordinal)>=0)
+                return "Couldn't connect to the host over Steam. Check you are both online, then try joining again.";
+            return error.Length>200?error.Substring(0,200)+"...":error;
+        }
+    }
+
 }
 
 

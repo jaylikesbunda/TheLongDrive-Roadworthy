@@ -1124,6 +1124,11 @@ public static class PatchStability
                     Guard(Method("roadGenScript","Upd",1,"Vector3d"),"RoadAt",-1,0);
                     Entry(Method("roadGenScript/roadClass","Generate",1,"roadGenScript"),"RoadGenerated",0);
                     AfterReturn(Method("roadGenScript","ConnectWithRoad",6),"RoadConnectionAdded",-1,4);
+                    // Road-state epoch writers (runtime/RoadStateEpoch.cs). Generate bumps in RoadGenerated.
+                    Entry(Method("roadGenScript","UpdDotChunk",1,"Vector3d"),"RoadDotChunkAdding",-1,0);
+                    Entry(Method("roadGenScript","UpdChunks",1,"System.Boolean"),"RoadChunksRemoving",-1);
+                    Entry(Method("roadGenScript","ConnectDots",6,"Vector3d"),"RoadConnectionsStarting",-1);
+                    Entry(Method("roadGenScript","Restart",0),"RoadStateReset",-1);
                     Guard(Method("poiGenScript","GenChunk",1),"PoiChunk",-1,0);
                     // Observe only after the native path is admitted by the guard.
                     // Guard is inserted before this prefix, so a rejected return
@@ -1161,6 +1166,11 @@ public static class PatchStability
                     }
                     OptimizeFixedSpawnLists();
                     Replace(Method("massScript","Mass",0),"MassWithoutArray",-1);
+                    // Test-data isolation. pathscript.path() is the only caller of
+                    // Environment.GetFolderPath(MyDocuments); every save, settings,
+                    // map and log path derives from it. With TLD_MP_SAVE_ROOT set
+                    // the instance uses a separate tree; unset behavior is identical.
+                    Replace(Method("pathscript","path",0),"RedirectSaveRoot");
                     Entry(Method("mainscript","Awake",0),"RegisterUrineFluid",-1);
                     Replace(Method("survivalscript","ConvWaterToPiss",1),"ConvertWaterToUrine",-1,0);
                     var overflow=Method("survivalscript","EatInstant",4).Body.Instructions.Single(i=>i.Operand is MethodReference && ((MethodReference)i.Operand).Name=="ChangeWithoutMix" && ((MethodReference)i.Operand).Parameters.Count==2);
@@ -1332,7 +1342,10 @@ public static class PatchStability
                     }
                     // Native profiler seam observers add no gameplay control or state.
                     // Noises.Noise remains the only changed method without a bridge call.
-                    if(hooked!=127 || sites!=268)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    // pathscript.path() adds one rewritten method with one bridge call
+                    // (RedirectSaveRoot) for test-data isolation.
+                    // Road-state epoch entries add four methods and four sites: UpdDotChunk, UpdChunks, ConnectDots, Restart.
+                    if(hooked!=132 || sites!=273)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
                     var sliceFactory=Method("randomSlice","Slicc",3);
                     var additions=sliceFactory.Body.Instructions.Where(i=>i.Operand is GenericInstanceMethod && ((GenericInstanceMethod)i.Operand).Name=="AddComponent" && ((GenericInstanceMethod)i.Operand).GenericArguments[0].FullName=="randomSlice").ToArray();
                     if(additions.Length!=2)throw new Exception("Expected two native slice component additions.");

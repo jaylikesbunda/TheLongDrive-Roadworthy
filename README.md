@@ -273,6 +273,112 @@ The installer does not modify your saves.
 - `--restore` removes only the newest pass (single-player v4, then multiplayer v3).
 - Tampered backups or receipts are refused; nothing is overwritten.
 
+## Experimental multiplayer (preview)
+
+This build contains two mutually exclusive multiplayer backends. **Native is the
+default and is unchanged.** The experimental backend reuses the proven native
+world join, player replication and item/cargo sync, and adds host-issued
+vehicle-motion ownership: the host admits car pose/velocity only from the peer
+with the highest native car role, so each car has exactly one writer. The two
+backends use different handshake signatures, so mixed-mode peers reject each
+other before any world state is exchanged.
+
+Select it in **Settings → Misc → Experimental multiplayer (preview)** before
+creating or joining a session. The row stays interactive; if you change it before
+any peer joins, the bridge recreates the session with the selected signature. Once
+a peer is present the backend is fixed until the session ends. For development,
+`TLD_MP_EXPERIMENTAL=1` selects it without the menu and overrides the row for that
+process. Every peer must choose the same backend.
+
+- Supported: session start/teardown, native world join, players, items/cargo,
+  vehicle pose and velocity with host-issued ownership and epochs, per-car lease
+  with stale-owner recovery, and atomic fitted-parts/stored-cargo groups.
+- Selecting **Experimental multiplayer (preview)** in Misc enables the whole
+  experimental path for the session: external snapshot/journal join (loopback),
+  host item/state relay, player identity gate and breakable/prop authority. Native
+  remains the untouched default. The env vars are kill switches:
+  `TLD_MP_EXPERIMENTAL_JOIN=0`, `TLD_MP_EXPERIMENTAL_RELAY=0`,
+  `TLD_MP_EXPERIMENTAL_PLAYERS=0`, `TLD_MP_EXPERIMENTAL_BREAKABLES=0`.
+- The item-owner gate is **opt-in** (`TLD_MP_EXPERIMENTAL_ITEMS=1`) until
+  interaction handoff exists. By default a guest's door/part/car interaction is
+  not rejected by the host's car-group ownership; that was the cause of the host
+  seeing neither the interaction nor the car moving.
+- Host item/state interactions (doors, parts, car values, paint, damage, storage,
+  attach/detach, usables, fluids) are relayed through the item event stream: the
+  host assigns an event id and the guest applies each once, in order, with
+  dependency buffering. Poses and guest-originated actions stay native. Vehicle
+  ownership compares the host's actual role with the incoming driver's role, so a
+  host fallback owner cannot reject the first guest-driver update.
+- The build also contains the next-layer cores: a generic entity replication
+  policy/registry, interest sets + far-store with duplicate reconciliation, and
+  player/seat replication. The host seat ledger is wired to the native seat
+  observer (observational; native sitting is not blocked yet).
+- Blocked / not implemented: interest filtering and generic-registry delivery,
+  guest-originated item events between guests, seat enforcement, vehicle handoff,
+  experimental world/creature/POI ownership, experimental world-snapshot on Steam,
+  persistence/save-cut protocol, Steam↔loopback mixing. Unsupported combinations
+  are logged; `TLD_MP_VEHICLE_SNAPSHOTS=0` is refused in experimental mode and the
+  session stays native.
+- Diagnostics: `[TLD MP backend]` in the Unity log, `[TLD MP experimental]` and
+  `experimental{cars= grants= rejected= applied=}` in the async diagnostic log.
+
+### Loopback with protected test data
+
+`Start-Loopback.ps1` gives each instance a stable private game-data root through
+`TLD_MP_SAVE_ROOT` (`.local-analysis/loopback-data/host` and `.../client`). The
+patched `pathscript.path()` redirects saves, settings, options, maps and logs under
+that root, and bridge diagnostics go to `<root>/diagnostics`. Documents is never
+used by a test instance. Add `-FreshData` to clear a role's root first.
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File Start-Loopback.ps1 -Role Host -Experimental -FreshData
+powershell -NoProfile -ExecutionPolicy Bypass -File Start-Loopback.ps1 -Role Client -Experimental -RttMs 200 -LossPercent 5 -JitterMs 40
+```
+
+You can also omit `-Experimental` and enable **Experimental multiplayer (preview)**
+in Misc on both instances before joining. Load a save on the host and wait until
+the world is visible before starting the client. Logs:
+`.local-analysis/loopback-logs/` (Unity) and `.local-analysis/loopback-data/<role>/diagnostics/`
+(bridge). Prove the redirect against the staged assembly before launching a world:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tests/scripts/Test-SaveIsolation.ps1 -StageDirectory <stage>
+```
+
+### Restoring the previous build
+
+Two exact rollback sets are kept under `.local-analysis/staged/`. Close the game
+before either operation.
+
+**Previous Roadworthy build (installed before the experimental preview):** the
+first install's `installed-backup` is the exact five-file chain. Copy it back:
+
+```
+$m = 'D:\Program Files (x86)\Steam\steamapps\common\The Long Drive\TheLongDrive_Data\Managed'
+$b = '.local-analysis\staged\experimental-mp-20261105-final\installed-backup'
+Copy-Item "$b\Tld.Multiplayer.dll" $m -Force
+Copy-Item "$b\Assembly-CSharp.tldmp-v4-original.bin" $m -Force
+Copy-Item "$b\Assembly-CSharp.dll" $m -Force
+Copy-Item "$b\tldmp-v3-receipt.json" $m -Force
+Copy-Item "$b\tldmp-v4-receipt.json" $m -Force
+```
+
+Expected result: `Assembly-CSharp.dll` = `C96C9C74…`, `Tld.Multiplayer.dll` =
+`987DC2FA…`.
+
+**Vanilla original game:** restore the pristine v3 original and remove the helper:
+
+```
+$m = 'D:\Program Files (x86)\Steam\steamapps\common\The Long Drive\TheLongDrive_Data\Managed'
+Copy-Item "$m\Assembly-CSharp.tldmp-v3-original.bin" "$m\Assembly-CSharp.dll" -Force
+Remove-Item "$m\Tld.Multiplayer.dll" -Force
+```
+
+Expected result: `Assembly-CSharp.dll` = `CF2C2D0E…`. The release EXE's *Restore
+original* performs the equivalent v4-then-v3 removal. `Manage-Stability.ps1
+-Action Restore` is v3-only and refuses a v3+v4 install, so use the copies above.
+
+
 <details>
 <summary>Build from source</summary>
 

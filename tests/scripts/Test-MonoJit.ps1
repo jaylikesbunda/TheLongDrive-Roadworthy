@@ -9,7 +9,11 @@ param(
     # 106 existing selections plus 55 observers, minus RayStuff/FreezeUpd/
     # RemoveStuff which already belonged to the selected hook set.
     # The paired-bus RecCarVelocity guard adds one selected native method.
-    [int]$ExpectedCandidateMethods=211,
+    # 212: pathscript.path() now calls StableGameBridge.RedirectSaveRoot for
+    # test-data isolation, so that helper is part of the candidate JIT set.
+    # 216: road-state epoch entry hooks on roadGenScript.UpdDotChunk, UpdChunks,
+    # ConnectDots and Restart add four selected native methods.
+    [int]$ExpectedCandidateMethods=216,
     [int]$ExpectedControlMethods=6
 )
 $ErrorActionPreference='Stop'

@@ -62,6 +62,7 @@ namespace TldMp
         internal const string RabbitsKey = "rabbits";
         internal const string SandstormsKey = "sandstorms";
         internal const string HighRateKey = "highrate";
+        internal const string MultiplayerKey = "mpmode";
 
         internal static readonly PresetValues[] Presets =
         {
@@ -104,6 +105,9 @@ namespace TldMp
         // Multiplayer: players 30 Hz and passenger cars up to 60 Hz (off = 20 Hz cars,
         // native player rate).
         internal static bool HighRate = true;
+        // Experimental multiplayer is opt-in and defaults off. Native remains the
+        // backend for every existing install until the user explicitly selects it.
+        internal static bool ExperimentalMultiplayer;
         static bool loaded;
 
         internal static string[] PresetNames
@@ -158,11 +162,16 @@ namespace TldMp
             Rabbits = true;
             Sandstorms = true;
             HighRate = true;
+            ExperimentalMultiplayer = false;
             loaded = true;
         }
 
         internal static string DefaultPath()
         {
+            // Test instances redirect the whole game data tree; keep this file
+            // inside the same isolated root instead of reading the user's Documents.
+            string testRoot = Environment.GetEnvironmentVariable("TLD_MP_SAVE_ROOT");
+            if (!String.IsNullOrEmpty(testRoot)) return Path.Combine(testRoot, FileName);
             string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             if (String.IsNullOrEmpty(documents))
             {
@@ -207,6 +216,7 @@ namespace TldMp
             text.Append(RabbitsKey).Append('=').Append(Rabbits ? "on" : "off").Append('\n');
             text.Append(SandstormsKey).Append('=').Append(Sandstorms ? "on" : "off").Append('\n');
             text.Append(HighRateKey).Append('=').Append(HighRate ? "on" : "off").Append('\n');
+            text.Append(MultiplayerKey).Append('=').Append(ExperimentalMultiplayer ? "experimental" : "native").Append('\n');
             return text.ToString();
         }
 
@@ -228,6 +238,7 @@ namespace TldMp
             Rabbits = true;
             Sandstorms = true;
             HighRate = true;
+            ExperimentalMultiplayer = false;
             if (String.IsNullOrEmpty(text)) return;
             string[] lines = text.Replace("\r", "").Split('\n');
             for (int i = 0; i < lines.Length; i++)
@@ -267,6 +278,10 @@ namespace TldMp
                 {
                     bool on;
                     if (TryOnOff(value, out on)) HighRate = on;
+                }
+                else if (key == MultiplayerKey)
+                {
+                    ExperimentalMultiplayer = value == "experimental" || value == "experimental-preview" || value == "1";
                 }
             }
         }

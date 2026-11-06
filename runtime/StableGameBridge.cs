@@ -3,9 +3,11 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using GeneszSteamP2PBase;
 using Steamworks;
+using TldMp.Experimental;
 using UnityEngine;
 using Debug=TldMp.RoadworthyLog;
 
@@ -24,8 +26,29 @@ namespace TldMp
     public static partial class StableGameBridge
     {
         internal static StableNode Node{get{return node;}}
+        // True while a Roadworthy session object exists, whichever backend is active.
+        internal static bool InSession{get{return node!=null;}}
+        internal static bool ExperimentalSession{get{return experimentalActive;}}
         internal static bool WorldScene(){return WorldSceneAvailable();}
         static StableNode node;static Driver driver;static string fingerprint,lastError;static ContentFingerprint.Job fingerprintJob;static double fingerprintRetryAt;
+        static bool experimentalActive;static double nextExperimentalResync;static long experimentalMotionSuppressed,experimentalMotionRejected;
+        // Mode-gated experimental join (see ExperimentalJoin). Off by default: without
+        // TLD_MP_EXPERIMENTAL_JOIN=1 the native Begin/Part/End transfer is untouched,
+        // and the gate additionally requires the experimental backend and loopback.
+        static bool experimentalJoinEnabled;
+        static readonly ExperimentalJoinReceiver experimentalJoin=new ExperimentalJoinReceiver();
+        // Host-only live vehicle authority. Guests keep the flat grant table.
+        static VehicleAuthority vehicleAuthority;
+        // Phase 4 item-authority gate (docs/MULTIPLAYER_ITEM_AUTHORITY_INVENTORY.md).
+        // Off by default: without TLD_MP_EXPERIMENTAL_ITEMS=1 every native item
+        // message takes exactly the native path. Fixed for the life of a session,
+        // host only; the lookup is the host's car-group member table.
+        static bool itemGateEnabled;static long itemGateRejected;static double nextItemGateLog;static ItemMemberLookup itemGateLookup;
+        static bool playerGateEnabled,breakableGateEnabled;static long playerGateRejected,breakableGateRejected;static double nextAuthorityGateLog;static BreakableAuthority breakableAuthority;static PlayerReplication playerReplication;
+        static bool experimentalItemRelayEnabled;static readonly Dictionary<uint,ulong> itemRelayEventIds=new Dictionary<uint,ulong>();static ExperimentalItemRelay.Receiver itemRelayReceiver;
+        static readonly Dictionary<uint,ulong> vehicleGroupOwner=new Dictionary<uint,ulong>();
+        static readonly Queue<uint> vehicleGroupQueue=new Queue<uint>();
+        static readonly HashSet<uint> vehicleGroupQueued=new HashSet<uint>();
         static bool dispatching,capturing,captureBounded,captureOverflow;static long captureByteCount;static List<byte[]> captured;
         static readonly Dictionary<ulong,byte[]> lastPlayers=new Dictionary<ulong,byte[]>();
         static readonly Dictionary<uint,MessageState> lastItems=new Dictionary<uint,MessageState>();
@@ -34,8 +57,12 @@ namespace TldMp
         // Bulk lane so a multi-megabyte transfer cannot stall transport traffic.
         static readonly ReliableOutbox bulkOutbox=new ReliableOutbox(TryBulkEnvelope,TransportFailed,8*1024*1024,16*1024*1024,8192,8,256*1024,2);
         static readonly NetDeliveryScheduler delivery=new NetDeliveryScheduler();
-        static SteamSdrTransport steamTransport;static ulong transportLobby,transportHost;static double nextSdrRetry;static int deliveryPeerCursor;const int TransportVirtualPort=0;
+        static ISteamTransport steamTransport;static ulong transportLobby,transportHost;static double nextSdrRetry;static int deliveryPeerCursor;const int TransportVirtualPort=0;
         static bool hostWorldEvidence,restartSteamJoin,steamJoinRetried;
+        // A guest keeps retrying a failed initial Steam connection for this long from the
+        // first attempt (host listener not up yet, lobby list lag, relay route setup).
+        const double SteamJoinWindowSeconds=60.0,SteamJoinRetrySeconds=3.0;
+        static double steamJoinStarted;static int steamJoinAttempts;
         static double nextPulse,nextFailure;static int packetErrors;
         static readonly Dictionary<string,double> diagnosticNext=new Dictionary<string,double>();
         static double nextJoinDiagnostic;
@@ -62,9 +89,16 @@ namespace TldMp
             return map==null?"map=null":"map="+map.name+" seed="+map.seed+" genArounds="+(map.genArounds==null?-1:map.genArounds.Count);
         }
         static bool DiagnosticMode {get{return loopbackMode || ModDiagnostics.On;}}
+        // Per-item families (cargo-suppress, native-mounted-pose) fire once per item per
+        // tick. They are windowed into one summary line instead of one line per id.
+        // Logging only: nothing here reads or writes gameplay state.
+        static readonly DiagnosticFamilyWindow diagFamilies=new DiagnosticFamilyWindow(5);
+        static void EmitDiagAggregate(string summary){Debug.Log("[TLD MP diag] peer="+Own+" t="+Now.ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+" "+summary);}
+        static void DiagAggregateFlush(){if(DiagnosticMode)diagFamilies.Tick(Now,EmitDiagAggregate);}
         static void DiagLimited(string key,string text,double every)
         {
             if(!DiagnosticMode)return;
+            if(DiagnosticFamilyWindow.Aggregated(key)){diagFamilies.Note(key,text,Now,EmitDiagAggregate);return;}
             double next;if(diagnosticNext.TryGetValue(key,out next) && Now<next)return;
             if(diagnosticNext.Count>512)diagnosticNext.Clear();
             diagnosticNext[key]=Now+Math.Max(.05,every);
@@ -82,8 +116,34 @@ namespace TldMp
         }
         internal static double Now {get{return Time.realtimeSinceStartup;}}
         static bool Connected {get{return networkingScript.s!=null && networkingScript.s.hood!=null && networkingScript.s.hood.isConnected;}}
+        // Save/test-data isolation. The patched pathscript.path() calls this. When
+        // TLD_MP_SAVE_ROOT is set, every derived save/settings/map/log path moves
+        // under it; when unset the native behavior is byte-for-byte unchanged.
+        public static string RedirectSaveRoot()
+        {
+            string root=Environment.GetEnvironmentVariable("TLD_MP_SAVE_ROOT");
+            if(!String.IsNullOrEmpty(root))return root;
+            return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)+"/TheLongDrive";
+        }
+        // Backend is a per-session choice. The environment variable is the
+        // development override; otherwise the Misc toggle persisted in the
+        // Roadworthy options file decides.
+        static bool ExperimentalSelected()
+        {
+            if(Environment.GetEnvironmentVariable("TLD_MP_EXPERIMENTAL")=="1")return true;
+            PatchOptions.Load();
+            return PatchOptions.ExperimentalMultiplayer;
+        }
         static ulong Own {get{return loopbackMode?Loopback.Own:(ulong)SteamP2PNetworkingUnderTheHoodScript.OwnID();}}
         static bool Find(uint id,out tosaveitemscript item){item=null;return savedatascript.s!=null && savedatascript.s.items!=null && savedatascript.s.items.TryGetValue(id,out item) && item!=null;}
+        // Join signature: Roadworthy version + mod build + game content + transport, as separate
+        // fields so a mismatch can be named (JoinCompatibility.Describe). The debris CCD mode is
+        // local physics only and is deliberately not part of it.
+        static string ComposeSignature(string gameContent)
+        {
+            string build=StableNode.Hash(System.Text.Encoding.UTF8.GetBytes(BuildIdentity.Sources));
+            return JoinCompatibility.Compose(PatchInfo.Version,build,gameContent,UseSdrTransport?"sdr":"p2p");
+        }
         static void EnsureFingerprintStart()
         {
             if(fingerprint!=null || fingerprintJob!=null || Now<fingerprintRetryAt)return;
@@ -91,7 +151,7 @@ namespace TldMp
             {
                 string managed=Path.GetDirectoryName(typeof(syncScript).Assembly.Location);
                 string assets=Directory.GetParent(managed).FullName;
-                string custom=pathscript.mapPath();string identity=BuildIdentity.Sources+"|debris-ccd="+(debrisSpeculative?"speculative":"native");
+                string custom=pathscript.mapPath();string identity="game-content"; // game files only; the mod build, version and transport are separate signature fields (ComposeSignature)
                 fingerprintJob=ContentFingerprint.Start(managed,assets,custom,identity);
                 JoinDiagnostic("Fingerprint hashing started asynchronously");
             }
@@ -113,7 +173,7 @@ namespace TldMp
             {
                 fingerprintRetryAt=Now+5;Debug.LogError("[TLD MP v3] Compatibility fingerprint failed: "+error);return false;
             }
-            fingerprint=result;fingerprintRetryAt=0;
+            fingerprint=ComposeSignature(result);fingerprintRetryAt=0;
             JoinDiagnostic("Fingerprint workMs="+workMilliseconds.ToString("F2",System.Globalization.CultureInfo.InvariantCulture));
             return true;
         }
@@ -132,11 +192,16 @@ namespace TldMp
             PhaseTimings.End(PhaseTimings.FingerprintWait,waitStart,"blocking main-thread wait");
             double workMilliseconds=fingerprintJob.WorkMilliseconds;fingerprintJob=null;
             if(error!=null)throw new InvalidOperationException("Compatibility fingerprint failed before item ID allocation: "+error);
-            fingerprint=result;fingerprintRetryAt=0;
+            fingerprint=ComposeSignature(result);fingerprintRetryAt=0;
             JoinDiagnostic("Fingerprint workMs="+workMilliseconds.ToString("F2",System.Globalization.CultureInfo.InvariantCulture));
         }
         static void Reset()
         {
+            experimentalActive=false;ExperimentalBackend.Reset();vehicleAuthority=null;vehicleGroupOwner.Clear();vehicleGroupQueue.Clear();vehicleGroupQueued.Clear();nextExperimentalResync=0;experimentalMotionSuppressed=experimentalMotionRejected=0;
+            itemGateEnabled=false;itemGateRejected=0;nextItemGateLog=0;itemGateLookup=null;
+            playerGateEnabled=breakableGateEnabled=false;playerGateRejected=breakableGateRejected=0;nextAuthorityGateLog=0;breakableAuthority=null;playerReplication=null;
+            experimentalItemRelayEnabled=false;itemRelayEventIds.Clear();itemRelayReceiver=null;
+            experimentalJoinEnabled=false;experimentalJoin.Cancel();
             RabbitFlowDiagnostics.Reset();rabbitRuntimeLogged=false;
             RabbitMetadataSync.Reset();
             MovingVehiclePassenger.Reset();
@@ -168,6 +233,11 @@ namespace TldMp
                 lobby=(ulong)networkingScript.s.hood.ConnectedLobbyID;host=(ulong)SteamMatchmaking.GetLobbyOwner(networkingScript.s.hood.ConnectedLobbyID);
                 if(lobby==0 || host==0 || Own==0)return;
             }
+            // A menu-time backend change takes effect before any peer joins. Once
+            // a join is in progress or a peer is present, the session is fixed.
+            if(node!=null && ExperimentalSelected()!=experimentalActive && !node.Joining &&
+                node.Peers.Count==0 && (node.IsHost || !node.Ready))
+                Reset();
             bool retrying=false;
             if(node!=null && node.Lobby==lobby && node.Host==host)
             {
@@ -185,17 +255,70 @@ namespace TldMp
             if(!EnsureFingerprint())return;
             Reset();
             steamJoinRetried=retrying;
+            if(!retrying){steamJoinStarted=Now;steamJoinAttempts=1;}else steamJoinAttempts++;
             if(!loopbackMode && !EnsureSteamTransport(lobby,host))return;
+            // The backend is fixed for the life of a session. A settings change
+            // while connected applies to the next session only.
+            experimentalActive=ExperimentalSelected();
+            if(experimentalActive && !vehicleMotionEnabled)
+            {
+                experimentalActive=false;
+                Debug.LogError("[TLD MP experimental] The experimental backend requires TLD_MP_VEHICLE_SNAPSHOTS=1; staying on native multiplayer.");
+            }
             ulong session;do{session=BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(),0);}while(session==0);
-            var created=new StableNode(Own,host,lobby,session,fingerprint,HighestID());
+            string signature=experimentalActive?fingerprint+ExperimentalBackend.SignatureTag:fingerprint;
+            var created=new StableNode(Own,host,lobby,session,signature,HighestID());
             node=created;
+            // The item gate is separately opt-in until non-driver interactions
+            // have a tested ownership/handoff path. Other preview gates retain
+            // their existing per-session switches.
+            experimentalJoinEnabled=experimentalActive && loopbackMode &&
+                Environment.GetEnvironmentVariable("TLD_MP_EXPERIMENTAL_JOIN")!="0";
+            itemGateEnabled=ExperimentalBackend.UseItemGate(experimentalActive,
+                Environment.GetEnvironmentVariable("TLD_MP_EXPERIMENTAL_ITEMS"));
+            playerGateEnabled=experimentalActive &&
+                Environment.GetEnvironmentVariable("TLD_MP_EXPERIMENTAL_PLAYERS")!="0";
+            breakableGateEnabled=experimentalActive &&
+                Environment.GetEnvironmentVariable("TLD_MP_EXPERIMENTAL_BREAKABLES")!="0";
+            if(experimentalActive && node.IsHost)
+            {
+                // One lease/cargo group per car, bounded to the session entity cap.
+                // A guest never builds this: it only applies the host's grants.
+                vehicleAuthority=new VehicleAuthority(Own,4096,4096,1.5);
+                vehicleAuthority.Warning=delegate(string text){Debug.LogWarning(text);};
+                // One owner per breakable/prop: first writer claims, the host can
+                // always override, and a removed prop is a tombstone forever.
+                breakableAuthority=new BreakableAuthority(Own,8192,8192,1.5);
+                // Seat/player ledger: real seat claims from the native GotUpd
+                // observer, released on leave and disconnect. Observational only;
+                // native sitting is not blocked yet.
+                playerReplication=new PlayerReplication(Own,64,2.0);
+            }
+            // Host -> guest item interaction/state relay. Host actions are tagged
+            // with a monotonic event id and applied once by the guest; guest
+            // actions stay native and the host is the arbiter.
+            experimentalItemRelayEnabled=experimentalActive &&
+                Environment.GetEnvironmentVariable("TLD_MP_EXPERIMENTAL_RELAY")!="0";
+            if(experimentalItemRelayEnabled)
+            {
+                if(node.IsHost)itemRelayEventIds.Clear();
+                else itemRelayReceiver=new ExperimentalItemRelay.Receiver(node.Host,4096,4096,64);
+            }
+            if(itemGateEnabled && vehicleAuthority!=null)itemGateLookup=new ItemMemberLookup(vehicleAuthority.TryMemberOwner);
             BeginNativeSafetySession(session);
-            node.Send=SendEnvelope;node.Deliver=Deliver;node.ApplySnapshot=TimedApplyWorld;node.SnapshotRequested=TimedSendWorld;
+            node.Send=SendEnvelope;node.Deliver=Deliver;node.ApplySnapshot=TimedApplyWorld;node.SnapshotRequested=experimentalJoinEnabled?(Action<ulong>)ExperimentalSendSnapshot:TimedSendWorld;
             node.Notice=delegate(string text){Debug.LogWarning("[TLD MP v3] "+text);};
             node.Trace=JoinDiagnostic;
             node.DeferMapWork=true;
             node.WatermarkChanged=delegate(uint high){if(savedatascript.s!=null && savedatascript.s.data!=null)savedatascript.s.data.lastID=Math.Max(savedatascript.s.data.lastID,high);};
-            node.PeerLeft=delegate(ulong peer){SmokePeerLeft(peer);spawnLedgers.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;node.SpawnProgress=delegate(ulong transaction,int next){spawnAttempts=0;};
+            node.PeerLeft=delegate(ulong peer){SmokePeerLeft(peer);spawnLedgers.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.AuthorityReceived=ExperimentalBackend.ApplyGrant;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;node.SpawnProgress=delegate(ulong transaction,int next){spawnAttempts=0;};
+            if(experimentalActive)
+                Debug.Log("[TLD MP experimental] backend=experimental host="+node.IsHost+" signature="+ExperimentalBackend.SignatureTag+
+                    " item-owner-gate="+(itemGateEnabled?"on":"off (native interaction fallback)")+
+                    " enabled=join,players,vehicle-ownership,breakables blocked=native-mixed-peers(auto-rejected),vehicle-handoff");
+            UnityEngine.Debug.Log("[TLD MP backend] "+(experimentalActive?"experimental":"native")+" host="+node.IsHost+(loopbackMode?" loopback":" steam"));
+            if(experimentalJoinEnabled)UnityEngine.Debug.Log("[TLD MP experimental] join=external-snapshot transfer=ExpSnapshotBegin/Part/End; the native Begin/Part/End transfer is not used in this session");
+            if(itemGateEnabled)UnityEngine.Debug.Log("[TLD MP experimental] item-owner gate on (host filters; loose/unknown items stay native)");
             StableMap.Configure(node);
             if(loopbackMode && !node.IsHost)
             {
@@ -249,7 +372,7 @@ namespace TldMp
             // finds the result ready instead of freezing the main thread while it waits.
             EnsureFingerprintStart();
             if(Connected)EnsureFingerprint();
-            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<FeedbackHotkey>();g.AddComponent<RemoteCarDriver>();}
+            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<FeedbackHotkey>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
             Ensure();Debug.Log("[TLD MP v3] Native synchronization path active; checked world manifest/join. All peers require this exact build.");
         }
         public static void PrewarmContentFingerprint(SteamP2PMenuHandlerScript menu)
@@ -465,6 +588,16 @@ namespace TldMp
                 if(syncScript.s!=null&&syncScript.s.players.TryGetValue(id,out canonical)&&ReferenceEquals(canonical,player)&&
                    node.Peers.TryGetValue((ulong)id,out peer)&&peer.Ready&&peer.Session!=0)session=peer.Session;
                 BusSeatClaims.Observe(player,sitting,sitAtPoi,itemID,seatID,session,Now);
+                if(playerReplication!=null)
+                {
+                    ulong who=(ulong)player.steamID;
+                    if(sitting && !sitAtPoi && itemID!=0 && seatID>=0)
+                    {
+                        ulong seatEpoch;
+                        playerReplication.TrySeat(who,itemID,seatID,Now,node!=null && node.IsHost,out seatEpoch);
+                    }
+                    else playerReplication.ReleaseSeat(who,itemID,seatID);
+                }
             }
             catch(Exception){}
         }
@@ -519,8 +652,16 @@ namespace TldMp
         static bool CaptureVehicleMotion(ulong scope,byte[] bytes,bool reliable)
         {
             if(!vehicleMotionEnabled || reliable || bytes==null || (bytes[0]!=39 && bytes[0]!=20))return false;
+            uint carId=StablePackets.Item(bytes);
             tosaveitemscript item;
-            if(!Find(StablePackets.Item(bytes),out item) || item.car==null || !item.ThisOneInChargeCar())return false;
+            if(!Find(carId,out item) || item.car==null || !item.ThisOneInChargeCar())return false;
+            if(vehicleAuthority!=null)
+            {
+                // The host's native controller is authoritative for its own car. This
+                // records the local lease; it must never suppress publishing.
+                vehicleAuthority.TouchLocal(carId,(int)item.CarWhatDoing(),Now);
+                QueueVehicleGroupIfStale(carId);
+            }
             RegisterVehicleImpact(item);
             uint clock=ClockMs();byte[] packet;
             if(!vehiclePairs.Offer(scope,Own,bytes,Time.frameCount,Now,clock,bytes[0]==20?poseCounter.Next(clock):0,VehicleInImpactBurst(item),out packet))return false;
@@ -556,9 +697,17 @@ namespace TldMp
             // Establish the newest clock offset before mapping its repeated
             // predecessor, so a first packet retains the samples' true spacing.
             double ignored;vehicleClock.Map(origin,samples[samples.Length-1].ClockMs,Now,out ignored);
-            bool accepted=false;
+            bool accepted=false,allAllowed=true;
             foreach(var sample in samples)
             {
+                // Experimental backend: only the host-issued owner may write a car.
+                // Non-owner samples are consumed but neither applied nor relayed.
+                if(node.IsHost && !ExperimentalAllowsPeer(source,sample.ID,sample.Role))
+                {
+                    experimentalMotionRejected++;
+                    allAllowed=false;
+                    continue;
+                }
                 if(!poseFilter.Accept(origin,PoseSequence.Key(sample.Pose),sample.Sequence)){NetStats.SequenceStale++;continue;}
                 poseFilter.Accept(origin,PoseSequence.Key(sample.Velocity),sample.Sequence);
                 NetStats.SequencePassed++;
@@ -582,8 +731,122 @@ namespace TldMp
                 catch(Exception e){packetErrors++;if(Now>=nextFailure){nextFailure=Now+5;Debug.LogError("[TLD MP v3] Vehicle snapshot handler failed: "+e);}}
                 finally{dispatchVehicleMotion=previous;dispatchSender=priorSender;dispatchSequence=priorSequence;applyingVehicleMotion=priorApplying;DispatchType=priorType;}
             }
-            if(node.IsHost && accepted)foreach(var peer in node.Peers)if(peer.Key!=source)node.PublishNativeTo(peer.Key,bytes);
+            if(node.IsHost && accepted && allAllowed)foreach(var peer in node.Peers)if(peer.Key!=source)node.PublishNativeTo(peer.Key,bytes);
             return true;
+        }
+        // Single policy entry point for peer car-motion admission. Replay
+        // fixtures provide a stand-in with the same signature.
+        static bool ExperimentalAllowsPeer(ulong source,uint carId,int role)
+        {
+            // Preserve the native path exactly when experimental authority is off.
+            if(vehicleAuthority==null)return true;
+            tosaveitemscript local;
+            if(Find(carId,out local) && local!=null && local.car!=null &&
+                ExperimentalBackend.ProtectLocalCar((int)local.CarWhatDoing(),local.ThisOneInChargeCar((tosaveitemscript.carWhatDoing)role)))return false;
+            if(!vehicleAuthority.AllowPeer(source,carId,role,Now))return false;
+            QueueVehicleGroupIfStale(carId);
+            return true;
+        }
+        // Host only. Ownership changes go out immediately and the whole table is
+        // re-broadcast every two seconds so a late or reconnected guest converges.
+        static void FlushExperimentalAuthority()
+        {
+            uint[] ids;ulong[] owners;ulong[] epochs;
+            bool host=vehicleAuthority!=null;
+            bool changed=host?vehicleAuthority.TakeChanges(out ids,out owners,out epochs):ExperimentalBackend.TakeChanges(out ids,out owners,out epochs);
+            if(changed)PublishAuthority(ids,owners,epochs);
+            if(Now>=nextExperimentalResync)
+            {
+                nextExperimentalResync=Now+2;
+                bool all=host?vehicleAuthority.TakeAll(out ids,out owners,out epochs):ExperimentalBackend.TakeAll(out ids,out owners,out epochs);
+                if(all)PublishAuthority(ids,owners,epochs);
+            }
+        }
+        // Cargo/parts group for the authority. Only live, verified relationships are
+        // included:
+        //   fitted parts  item.attachable.attached -> attachablescript.AttachedToTosave()
+        //   stored cargo  item.P.physlock (mountStuff) -> physlock.parentTosave
+        // Both chains are walked up to MaxVehicleGroupChain hops until they reach
+        // the car, so a part fitted to a part or cargo inside a container stored in
+        // the car is still included. Excluded and counted as such: loose/world items
+        // (no mount, no attachment), held or equipped items (P.pickedUp, mppickedup,
+        // mpequipped, mpweared), worn items (wear), player outfits (outfit) and the
+        // car itself. The save-data parent id graph (save_attachable.parentid) is
+        // not used here: only live components are.
+        static void QueueVehicleGroupIfStale(uint carId)
+        {
+            if(vehicleAuthority==null || carId==0)return;
+            ulong owner,epoch;
+            if(!vehicleAuthority.TryOwner(carId,out owner,out epoch))return;
+            ulong built;
+            if(vehicleGroupOwner.TryGetValue(carId,out built) && built==owner)return;
+            if(vehicleGroupQueued.Count>=512 || !vehicleGroupQueued.Add(carId))return;
+            vehicleGroupQueue.Enqueue(carId);
+        }
+        // One car per tick so the scan is bounded and never stalls the pulse.
+        static void TickVehicleGroup()
+        {
+            if(vehicleAuthority==null || vehicleGroupQueue.Count==0)return;
+            uint carId=vehicleGroupQueue.Dequeue();vehicleGroupQueued.Remove(carId);
+            tosaveitemscript car;
+            if(!Find(carId,out car) || car==null || car.car==null)return;
+            uint[] members=VehicleGroupMembers(carId);
+            if(!vehicleAuthority.RebuildGroup(carId,members))return;
+            ulong owner,epoch;
+            if(vehicleAuthority.TryOwner(carId,out owner,out epoch))vehicleGroupOwner[carId]=owner;
+            if(DiagnosticMode)DiagLimited("vehicle-group:"+carId,"vehicle-group car="+carId+" members="+members.Length+" "+vehicleAuthority.Describe(carId)+" "+vehicleAuthority.Summary(),5);
+        }
+        const int MaxVehicleGroupScan=8192,MaxVehicleGroupChain=8;
+        static uint[] VehicleGroupMembers(uint carId)
+        {
+            var members=new List<uint>();
+            var items=savedatascript.s==null?null:savedatascript.s.items;
+            if(items==null)return members.ToArray();
+            int scanned=0;
+            foreach(var pair in items)
+            {
+                if(++scanned>MaxVehicleGroupScan)break;
+                tosaveitemscript item=pair.Value;
+                if(item==null || item.idInSave==0 || item.idInSave==carId)continue;
+                if(!VehicleGroupMember(item,carId))continue;
+                if(members.Count>=VehicleAuthority.MaxGroupMembers)break;
+                members.Add(item.idInSave);
+            }
+            members.Sort();
+            return members.ToArray();
+        }
+        static bool VehicleGroupMember(tosaveitemscript item,uint carId)
+        {
+            if(item==null || item.idInSave==0)return false;
+            if(item.wear!=null || item.outfit!=null)return false;
+            if(item.mppickedup || item.mpequipped || item.mpweared)return false;
+            if(item.P!=null && item.P.pickedUp)return false;
+            var attach=item.attachable;
+            if(attach!=null && attach.attached && ChainReachesCar(attach.AttachedToTosave(),carId))return true;
+            if(item.P!=null && item.P.physlock!=null && ChainReachesCar(item.P.physlock.parentTosave,carId))return true;
+            return false;
+        }
+        static bool ChainReachesCar(tosaveitemscript start,uint carId)
+        {
+            tosaveitemscript cursor=start;
+            for(int depth=0;depth<MaxVehicleGroupChain;depth++)
+            {
+                if(cursor==null)return false;
+                if(cursor.idInSave==carId)return true;
+                // A held or worn intermediate breaks the ownership chain.
+                if(cursor.P!=null && (cursor.P.pickedUp || cursor.mppickedup || cursor.mpequipped || cursor.mpweared))return false;
+                tosaveitemscript next=null;
+                if(cursor.P!=null && cursor.P.physlock!=null)next=cursor.P.physlock.parentTosave;
+                else if(cursor.attachable!=null && cursor.attachable.attached)next=cursor.attachable.AttachedToTosave();
+                if(next==cursor)return false;
+                cursor=next;
+            }
+            return false;
+        }
+        static void PublishAuthority(uint[] ids,ulong[] owners,ulong[] epochs)
+        {
+            if(node==null || ids==null)return;
+            for(int i=0;i<ids.Length;i++)node.PublishAuthority(ids[i],owners[i],epochs[i]);
         }
         // Removes the sequence trailer; false drops the message (malformed, or a
         // position/velocity older than one already applied for the same object).
@@ -648,7 +911,8 @@ namespace TldMp
         {
             if(bytes==null || bytes.Length==0 || bytes[0]!=254)return bytes!=null && bytes.Length>0 && bytes[0]==8;
             StableMessage message=StableMessage.Decode(bytes);
-            return message!=null && (message.Op==StableOp.MapPart || message.Op==StableOp.MapRequest || message.Op==StableOp.Begin || message.Op==StableOp.Part || message.Op==StableOp.End || message.Op==StableOp.Ack || message.Op==StableOp.SpawnChunk);
+            return message!=null && (message.Op==StableOp.MapPart || message.Op==StableOp.MapRequest || message.Op==StableOp.Begin || message.Op==StableOp.Part || message.Op==StableOp.End || message.Op==StableOp.Ack || message.Op==StableOp.SpawnChunk ||
+                message.Op==StableOp.ExpSnapshotBegin || message.Op==StableOp.ExpSnapshotPart || message.Op==StableOp.ExpSnapshotEnd);
         }
         static void Classify(byte[] bytes,out NetDeliveryLane lane)
         {
@@ -657,12 +921,19 @@ namespace TldMp
             if(bytes[0]==254)
             {
                 StableMessage message=StableMessage.Decode(bytes);
-                lane=message!=null && (message.Op==StableOp.MapPart || message.Op==StableOp.MapRequest || message.Op==StableOp.Begin || message.Op==StableOp.Part || message.Op==StableOp.End || message.Op==StableOp.Ack || message.Op==StableOp.SpawnChunk)?NetDeliveryLane.Bulk:NetDeliveryLane.Critical;
+                lane=message!=null && (message.Op==StableOp.MapPart || message.Op==StableOp.MapRequest || message.Op==StableOp.Begin || message.Op==StableOp.Part || message.Op==StableOp.End || message.Op==StableOp.Ack || message.Op==StableOp.SpawnChunk ||
+                    message.Op==StableOp.ExpSnapshotBegin || message.Op==StableOp.ExpSnapshotPart || message.Op==StableOp.ExpSnapshotEnd)?NetDeliveryLane.Bulk:NetDeliveryLane.Critical;
                 return;
             }
             if(bytes[0]==8){lane=NetDeliveryLane.Bulk;return;}
             if(StablePackets.IsReliable(bytes))lane=NetDeliveryLane.Critical;
         }
+        // Default: SteamNetworkingSockets (SDR). The one-account Steam self-test (2026-11-06)
+        // confirmed listen/connect/accept/callbacks/send work on the game's steam_api64.dll
+        // despite the binding (v012) vs DLL (v008) version gap.
+        // TLD_MP_TRANSPORT=p2p selects vanilla's ISteamNetworking v006 P2P as a fallback
+        // (simulation-tested only). Both peers must use the same transport (fingerprint).
+        static readonly bool UseSdrTransport=!String.Equals(Environment.GetEnvironmentVariable("TLD_MP_TRANSPORT"),"p2p",StringComparison.OrdinalIgnoreCase);
         static bool EnsureSteamTransport(ulong lobby,ulong host)
         {
             if(loopbackMode)return true;
@@ -678,7 +949,8 @@ namespace TldMp
             steamTransport=null;transportLobby=transportHost=0;
             try
             {
-                steamTransport=new SteamSdrTransport();transportLobby=lobby;transportHost=host;
+                steamTransport=UseSdrTransport?(ISteamTransport)new SteamSdrTransport():new SteamP2PTransport();transportLobby=lobby;transportHost=host;
+                Debug.Log("[TLD MP SDR] transport="+(UseSdrTransport?"sdr (SteamNetworkingSockets)":"p2p (ISteamNetworking v006, as vanilla)")+" host="+(Own==host));
                 steamTransport.Trace=delegate(string message){Debug.Log("[TLD MP SDR] "+message);};
                 steamTransport.ReceiveFailure+=delegate(Exception error){Debug.LogError("[TLD MP SDR] transport failure: "+error);};
                 steamTransport.AcceptPeer=delegate(ulong peer){return IsLobbyTransportPeer(lobby,peer);};
@@ -719,10 +991,11 @@ namespace TldMp
                 // A failed first connection can race the host's listener or world load.
                 // Restart on the game update with a fresh session so a retired Hello
                 // from the old connection cannot block the new handshake.
-                if(!node.Compatible && !steamJoinRetried)
+                if(!node.Compatible && Now-steamJoinStarted<SteamJoinWindowSeconds)
                 {
-                    restartSteamJoin=true;nextSdrRetry=Now+2;
-                    Debug.Log("[TLD MP join] Retrying initial Steam connection");
+                    restartSteamJoin=true;nextSdrRetry=Now+SteamJoinRetrySeconds;
+                    Debug.Log("[TLD MP join] Retrying initial Steam connection (attempt "+(steamJoinAttempts+1)+", "+
+                        (Now-steamJoinStarted).ToString("F0",System.Globalization.CultureInfo.InvariantCulture)+" s of "+SteamJoinWindowSeconds+" s)");
                 }
                 else node.Stop(message);
             }
@@ -815,6 +1088,68 @@ namespace TldMp
             return null;
         }
         static bool RepairRequest(byte type){return type==21 || type==22 || type==46 || type==12 || type==13;}
+        // ---- item authority gate --------------------------------------------------
+        // Host only, one decision per native item message, default off. The host is
+        // the single arbiter: a guest never filters its own sends and trusts the
+        // host relay instead. Only the native item types the gate models are ever
+        // refused; bootstrap/handshake (8/9), snapshot (253/254) and every other
+        // type pass through untouched. A refused message is never buffered,
+        // relayed or applied.
+        static bool ExperimentalItemAllowed(ulong sender,byte[] bytes)
+        {
+            if(!itemGateEnabled || node==null || !node.IsHost || vehicleAuthority==null)return true;
+            ExperimentalItemGate.GateResult result=ExperimentalItemGate.Check(sender,bytes,itemGateLookup);
+            if(result==ExperimentalItemGate.GateResult.Allow)return true;
+            itemGateRejected++;
+            if(Now>=nextItemGateLog)
+            {
+                nextItemGateLog=Now+1;
+                Debug.LogWarning("[TLD MP experimental] item-gate result="+result+" type="+(bytes!=null && bytes.Length>0?bytes[0].ToString():"?")+
+                    " entity="+GateEntity(bytes)+" sender="+sender+" "+vehicleAuthority.Summary());
+            }
+            return false;
+        }
+        static uint GateEntity(byte[] bytes)
+        {
+            try{return bytes==null || bytes.Length<5?0:StablePackets.Item(bytes);}
+            catch(Exception){return 0;}
+        }
+        // Host only. Player messages 10/11/12/18 describe the sender's own body;
+        // the payload identity must match the authenticated sender. A guest trusts
+        // the host relay, so this gate runs on the host only.
+        static bool ExperimentalPlayerAllowed(ulong sender,byte[] bytes)
+        {
+            if(!playerGateEnabled || node==null || !node.IsHost)return true;
+            if(PlayerIdentityPolicy.Check(sender,bytes)!=PlayerIdentityResult.RejectIdentity)return true;
+            playerGateRejected++;
+            AuthorityGateLog("player",bytes,sender);
+            return false;
+        }
+        // Host only. First writer owns a breakable, the host can always override,
+        // and a removed prop is a tombstone forever. This stops two peers breaking
+        // the same prop and losing concurrent damage.
+        static bool ExperimentalBreakableAllowed(ulong sender,byte[] bytes)
+        {
+            if(!breakableGateEnabled || node==null || !node.IsHost || breakableAuthority==null)return true;
+            if(bytes==null || bytes.Length==0 || !BreakablePolicy.IsBreakableMessage(bytes[0]))return true;
+            uint entity;
+            if(!BreakablePolicy.TryEntity(bytes,out entity))return true;
+            BreakableDecision decision=breakableAuthority.AllowWrite(sender,entity,BreakablePolicy.KindOf(bytes[0]),Now);
+            if(decision==BreakableDecision.Accepted)return true;
+            breakableGateRejected++;
+            if(Now>=nextAuthorityGateLog)
+            {
+                nextAuthorityGateLog=Now+1;
+                Debug.LogWarning("[TLD MP experimental] breakable-gate result="+decision+" type="+bytes[0]+" entity="+entity+" sender="+sender+" "+breakableAuthority.Summary());
+            }
+            return false;
+        }
+        static void AuthorityGateLog(string gate,byte[] bytes,ulong sender)
+        {
+            if(Now<nextAuthorityGateLog)return;
+            nextAuthorityGateLog=Now+1;
+            Debug.LogWarning("[TLD MP experimental] "+gate+"-gate rejected type="+(bytes!=null && bytes.Length>0?bytes[0].ToString():"?")+" sender="+sender);
+        }
         static bool RoutePasswordBootstrap(ulong target,byte[] bytes)
         {
             if(loopbackMode || node==null || bytes==null || bytes.Length==0)return false;
@@ -848,7 +1183,11 @@ namespace TldMp
                 return;
             }
             if(bytes[0]==9){if(!node.IsHost && !node.Joining && !node.AwaitingSnapshot && (!loopbackMode || WorldSceneAvailable()))node.RequestSnapshot();return;}
+            // Host egress: never publish a native write for an item another peer owns.
+            if(!ExperimentalItemAllowed(Own,bytes))return;
+            if(!ExperimentalBreakableAllowed(Own,bytes))return;
             byte[] protectedBytes=ProtectCargoPose(bytes);
+            if(protectedBytes!=null && TryRelayHostItem(protectedBytes,0,false))return;
             bool forced=hood.forceReliable || mode==EP2PSend.k_EP2PSendReliable || mode==EP2PSend.k_EP2PSendReliableWithBuffering;
             if(protectedBytes!=null && CaptureVehicleMotion(0,protectedBytes,forced))return;
             if(protectedBytes!=null)node.PublishNative(protectedBytes,hood.forceReliable || mode==EP2PSend.k_EP2PSendReliable || mode==EP2PSend.k_EP2PSendReliableWithBuffering);
@@ -872,8 +1211,12 @@ namespace TldMp
                 return;
             }
             if(bytes[0]==9){if(!node.IsHost && !node.Joining && !node.AwaitingSnapshot && (!loopbackMode || WorldSceneAvailable()))node.RequestSnapshot();return;}
+            // Host egress: same rule as the broadcast path, before any rewrite.
+            if(!ExperimentalItemAllowed(Own,bytes))return;
+            if(!ExperimentalBreakableAllowed(Own,bytes))return;
             byte[] protectedBytes=ProtectCargoPose(bytes);
             if(protectedBytes==null)return;
+            if(TryRelayHostItem(protectedBytes,(ulong)target,true))return;
             bool forceReliable=networkingScript.s.hood.forceReliable || mode==EP2PSend.k_EP2PSendReliable || mode==EP2PSend.k_EP2PSendReliableWithBuffering;
             if(CaptureVehicleMotion((ulong)target,protectedBytes,forceReliable))return;
             if(node.IsHost)node.PublishNativeTo((ulong)target,protectedBytes,forceReliable);
@@ -955,6 +1298,11 @@ namespace TldMp
             }
             if(!AllowRabbitState((ulong)sender,bytes))return false;
             if(!AllowNativeSafetyPacket(bytes))return false;
+            // Host ingress: a write for an item this peer does not own is dropped
+            // before it can be buffered, replayed or dispatched.
+            if(!ExperimentalItemAllowed((ulong)sender,bytes))return false;
+            if(!ExperimentalPlayerAllowed((ulong)sender,bytes))return false;
+            if(!ExperimentalBreakableAllowed((ulong)sender,bytes))return false;
             if(UnsetPaint(bytes))return false;
             if(NotePendingItem(sender,bytes))return false;
             NoteCargoPose(bytes);
@@ -998,7 +1346,7 @@ namespace TldMp
         internal static string SessionRole()
         {
             string role=node==null?"no session":(node.IsHost?"host":"client");
-            return role+(Connected?", connected":", not connected")+(loopbackMode?", loopback":"");
+            return role+(Connected?", connected":", not connected")+(loopbackMode?", loopback":"")+(experimentalActive?", experimental":"")+(experimentalActive?"":" (native)");
         }
         // One delivery to the stock handler per native message. Never re-applied
         // twice; the guard only suppresses the echo of the same message.
@@ -1025,6 +1373,11 @@ namespace TldMp
             if(!ValidateData(bytes))return;
             if(!AllowRabbitState(origin,bytes))return;
             if(UnsetPaint(bytes))return;
+            // Host ingress for replayed/queued traffic, identical to AllowIncoming
+            // and placed before NoteCargoPose so a refused pose leaves no hint.
+            if(!ExperimentalItemAllowed(origin,bytes))return;
+            if(!ExperimentalPlayerAllowed(origin,bytes))return;
+            if(!ExperimentalBreakableAllowed(origin,bytes))return;
             NoteCargoPose(bytes);
             if(!AllowNativeSafetyPacket(bytes))return;
             if(node!=null && !node.IsHost && origin==node.Host && bytes[0]==8)
@@ -1510,7 +1863,13 @@ namespace TldMp
             if(dead!=null)for(int i=0;i<dead.Count;i++)sync.players.Remove(dead[i]);
         }
         public static bool RoadAt(roadGenScript road,Vector3d pos){if(!Connected)return true;return EnsureWorldSession() && StableMap.RoadAt(road,pos);}
-        public static void RoadGenerated(roadGenScript road){RoadLiveCache.Clear();RoadFarSkip.Clear();if(Connected)StableMap.RoadGenerated(road);}
+        public static void RoadGenerated(roadGenScript road){RoadStateEpoch.Bump();RoadLiveCache.Clear();RoadFarSkip.Clear();if(Connected)StableMap.RoadGenerated(road);}
+        // Road-state epoch entry hooks (runtime/RoadStateEpoch.cs). Each hook runs before
+        // the native body, so a bump always precedes the write it guards.
+        public static void RoadDotChunkAdding(roadGenScript road,Vector3d cell){if(road==null || road.chunks==null || !road.chunks.ContainsKey(cell))RoadStateEpoch.Bump();}
+        public static void RoadChunksRemoving(roadGenScript road){if(road==null || road.chunksToRemove==null || road.chunksToRemove.Count>0)RoadStateEpoch.Bump();}
+        public static void RoadConnectionsStarting(roadGenScript road){RoadStateEpoch.Bump();}
+        public static void RoadStateReset(roadGenScript road){RoadStateEpoch.Bump();}
         public static bool PoiChunk(poiGenScript gen,Vector3d pos){if(!Connected)return true;return EnsureWorldSession() && StableMap.PoiChunk(gen,pos);}
         public static bool PoiAdd(poiGenScript gen){if(!Connected)return true;return EnsureWorldSession() && StableMap.PoiAdd(gen);}
         public static bool CategoryChunks(objGenScript.categoryClass cat){if(!Connected)return true;return EnsureWorldSession() && StableMap.CategoryChunks(cat);}
@@ -1568,6 +1927,19 @@ namespace TldMp
         {long start=PhaseTimings.Begin();try{SendWorld(peer);}finally{PhaseTimings.End(PhaseTimings.SnapshotSend,start,"capture+encode+validate");}}
         static void TimedApplyWorld(byte[] bytes)
         {long start=PhaseTimings.Begin();try{pendingCarBlood.Clear();pendingItems.Clear();itemRecovery.Clear();vehiclePairs.Clear();vehicleClock.Clear();ClearVehicleImpacts();RemoteCarSmoothing.Clear();ApplyWorld(bytes);}finally{PhaseTimings.End(PhaseTimings.SnapshotApply,start,bytes==null?null:"bytes="+bytes.Length);}}
+        // One capture/encode/roundtrip check for the experimental transfer. SendWorld
+        // below keeps its own inline copy: the world-load IL replay transplants that
+        // method body, so it may only call the fixture's existing seam methods.
+        internal static byte[] CaptureWorldBytes()
+        {
+            var frame=CaptureWorld();
+            byte[] bytes=StableJson.Write(frame);
+            var check=StableJson.Read<WorldFrame>(bytes);
+            if(check.Active.Count!=frame.Active.Count || check.Pois.Count!=frame.Pois.Count || check.PlayerMessages.Count!=frame.PlayerMessages.Count)
+                throw new InvalidOperationException("Snapshot serialization lost world/player records.");
+            JoinDiagnostic("Snapshot JSON roundtrip active="+check.Active.Count+"/"+frame.Active.Count+" pois="+check.Pois.Count+"/"+frame.Pois.Count+" players="+check.PlayerMessages.Count+"/"+frame.PlayerMessages.Count);
+            return bytes;
+        }
         static void SendWorld(ulong peer)
         {
             JoinDiagnostic("SendWorld entry target="+peer+" "+MapDiagnostic());
@@ -1581,6 +1953,180 @@ namespace TldMp
             JoinDiagnostic("Snapshot JSON roundtrip active="+check.Active.Count+"/"+frame.Active.Count+" pois="+check.Pois.Count+"/"+frame.Pois.Count+" players="+check.PlayerMessages.Count+"/"+frame.PlayerMessages.Count);
             if(loopbackMode){string dump=Environment.GetEnvironmentVariable("TLD_MP_DIAGNOSTIC_DIR");if(!String.IsNullOrEmpty(dump))try{Directory.CreateDirectory(dump);File.WriteAllBytes(Path.Combine(dump,"host-snapshot.deflate"),bytes);}catch(Exception e){JoinDiagnostic("Snapshot dump failed: "+e.Message);}}
             JoinDiagnostic("SendWorld sent bytes="+bytes.Length+" items="+frame.Items.items.Count+" active="+frame.Active.Count+" pois="+frame.Pois.Count);
+        }
+        // Why the host cannot capture its world right now, or null when it can.
+        static string WorldCaptureBlocked()
+        {
+            return node==null?"node=null":!node.IsHost?"not host":mainscript.s==null?"mainscript=null":savedatascript.s==null?"savedatascript=null":menuhandler.s==null?"menuhandler=null":menuhandler.s.currentMainMap==null?"currentMainMap=null":savedatascript.s.data==null?"save.data=null":null;
+        }
+        // ---- experimental join transfer (mode-gated; see ExperimentalJoin) --------
+        // Same native capture/encode/apply, different framing. The host opens the join
+        // journal barrier with BeginExternalSync and streams ExpSnapshotBegin/Part/End
+        // frames; the guest acks with the native Ack so the journal replay and Live are
+        // the untouched native code.
+        static void ExperimentalSendSnapshot(ulong peer)
+        {long start=PhaseTimings.Begin();try{ExperimentalSendWorld(peer);}finally{PhaseTimings.End(PhaseTimings.SnapshotSend,start,"experimental capture+encode+frames");}}
+        static void ExperimentalSendWorld(ulong peer)
+        {
+            JoinDiagnostic("ExperimentalSendWorld entry target="+peer+" "+MapDiagnostic());
+            string blocked=WorldCaptureBlocked();
+            if(blocked!=null){JoinDiagnostic("ExperimentalSendWorld blocked: "+blocked);return;}
+            if(!WorldSceneAvailable()){JoinDiagnostic("ExperimentalSendWorld blocked: world scene unavailable");return;}
+            byte[] bytes=CaptureWorldBytes();
+            if(bytes.Length<=0 || bytes.Length>StableNode.MaxSnapshotBytes)
+            {
+                // Abort, do not fall back: a half-experimental transfer would mix two
+                // protocols for one peer.
+                Debug.LogError("[TLD MP experimental] join: world snapshot is "+bytes.Length+" bytes; the bounded transfer limit is "+StableNode.MaxSnapshotBytes+" bytes. Transfer aborted.");
+                return;
+            }
+            byte[] hash;using(var sha=SHA256.Create())hash=sha.ComputeHash(bytes);
+            ulong transferId=node.BeginExternalSync(peer);
+            if(transferId==0){JoinDiagnostic("ExperimentalSendWorld blocked: no peer/journal for "+peer);return;}
+            int frames=0;
+            bool emitted=ExperimentalJoin.EmitSnapshot(bytes,hash,delegate(StableOp op,byte[] data)
+            {
+                var message=new StableMessage {Op=op,Lobby=node.Lobby,Session=node.Session,Origin=node.Own,Epoch=transferId,Data=data};
+                SendEnvelope(peer,message.Encode(),true);frames++;
+            });
+            if(!emitted){Debug.LogError("[TLD MP experimental] join: snapshot framing refused bytes="+bytes.Length+"; transfer aborted.");return;}
+            JoinDiagnostic("ExperimentalSendWorld sent bytes="+bytes.Length+" transfer="+transferId+" frames="+frames+" parts="+ExperimentalJoin.PartCount(bytes.Length));
+        }
+        // Host egress for interaction/state types only. Host-local actions get a
+        // monotonic per-entity event id and are sent as ExpItemEvent; syncing peers
+        // still receive the native bytes through the join journal. Motion poses and
+        // guest-originated re-broadcasts stay native. Returns true when the caller
+        // must suppress the native send.
+        static bool TryRelayHostItem(byte[] bytes,ulong target,bool targeted)
+        {
+            if(!experimentalItemRelayEnabled || node==null || !node.IsHost || dispatching || DispatchType!=-1)return false;
+            if(bytes==null || bytes.Length==0 || !ExperimentalItemRelay.IsRelayType(bytes[0]))return false;
+            uint entity=StablePackets.Item(bytes);
+            if(entity==0)return false;
+            ulong eventId=NextItemRelayId(entity);
+            if(eventId==0)return false;
+            byte[] data=ExperimentalItemRelay.Encode(entity,eventId,Own,bytes);
+            if(data==null)return false;
+            var message=new StableMessage { Op=StableOp.ExpItemEvent,Lobby=node.Lobby,Session=node.Session,Origin=Own,Epoch=node.Session,Key="",Data=data };
+            byte[] frame=message.Encode();
+            bool any=false;
+            if(targeted)
+            {
+                StablePeer peer;
+                if(!node.Peers.TryGetValue(target,out peer))return false;
+                any=true;
+                if(peer.Ready)SendEnvelopeCore(target,frame,true,false);
+                else node.PublishNativeTo(target,bytes);
+            }
+            else
+            {
+                foreach(var pair in node.Peers)
+                {
+                    any=true;
+                    if(pair.Value.Ready)SendEnvelopeCore(pair.Key,frame,true,false);
+                    else node.PublishNativeTo(pair.Key,bytes);
+                }
+            }
+            // No peer is a valid host-only state: suppress the native send so the
+            // event-id sequence remains the one authoritative stream.
+            return any || target==0;
+        }
+        static ulong NextItemRelayId(uint entity)
+        {
+            ulong id;
+            if(!itemRelayEventIds.TryGetValue(entity,out id))
+            {
+                if(itemRelayEventIds.Count>=8192)return 0;
+                id=0;
+            }
+            if(id==ulong.MaxValue)return 0;
+            id++;
+            itemRelayEventIds[entity]=id;
+            return id;
+        }
+        // Guest only. Consumes ExpItemEvent frames before native dispatch, applies
+        // each event once through ItemEventStream (ordering + dependency buffering),
+        // and then runs the native handler with dispatching=true so it cannot echo.
+        static bool ReceiveExperimentalItemRelay(ulong sender,byte[] frame)
+        {
+            if(!experimentalItemRelayEnabled || itemRelayReceiver==null || node==null || node.IsHost)return false;
+            if(frame==null || frame.Length==0 || frame[0]!=254)return false;
+            var m=StableMessage.Decode(frame);
+            if(m==null || m.Op!=StableOp.ExpItemEvent)return false;
+            if(sender!=node.Host || m.Origin!=node.Host || m.Session!=node.HostSession || m.Epoch!=node.HostSession)return true;
+            byte[][] ready;
+            if(!itemRelayReceiver.Accept(m.Data,Now,out ready))return true;
+            if(ready!=null)for(int i=0;i<ready.Length;i++)DispatchRelayedItem(ready[i]);
+            return true;
+        }
+        static void DispatchRelayedItem(byte[] payload)
+        {
+            if(payload==null || payload.Length==0 || networkingScript.s==null)return;
+            bool previous=dispatching;ulong priorSender=dispatchSender;int priorType=DispatchType;
+            dispatching=true;dispatchSender=node.Host;DispatchType=payload[0];
+            try{networkingScript.s.ProcessMessage(new CSteamID(node.Host),payload,(msgType)payload[0]);}
+            catch(Exception e){packetErrors++;if(Now>=nextFailure){nextFailure=Now+5;Debug.LogError("[TLD MP experimental] relayed item handler failed: "+e);}}
+            finally{dispatching=previous;dispatchSender=priorSender;DispatchType=priorType;}
+        }
+        // Guest only. Consumes the experimental join frames before native dispatch, so
+        // they never reach node.Receive or the stock handler. Returns true for every
+        // frame that belongs to this protocol, valid or not: malformed frames are
+        // bounded and dropped, never forwarded.
+        static bool ReceiveExperimentalJoin(ulong sender,byte[] frame)
+        {
+            if(!experimentalJoinEnabled || node==null || node.IsHost)return false;
+            if(frame==null || frame.Length==0 || frame[0]!=254)return false;
+            var m=StableMessage.Decode(frame);
+            if(m==null || !ExperimentalJoin.IsSnapshotOp(m.Op))return false;
+            if(!node.Compatible || node.HostSession==0 || sender!=node.Host || m.Origin!=node.Host || m.Session!=node.HostSession || m.Epoch==0)
+            {
+                JoinDiagnostic("Experimental join frame dropped: envelope mismatch op="+m.Op+" sender="+sender);
+                return true;
+            }
+            ulong transferId=m.Epoch;
+            if(m.Op==StableOp.ExpSnapshotBegin)
+            {
+                if(!experimentalJoin.Begin(transferId,m.Data))
+                {
+                    node.AbandonExternalReceive();
+                    JoinDiagnostic("Experimental join Begin refused transfer="+transferId+" data="+m.Data.Length);
+                    return true;
+                }
+                node.BeginExternalReceive(transferId);
+                JoinDiagnostic("Experimental join Begin transfer="+transferId+" bytes="+experimentalJoin.Total);
+                return true;
+            }
+            if(m.Op==StableOp.ExpSnapshotPart)
+            {
+                if(!experimentalJoin.Part(transferId,m.Data))
+                {
+                    node.AbandonExternalReceive();
+                    JoinDiagnostic("Experimental join Part refused transfer="+transferId+" data="+m.Data.Length);
+                    return true;
+                }
+                node.NoteExternalProgress();
+                return true;
+            }
+            // ExpSnapshotEnd
+            if(m.Data.Length!=0)
+            {
+                experimentalJoin.Cancel();node.AbandonExternalReceive();
+                JoinDiagnostic("Experimental join End refused transfer="+transferId+" data="+m.Data.Length);
+                return true;
+            }
+            byte[] snapshot;
+            if(!experimentalJoin.End(transferId,out snapshot) || snapshot==null)
+            {
+                node.AbandonExternalReceive();
+                JoinDiagnostic("Experimental join End incomplete transfer="+transferId+" (size/hash); retrying after the request window");
+                return true;
+            }
+            try{TimedApplyWorld(snapshot);}
+            catch(Exception e){node.Stop("World snapshot apply failed: "+e.Message);return true;}
+            node.AwaitExternalLive(transferId);
+            node.SendExternalAck(transferId);
+            JoinDiagnostic("Experimental join snapshot applied bytes="+snapshot.Length+" transfer="+transferId);
+            return true;
         }
         static void ApplyWorld(byte[] bytes)
         {
@@ -1637,6 +2183,7 @@ namespace TldMp
                 if(ReceiveSmoke(source,b))return;
                 if(ReceiveBusPair(source,b))return;
                 if(ReceiveVehicleMotion(source,b))return;
+                if(ReceiveExperimentalItemRelay(source,b))return;
                 if(!AcceptSequenced(source,ref b))return;
                 if(!SteamP2PNetworkingUnderTheHoodScript.Expected(sender,(msgType)b[0]))return;
                 long handlerStart=Stopwatch.GetTimestamp();DispatchType=b[0];
@@ -1659,7 +2206,8 @@ namespace TldMp
                 LoopbackEvent item;if(!transport.TryDequeue(out item))break;
                 if(item.Disconnected)
                 {
-                    RevokeBusPairPeer(item.From);
+                    RevokeBusPairPeer(item.From);ExperimentalBackend.ForgetPeer(item.From);
+                    if(vehicleAuthority!=null)vehicleAuthority.ForgetPeer(item.From,Now);
                     outbox.Drop(item.From);bulkOutbox.Drop(item.From);delivery.Drop(item.From);
                     if(node!=null)
                     {
@@ -1670,10 +2218,15 @@ namespace TldMp
                 }
                 if(item.Connected || item.Bytes==null || item.Bytes.Length==0)continue;
                 hood.dataIn+=item.Bytes.Length;NetStats.Received(item.Bytes);
+                // Experimental join frames are consumed here, before the native dispatch,
+                // so they never reach node.Receive or the stock handler. Always false
+                // unless the gate is on, which leaves the native path untouched.
+                if(ReceiveExperimentalJoin(item.From,item.Bytes))continue;
                 if(ReceiveRabbitMotion(item.From,item.Bytes))continue;
                 if(ReceiveSmoke(item.From,item.Bytes))continue;
                 if(ReceiveBusPair(item.From,item.Bytes))continue;
                 if(ReceiveVehicleMotion(item.From,item.Bytes))continue;
+                if(ReceiveExperimentalItemRelay(item.From,item.Bytes))continue;
                 byte[] received=item.Bytes;if(!AcceptSequenced(item.From,ref received))continue;item.Bytes=received;
                 // Same entry point Steam uses: AllowIncoming then the stock dispatch.
                 long handlerStart=Stopwatch.GetTimestamp();DispatchType=item.Bytes[0];
@@ -1730,6 +2283,7 @@ namespace TldMp
             if(!node.IsHost && !loopbackMode && !SteamP2PNetworkingUnderTheHoodScript.HasCorrectPassword())return;
             if(!node.IsHost && !node.HostWorldLoaded && (loopbackMode?WorldSceneAvailable():hostWorldEvidence))node.HostWorldLoaded=true;
             long tickStart=Stopwatch.GetTimestamp();node.Tick(Now);pulseTickTicks=Stopwatch.GetTimestamp()-tickStart;
+            if(experimentalActive && node.IsHost && node.Error==null){if(vehicleAuthority!=null)TickVehicleGroup();FlushExperimentalAuthority();}
             if(node.Compatible && Now>=nextSyncHealth)
             {
                 nextSyncHealth=Now+5;
@@ -1740,7 +2294,13 @@ namespace TldMp
                     " impactTriggersTotal="+vehicleImpactTriggers+" impactSentTotal="+vehicleImpactSent+" tracked="+vehicleImpacts.Count+"}"+
                     " vehicleReceive{receivedTotal="+vehicleMotionReceived+" processedTotal="+vehicleMotionProcessed+" admissionRejectedTotal="+vehicleAdmissionRejected+" sceneRejectedTotal="+vehicleSceneRejected+" malformedTotal="+vehicleMalformed+" controlIgnoredTotal="+vehicleControlIgnored+"}"+
                     (steamTransport==null?"":" "+steamTransport.TakeHealthSummary())+
-                    (!loopbackMode || Loopback.Transport==null?"":" "+Loopback.Transport.TakeQueueHealth()));
+                    (!loopbackMode || Loopback.Transport==null?"":" "+Loopback.Transport.TakeQueueHealth())+
+                    (experimentalActive?" experimental{"+(vehicleAuthority!=null?vehicleAuthority.Summary():ExperimentalBackend.Summary())+" suppressed="+experimentalMotionSuppressed+" rejected="+experimentalMotionRejected+"}":"")+
+                    (itemGateEnabled?" items{rejected="+itemGateRejected+"}":"")+
+                    (experimentalItemRelayEnabled?(itemRelayReceiver!=null?" "+itemRelayReceiver.Summary():" relay{host}"):"")+
+                    (playerGateEnabled?" players{rejected="+playerGateRejected+"}":"")+
+                    (playerReplication!=null?" "+playerReplication.Summary():"")+
+                    (breakableGateEnabled?" breakables{rejected="+breakableGateRejected+"}":""));
                 healthMaxPending=healthMaxPendingBytes=0;
             }
             if((loopbackMode || ModDiagnostics.On) && Now>=nextJoinDiagnostic)
@@ -1748,7 +2308,7 @@ namespace TldMp
                 nextJoinDiagnostic=Now+5;
                 JoinDiagnostic("state host="+node.IsHost+" compatible="+node.Compatible+" ready="+node.Ready+" phase="+node.JoinStatus+" stage="+node.JoinStage+" reason="+node.JoinStageReason+" "+MapDiagnostic());
             }
-            if(node.Error!=null && lastError!=node.Error){lastError=node.Error;Debug.LogError("[TLD MP v3] "+node.Error);}
+            if(node.Error!=null && lastError!=node.Error){lastError=node.Error;Debug.LogError("[TLD MP v3] "+node.Error);if(!node.IsHost && !node.Ready && !loopbackMode)JoinFailurePopup.Show(JoinCompatibility.Friendly(node.Error));}
             if(loopbackMode && !node.IsHost && node.Compatible && !node.Joining && !node.Ready && WorldSceneAvailable() && Now>=loopbackNextRequest)
             {loopbackNextRequest=Now+2;node.RequestSnapshot();}
             if(Now<nextPulse)return;nextPulse=Now+.05;
@@ -1762,6 +2322,12 @@ namespace TldMp
         }
         static void RemovePlayer(ulong peer)
         {
+            ExperimentalBackend.ForgetPeer(peer);
+            if(breakableAuthority!=null)breakableAuthority.ForgetPeer(peer,Now);
+            if(playerReplication!=null){ulong[] dropped;playerReplication.ForgetPeer(peer,Now,out dropped);}
+            BusSeatClaims.ClearPeer(peer);
+            // Host only: a departed peer keeps no vehicle or cargo authority.
+            if(vehicleAuthority!=null)vehicleAuthority.ForgetPeer(peer,Now);
             outbox.Drop(peer);bulkOutbox.Drop(peer);delivery.Drop(peer);poseFilter.Forget(peer);senderClock.Forget(peer);liveUsables.Drop(peer);
             vehicleClock.Forget(peer);
             if(syncScript.s==null || syncScript.s.players==null)return;
@@ -3201,6 +3767,7 @@ namespace TldMp
             void Awake(){EnsureRabbitRuntime();FrameDiagnostics.RegisterMainThread();}
             void Update()
             {
+                DiagAggregateFlush();
                 EnsureRabbitRuntime();RabbitFlowDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node!=null&&node.IsHost,savedatascript.s,Now);
                 RabbitAttackDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node,savedatascript.s,mainscript.s==null?null:mainscript.s.player,Now);
                 UpdateCoverage.Flush();
@@ -3222,8 +3789,62 @@ namespace TldMp
                 RabbitReplicas.Tick(IsRabbitGuest);
             }
             void FixedUpdate(){TickBusPair();RabbitContact.FixedTick(Connected,Now);TickMovingPassenger();DebrisContactFilter.Tick();TickImpactAudio(false,false);TickCrateContacts();TickJoinPhysics();TickNativeSpawnSafety(true);TickVehicleImpactSamples();TickVehicleImpactBursts();RabbitReplicas.Tick(IsRabbitGuest);}
-            void LateUpdate(){RabbitMotionTick();SmokeTick();TickImpactAudio(false,true);TickNativeSeatSafety();TickJoinPhysics();try{RemoteCarSmoothing.CheckDrift();CarCargo.HoldTick(RemoteCarSmoothing.IsSmoothed);WorldJump.Tick(Connected);PartsCensus.Tick(Connected);}catch(Exception e){if(!worldJumpFailed){worldJumpFailed=true;Debug.LogWarning("[TLD MP world] diagnostics disabled after error: "+e.GetType().Name);}}RabbitReplicas.Tick(IsRabbitGuest);}
+            void LateUpdate()
+            {
+                // Driver runs last (order 10000): first measure every other LateUpdate since the probe.
+                LateUpdateProbe.ReportOthers();
+                // No try/finally: RabbitReplicas.Tick must stay the last call (RabbitNetworkGuardTests).
+                // An escaping exception leaves the stage open; UpdateCoverage.End then drops it.
+                long lateStage=UpdateCoverage.Begin();
+                RabbitMotionTick();SmokeTick();TickImpactAudio(false,true);TickNativeSeatSafety();TickJoinPhysics();try{RemoteCarSmoothing.CheckDrift();CarCargo.HoldTick(RemoteCarSmoothing.IsSmoothed);WorldJump.Tick(Connected);PartsCensus.Tick(Connected);}catch(Exception e){if(!worldJumpFailed){worldJumpFailed=true;Debug.LogWarning("[TLD MP world] diagnostics disabled after error: "+e.GetType().Name);}}
+                UpdateCoverage.End("Bridge.LateUpdate",lateStage);
+                RabbitReplicas.Tick(IsRabbitGuest);
+            }
             void OnDestroy(){FixedPropConstruction.Clear();DebrisContactFilter.Clear();ClearImpactPool();ClearCrateContacts();FrameDiagnostics.Shutdown();if(loopbackMode)Loopback.Stop();Reset();}
+        }
+        // Diagnostics only (added only when ModDiagnostics.On). Runs first in LateUpdate, so the
+        // time until Driver.LateUpdate (which runs last) is the cost of every other script's
+        // LateUpdate: game scripts, the grass shader's texture upload and TLDLoader. It also
+        // records whether a grass TextureUpdater had a Texture2D.Apply pending this frame.
+        // Read-only: it never changes any game object.
+        [DefaultExecutionOrder(-32000)]public sealed class LateUpdateProbe:MonoBehaviour
+        {
+            static long start;static int startFrame=-1;
+            static int grassCount,grassPending,grassMaxPixels;
+            static StixGames.GrassShader.TextureUpdater[] grass;static float nextScan;
+            static readonly System.Reflection.FieldInfo applyField=typeof(StixGames.GrassShader.TextureUpdater).GetField("apply",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic);
+            static float window;static int emitted;
+            void LateUpdate()
+            {
+                if(!ModDiagnostics.On)return;
+                float now=Time.realtimeSinceStartup;
+                if(grass==null || now>=nextScan){grass=UnityEngine.Object.FindObjectsOfType<StixGames.GrassShader.TextureUpdater>();nextScan=now+10f;}
+                grassCount=grass.Length;grassPending=0;grassMaxPixels=0;
+                if(applyField!=null)
+                    for(int i=0;i<grass.Length;i++)
+                    {
+                        var updater=grass[i];if(updater==null)continue;
+                        object value=applyField.GetValue(updater);
+                        if(value is bool && (bool)value)
+                        {
+                            grassPending++;var texture=updater.targetTexture;
+                            if(texture!=null)grassMaxPixels=Math.Max(grassMaxPixels,texture.width*texture.height);
+                        }
+                    }
+                startFrame=Time.frameCount;start=Stopwatch.GetTimestamp();
+            }
+            internal static void ReportOthers()
+            {
+                if(!ModDiagnostics.On || startFrame!=Time.frameCount)return;
+                double ms=(Stopwatch.GetTimestamp()-start)*1000.0/Stopwatch.Frequency;
+                if(ms<10)return;
+                float now=Time.realtimeSinceStartup;
+                if(now-window>=5){window=now;emitted=0;}
+                if(emitted>=8)return;
+                emitted++;
+                Debug.Log("[TLD MP late-probe] frame="+Time.frameCount+" otherLateUpdateMs="+ms.ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+
+                    " grassUpdaters="+grassCount+" grassApplyPending="+grassPending+" grassMaxPixels="+grassMaxPixels+" gc0="+GC.CollectionCount(0));
+            }
         }
         static readonly HashSet<uint> announcedSpawns=new HashSet<uint>();
         sealed class SpawnApplyLedger
@@ -3510,6 +4131,220 @@ namespace TldMp
                 }
             }
             return true;
+        }
+    }
+}
+
+namespace TldMp
+{
+    // Windowed summary for per-item diagnostic families. Each window emits one
+    // line per family: total count, distinct keys (ids) and up to three sample
+    // lines. Diagnostics only; it never decides anything for gameplay.
+    internal sealed class DiagnosticFamilyWindow
+    {
+        internal const int SampleLimit=3;
+        sealed class Family
+        {
+            internal int Count;
+            internal readonly HashSet<string> Keys=new HashSet<string>();
+            internal readonly List<string> Samples=new List<string>(SampleLimit);
+        }
+        readonly double seconds;
+        double windowEnd;
+        readonly Dictionary<string,Family> families=new Dictionary<string,Family>();
+
+        internal DiagnosticFamilyWindow(double seconds)
+        {
+            if(seconds<=0)throw new ArgumentOutOfRangeException("seconds");
+            this.seconds=seconds;
+        }
+
+        internal static bool Aggregated(string key)
+        {
+            return key.StartsWith("cargo-suppress:",StringComparison.Ordinal) || key.StartsWith("native-mounted-pose:",StringComparison.Ordinal);
+        }
+
+        internal void Note(string key,string text,double now,Action<string> emit)
+        {
+            if(now>=windowEnd){Take(now,emit);}
+            int colon=key.IndexOf(':');
+            string family=colon<0?key:key.Substring(0,colon);
+            Family row;
+            if(!families.TryGetValue(family,out row)){row=new Family();families[family]=row;}
+            row.Count++;row.Keys.Add(key);
+            if(row.Samples.Count<SampleLimit)row.Samples.Add(text);
+        }
+
+        // Called once per frame. Emits nothing when no family was noted in the window.
+        internal void Tick(double now,Action<string> emit)
+        {
+            if(families.Count>0 && now>=windowEnd)Take(now,emit);
+        }
+
+        void Take(double now,Action<string> emit)
+        {
+            foreach(var pair in families)
+            {
+                var row=pair.Value;
+                emit("aggregate family="+pair.Key+" window="+seconds.ToString("F0",System.Globalization.CultureInfo.InvariantCulture)+"s count="+row.Count+" ids="+row.Keys.Count+" samples="+String.Join(" | ",row.Samples.ToArray()));
+            }
+            families.Clear();
+            windowEnd=now+seconds;
+        }
+    }
+}
+
+namespace TldMp
+{
+    // Shows a failed multiplayer join to the player with the game's own
+    // "Wrong Password or Timed Out" window (same styling and close behaviour),
+    // then leaves the lobby the way the native wrong-password kick does.
+    // A clone is used so the native window and its localisation stay untouched.
+    internal static class JoinFailurePopup
+    {
+        static GameObject current;
+        internal static void Show(string message){Show(message,true);}
+        internal static void Show(string message,bool leaveLobby)
+        {
+            try
+            {
+                var menu=networkingScript.Menu();
+                if(menu==null || menu.windowWrongPassword==null){Debug.LogWarning("[TLD MP join] Couldn't show the join failure window: "+message);return;}
+                menu.menuOpen=true;menu.SetWindowFocused(true);menu.OpenRefresh();menu.APressedRefresh();
+                GameObject source=menu.windowWrongPassword;source.SetActive(false);
+                if(current!=null)UnityEngine.Object.Destroy(current);
+                GameObject clone=UnityEngine.Object.Instantiate(source,source.transform.parent,false);
+                clone.SetActive(false);clone.name="Roadworthy join failure";
+                Debug.Log("[TLD MP join] Join failure window layout: "+Describe(clone.transform,0));
+                // The label may be UI.Text or TextMeshPro, with or without a languagetext
+                // localiser. Take the graphic with a writable text property that currently
+                // holds the longest text (the message, not a button caption).
+                Component target=null;int longest=-1;
+                foreach(var graphic in clone.GetComponentsInChildren<UnityEngine.UI.Graphic>(true))
+                {
+                    string labelText=GetText(graphic);if(labelText==null)continue;
+                    if(labelText.Length>longest){longest=labelText.Length;target=graphic;}
+                }
+                bool set=false;
+                if(target!=null)
+                {
+                    // Remove every localiser on or above the label so OnEnable cannot restore the native text.
+                    foreach(var localiser in target.GetComponentsInParent<languagetext>(true))UnityEngine.Object.DestroyImmediate(localiser);
+                    foreach(var localiser in clone.GetComponentsInChildren<languagetext>(true))
+                    {
+                        object bound=localiser.text;
+                        if(bound==null){var tmpField=typeof(languagetext).GetField("tmp");bound=tmpField==null?null:tmpField.GetValue(localiser);}
+                        if(ReferenceEquals(bound,target))UnityEngine.Object.DestroyImmediate(localiser);
+                    }
+                    SetText(target,message);set=true;
+                    Widen(clone,target);
+                }
+                if(!set)Debug.LogWarning("[TLD MP join] The join failure window has no label to replace; showing it unchanged.");
+                clone.AddComponent<JoinFailureCloser>();
+                clone.SetActive(true);current=clone;
+                Debug.Log("[TLD MP join] Join failed: "+message);
+                var hood=networkingScript.s!=null?networkingScript.s.hood:null;
+                if(leaveLobby && hood!=null)hood.Disconnect("Couldn't join: "+message);
+            }
+            catch(Exception e){Debug.LogWarning("[TLD MP join] Join failure window failed ("+e.GetType().Name+": "+e.Message+"): "+message);}
+        }
+        static string GetText(Component component)
+        {
+            var property=component.GetType().GetProperty("text");
+            if(property==null || property.PropertyType!=typeof(string) || !property.CanWrite || !property.CanRead)return null;
+            return property.GetValue(component,null) as string ?? "";
+        }
+        // Widen the window: every fixed-width rect at least 40% as wide as the window
+        // (its background and the label) becomes 2.2x wider and 1.5x taller. Stretched
+        // children follow their parent. Small rects (buttons, icons) keep their size.
+        static void Widen(GameObject window,Component label)
+        {
+            var root=window.transform as RectTransform;if(root==null)return;
+            float reference=Mathf.Max(root.rect.width,1f);
+            foreach(var rect in window.GetComponentsInChildren<RectTransform>(true))
+            {
+                bool fixedWidth=Mathf.Approximately(rect.anchorMin.x,rect.anchorMax.x);
+                if(!fixedWidth || rect.rect.width<reference*0.4f)continue;
+                bool fixedHeight=Mathf.Approximately(rect.anchorMin.y,rect.anchorMax.y);
+                rect.sizeDelta=new Vector2(rect.sizeDelta.x*2.2f,fixedHeight?rect.sizeDelta.y*1.5f:rect.sizeDelta.y);
+            }
+        }
+        static string Describe(Transform node,int depth)
+        {
+            if(depth>4)return "";
+            var parts=new List<string>();
+            foreach(var component in node.GetComponents<Component>())if(component!=null && !(component is Transform))parts.Add(component.GetType().Name);
+            var rect=node as RectTransform;
+            string size=rect==null?"":" "+rect.rect.width.ToString("F0")+"x"+rect.rect.height.ToString("F0");
+            var text=new System.Text.StringBuilder("{"+node.name+size+" ["+String.Join(",",parts.ToArray())+"]");
+            for(int i=0;i<node.childCount && i<12;i++)text.Append(Describe(node.GetChild(i),depth+1));
+            return text.Append("}").ToString();
+        }
+        static void SetText(Component target,string message)
+        {
+            var text=target as UnityEngine.UI.Text;
+            if(text!=null)
+            {
+                text.text=message;
+                // HorizontalWrapMode.Wrap=0, VerticalWrapMode.Truncate=1 (TextRenderingModule is not referenced).
+                SetEnum(text,"horizontalOverflow",0);SetEnum(text,"verticalOverflow",1);
+                text.resizeTextForBestFit=true;text.resizeTextMinSize=Math.Min(10,text.fontSize);text.resizeTextMaxSize=Math.Max(text.fontSize,10);
+                return;
+            }
+            var type=target.GetType();
+            var property=type.GetProperty("text");if(property!=null && property.CanWrite)property.SetValue(target,message,null);
+            var autoSize=type.GetProperty("enableAutoSizing");if(autoSize!=null && autoSize.CanWrite)autoSize.SetValue(target,true,null);
+            var size=type.GetProperty("fontSize");var min=type.GetProperty("fontSizeMin");var max=type.GetProperty("fontSizeMax");
+            if(size!=null && min!=null && max!=null && size.PropertyType==typeof(float)){float current=(float)size.GetValue(target,null);if(min.CanWrite)min.SetValue(target,Mathf.Min(10f,current),null);if(max.CanWrite)max.SetValue(target,current,null);}
+            var wrap=type.GetProperty("enableWordWrapping");if(wrap!=null && wrap.CanWrite)wrap.SetValue(target,true,null);
+        }
+        static void SetEnum(object target,string name,int value)
+        {
+            var property=target.GetType().GetProperty(name);
+            if(property!=null && property.CanWrite && property.PropertyType.IsEnum)property.SetValue(target,Enum.ToObject(property.PropertyType,value),null);
+        }
+    }
+    // Closes the cloned window like the native one (any key), or with its own button.
+    internal sealed class JoinFailureCloser:MonoBehaviour
+    {
+        float shown;
+        void Start()
+        {
+            shown=Time.unscaledTime;
+            foreach(var button in GetComponentsInChildren<UnityEngine.UI.Button>(true))
+                button.onClick.AddListener(delegate{if(this!=null)Destroy(gameObject);});
+        }
+        void Update(){if(Time.unscaledTime-shown>0.3f && Input.anyKeyDown)Destroy(gameObject);}
+    }
+    // Preview only: TLD_MP_JOIN_POPUP_PREVIEW=1 or "tldmp-join-popup-preview.on" next to
+    // TheLongDrive.exe shows the join-failure window once on the main menu with a sample
+    // message, without touching any lobby. Delete the file to stop it.
+    internal sealed class JoinPopupPreview:MonoBehaviour
+    {
+        const string Flag="tldmp-join-popup-preview.on";
+        internal static void StartIfRequested(GameObject host)
+        {
+            bool requested=Environment.GetEnvironmentVariable("TLD_MP_JOIN_POPUP_PREVIEW")=="1";
+            if(!requested)
+                try
+                {
+                    string managed=Path.GetDirectoryName(typeof(JoinPopupPreview).Assembly.Location);
+                    requested=File.Exists(Path.Combine(Directory.GetParent(Directory.GetParent(managed).FullName).FullName,Flag));
+                }
+                catch{}
+            if(requested)host.AddComponent<JoinPopupPreview>();
+        }
+        void Update()
+        {
+            if(Time.realtimeSinceStartup<8f)return;
+            SteamP2PMenuHandlerScript menu=null;
+            try{menu=networkingScript.Menu();}catch{}
+            if(menu==null || menu.windowWrongPassword==null)return;
+            Debug.Log("[TLD MP join] Showing the join failure window preview");
+            JoinFailurePopup.Show(JoinCompatibility.Describe(
+                JoinCompatibility.Compose("0.2.0-pre2","PREVIEW-HOST","PREVIEW","sdr"),
+                JoinCompatibility.Compose(PatchInfo.Version,"PREVIEW-YOU","PREVIEW","sdr")),false);
+            enabled=false;
         }
     }
 }

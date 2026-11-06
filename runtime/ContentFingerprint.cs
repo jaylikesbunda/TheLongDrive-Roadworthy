@@ -60,14 +60,18 @@ namespace TldMp
         // Kept separately callable for deterministic parity tests.
         public static string Compute(string managed,string assets,string custom,string buildIdentity)
         {
+            // Only what decides the shared world must match: the game's own content
+            // (.assets + globalgamemanagers = the game version) and the mod build
+            // identity. Extra DLLs in Managed (mod loaders, other mods) and each
+            // player's Maps folder are deliberately ignored, as in vanilla multiplayer:
+            // the host sends map type/name/seed and the native game resolves the map.
+            // The managed and custom arguments are kept for callers and diagnostics.
+            if(!Directory.Exists(managed))throw new DirectoryNotFoundException("Managed directory not found: "+managed);
             var files=new List<string>();
-            foreach(var file in Directory.GetFiles(managed,"*.dll"))
-                if(Path.GetFileName(file)!="Assembly-CSharp.dll" && Path.GetFileName(file)!="Tld.Multiplayer.dll")files.Add(file);
             foreach(string file in Directory.GetFiles(assets,"*.assets"))files.Add(file);
             string global=Path.Combine(assets,"globalgamemanagers");if(File.Exists(global))files.Add(global);
-            if(Directory.Exists(custom))files.AddRange(Directory.GetFiles(custom,"*",SearchOption.AllDirectories));
 
-            var records=new List<string>();var text=new StringBuilder("TLD-STABLE-V3-1\n"+buildIdentity+"\nCF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000\n");
+            var records=new List<string>();var text=new StringBuilder("TLD-STABLE-V3-2\n"+buildIdentity+"\nCF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000\n");
             foreach(var file in files)
             {
                 string relative=file.StartsWith(custom,StringComparison.OrdinalIgnoreCase)?"Maps/"+file.Substring(custom.Length).Replace('\\','/'):Path.GetFileName(file);

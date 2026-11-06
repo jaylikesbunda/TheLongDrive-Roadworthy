@@ -27,6 +27,7 @@ public class tosaveitemscript:UnityEngine.Object
     public enum carWhatDoing {notCar,nothing,justHost,pickedup,shotgun,pushgripping,driving}
     public carscript car=new carscript();public carWhatDoing Role;
     public carWhatDoing CarWhatDoing(){return Role;}
+    public bool ThisOneInChargeCar(){return Role>=carWhatDoing.justHost;}
     public bool ThisOneInChargeCar(carWhatDoing remote){return Role>=carWhatDoing.justHost && Role>remote;}
 }
 namespace GeneszSteamP2PBase
@@ -38,6 +39,13 @@ namespace GeneszSteamP2PBase
         public static networkingScript s=new networkingScript();
         public void ProcessMessage(Steamworks.CSteamID sender,byte[] bytes,msgType type){StableGameBridge.Native((ulong)sender,bytes);}
     }
+}
+namespace TldMp.Experimental
+{
+    internal static class ExperimentalBackend
+    {internal static bool ProtectLocalCar(int localRole,bool localHasPriorityOverIncoming){throw new Exception("production IL missing");}}
+    internal sealed class VehicleAuthority
+    {internal bool AllowPeer(ulong peer,uint id,int role,double now){return true;}}
 }
 namespace TldMp
 {
@@ -52,6 +60,10 @@ namespace TldMp
         static ulong dispatchSender;static uint dispatchSequence;
         static bool applyingVehicleMotion,dispatching,loopbackMode;internal static int DispatchType=-1;
         static int packetErrors;static double nextFailure,fixtureClock;
+        static bool experimentalActive;static long experimentalMotionRejected;
+        static TldMp.Experimental.VehicleAuthority vehicleAuthority;
+        static void QueueVehicleGroupIfStale(uint id){}
+        static bool ExperimentalAllowsPeer(ulong source,uint carId,int role){throw new Exception("production IL missing");}
         static long vehicleMotionReceived,vehicleMotionProcessed,vehicleAdmissionRejected,vehicleSceneRejected,vehicleMalformed,vehicleControlIgnored;
         static readonly Dictionary<uint,tosaveitemscript> items=new Dictionary<uint,tosaveitemscript>();
         static ulong Own {get{return node.Own;}}internal static double Now {get{return fixtureClock;}}
@@ -75,10 +87,11 @@ namespace TldMp
             packetErrors=0;nextFailure=0;dispatchSequence=0;DispatchType=-1;dispatchVehicleMotion=null;applyingVehicleMotion=false;fixtureClock=1;NativeForwards=0;SceneReady=true;ThrowPose=false;
             GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Admit=true;
             GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Queries=0;loopbackMode=false;Loopback.ConfiguredPeer=0;
-            vehicleMotionReceived=vehicleMotionProcessed=vehicleAdmissionRejected=vehicleSceneRejected=vehicleMalformed=vehicleControlIgnored=0;
+            vehicleMotionReceived=vehicleMotionProcessed=vehicleAdmissionRejected=vehicleSceneRejected=vehicleMalformed=vehicleControlIgnored=0;vehicleAuthority=null;
         }
         public static void LocalDriver(uint id){items[id]=new tosaveitemscript {Role=tosaveitemscript.carWhatDoing.driving};}
         public static void LocalHost(uint id){items[id]=new tosaveitemscript {Role=tosaveitemscript.carWhatDoing.justHost};}
+        public static void UseExperimentalAuthority(){vehicleAuthority=new TldMp.Experimental.VehicleAuthority();}
         public static void UseLoopback(ulong peer){loopbackMode=true;Loopback.ConfiguredPeer=peer;GeneszSteamP2PBase.SteamP2PNetworkingUnderTheHoodScript.Admit=false;}
         public static bool Receive(ulong source,byte[] bytes){fixtureClock+=.02;return ReceiveVehicleMotion(source,bytes);}
         public static void Native(ulong sender,byte[] bytes)
@@ -129,6 +142,12 @@ internal static class VehicleMotionReplayFixture
         Check(StableGameBridge.Events.Count==0 && StableGameBridge.ContextRestored(),"previous driver overwrote local driver's pose or velocity during handover");
         StableGameBridge.Configure(host);StableGameBridge.LocalDriver(7);relayed.Clear();StableGameBridge.Receive(20,packet);
         Check(StableGameBridge.Events.Count==0 && relayed.Count==0,"host rejected stale driver locally but forwarded it to spectators");
+        StableGameBridge.Configure(host);StableGameBridge.LocalHost(7);StableGameBridge.UseExperimentalAuthority();relayed.Clear();
+        StableGameBridge.Receive(20,packet);
+        Check(StableGameBridge.Events.Count==4 && relayed.Count==1,"experimental host fallback blocked the guest driver and prevented handoff");
+        StableGameBridge.Configure(host);StableGameBridge.LocalDriver(7);StableGameBridge.UseExperimentalAuthority();relayed.Clear();
+        StableGameBridge.Receive(20,packet);
+        Check(StableGameBridge.Events.Count==0 && relayed.Count==0,"experimental guest overwrote the actual host driver");
         StableGameBridge.Configure(host);StableGameBridge.LocalHost(7);var unowned=Frame(4,1150,5);Put(unowned.Pose,45,BitConverter.GetBytes(1));Put(unowned.Velocity,29,BitConverter.GetBytes(1));
         StableGameBridge.Receive(20,VehicleMotionCodec.Encode(20,unowned,null));
         Check(StableGameBridge.Events.Count==0 && relayed.Count==0,"motion rejected by native host authority still reached spectators");

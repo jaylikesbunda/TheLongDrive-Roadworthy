@@ -27,6 +27,8 @@ namespace TldMp
         dropdownsetting presetRow, shadowRow;
         togglesetting smoothRow;
         const string SmoothRowName = "TldCarSmoothingToggle";
+        togglesetting experimentalRow;
+        const string ExperimentalRowName = "TldExperimentalMultiplayerToggle";
 
         void Update()
         {
@@ -40,7 +42,12 @@ namespace TldMp
                 activeFrames = 0;
                 presetRow = shadowRow = null;
                 smoothRow = null;
+                experimentalRow = null;
             }
+            // The backend is re-selected before a peer joins, so the row stays
+            // interactive; it only reflects the effective choice.
+            if (installed && experimentalRow != null && experimentalRow.toggle != null)
+                experimentalRow.toggle.SetIsOnWithoutNotify(ExperimentalEffective());
             if (installed || failed) return;
             if (settings == null || settings.gameObject == null || !settings.gameObject.activeInHierarchy)
             {
@@ -202,6 +209,25 @@ namespace TldMp
                 delegate(bool on) { PatchOptions.Sandstorms = on; });
             AddMiscToggle(tab, template, root, content, HighRateRowName, "High multiplayer update rate", PatchOptions.HighRate,
                 delegate(bool on) { PatchOptions.HighRate = on; });
+            experimentalRow = AddMiscToggle(tab, template, root, content, ExperimentalRowName,
+                "Experimental multiplayer (preview)", PatchOptions.ExperimentalMultiplayer,
+                delegate(bool on)
+                {
+                    PatchOptions.ExperimentalMultiplayer = on;
+                    if (Environment.GetEnvironmentVariable("TLD_MP_EXPERIMENTAL") == "1")
+                        Debug.LogWarning("[TLD MP experimental] TLD_MP_EXPERIMENTAL=1 overrides the menu choice for this process.");
+                    else if (StableGameBridge.InSession)
+                        Debug.Log("[TLD MP experimental] Backend preference set to " + (on ? "experimental" : "native") +
+                            "; it switches automatically before a peer joins. Experimental enables the external join, item owner gate, player identity gate and breakable authority.");
+                });
+        }
+
+        // The environment override wins for a development launch. Show that
+        // effective value so the row never claims native while experimental runs.
+        static bool ExperimentalEffective()
+        {
+            return PatchOptions.ExperimentalMultiplayer ||
+                Environment.GetEnvironmentVariable("TLD_MP_EXPERIMENTAL") == "1";
         }
 
         const string RabbitsRowName = "TldRabbitsToggle";
@@ -210,10 +236,10 @@ namespace TldMp
 
         // One more cloned Misc toggle under the current last row, saved to the
         // options file. Same cloning/placement as the car smoothing row.
-        void AddMiscToggle(settingsscript.tab tab, togglesetting template, Transform root, RectTransform content,
+        togglesetting AddMiscToggle(settingsscript.tab tab, togglesetting template, Transform root, RectTransform content,
             string name, string label, bool value, Action<bool> apply)
         {
-            if (Find(root, name) != null) return;
+            if (Find(root, name) != null) return Find<togglesetting>(root, name);
             togglesetting row = CloneToggle(template, root, name);
             row.settings = null;
             row.childToggles = new togglesetting[0];
@@ -231,6 +257,7 @@ namespace TldMp
             if (content.rect.height < requiredHeight)
                 content.sizeDelta = new Vector2(content.sizeDelta.x, requiredHeight);
             row.toggle.SetIsOnWithoutNotify(value);
+            row.toggle.interactable = true;
             row.toggle.onValueChanged.AddListener(delegate(bool on)
             {
                 PatchOptions.Load();
@@ -240,6 +267,7 @@ namespace TldMp
             tab.toggles = Append(tab.toggles, row);
             tab.obj = Append(tab.obj, row.gameObject);
             Debug.Log("[TLD MP options] misc toggle " + label + " placed bottom=" + F(-(top - height)) + " on=" + value);
+            return row;
         }
 
         static togglesetting CloneToggle(togglesetting template, Transform root, string name)
@@ -297,6 +325,11 @@ namespace TldMp
                 presetRow.dropdown.SetValueWithoutNotify((int)PatchOptions.Preset);
             if (smoothRow != null && smoothRow.toggle != null)
                 smoothRow.toggle.SetIsOnWithoutNotify(PatchOptions.SmoothCars);
+            if (experimentalRow != null && experimentalRow.toggle != null)
+            {
+                experimentalRow.toggle.SetIsOnWithoutNotify(ExperimentalEffective());
+                experimentalRow.toggle.interactable = true;
+            }
         }
 
         static dropdownsetting Clone(dropdownsetting template, Transform root, string name)

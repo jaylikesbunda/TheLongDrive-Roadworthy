@@ -2,6 +2,31 @@
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
+## v0.2.0-pre2
+
+### Joining and playing together
+
+- Guests can join even if their mods, extra game files, or custom maps differ from the host's.
+- Only the game version and the Roadworthy version still need to match.
+- If a join fails, a pop-up now says why, such as which version each player has.
+- After a failed join, you go back to the server list instead of being stuck at the main menu.
+- Guests keep retrying the Steam connection for up to a minute before giving up.
+- Hosts no longer turn away guests who joined the lobby a moment ago.
+- Different local physics settings no longer block joining.
+
+### Performance
+
+- Much less stuttering when new areas, buildings, and roadside stops load in.
+- Building and roadside placement is faster, with the same results as before.
+- Buildings in new areas may appear a moment later instead of freezing the game.
+
+### Experimental multiplayer (preview)
+
+- A new "Experimental multiplayer (preview)" option is in the Misc settings. It is off by default.
+- Players with the preview on can only join players who also have it on.
+- The preview hands cars, their parts, and their cargo between players as one unit.
+- The preview shares door, part, paint, damage, fluid, and breakable-object changes from the host.
+
 ## v0.2.0-pre1
 
 ### Joining and playing together

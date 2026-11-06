@@ -10,7 +10,15 @@ namespace TldMp
         static readonly object gate=new object();
         static readonly System.Collections.Generic.Queue<string> queue=new System.Collections.Generic.Queue<string>();
         static readonly System.Threading.AutoResetEvent wake=new System.Threading.AutoResetEvent(false);
-        static readonly string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TheLongDrive-Roadworthy","diagnostics");
+        static readonly string directory=ResolveDirectory();
+        static string ResolveDirectory()
+        {
+            // Test instances keep bridge diagnostics inside their isolated tree so
+            // two loopback processes never interleave and Documents is untouched.
+            string root=Environment.GetEnvironmentVariable("TLD_MP_SAVE_ROOT");
+            if(!String.IsNullOrEmpty(root))return Path.Combine(root,"diagnostics");
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TheLongDrive-Roadworthy","diagnostics");
+        }
         internal static readonly string CurrentPath=Path.Combine(directory,"runtime-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff",System.Globalization.CultureInfo.InvariantCulture)+".log");
         static readonly System.Threading.Thread worker=Start();
         static int chars,dropped;static volatile bool failed;

@@ -215,7 +215,12 @@ public static class RabbitTransportTests
         Check(StableMessage.Decode(trunc)==null,"truncated rejects");
         var badVer=(byte[])good.Clone();badVer[5]=4;
         Check(StableMessage.Decode(badVer)==null,"bad version rejects");
-        Check(StableMessage.Decode(l.Msg((StableOp)25,999,101,10,101,1,"",new byte[]{1}).Encode())==null,"unknown op 25 rejects");
+        Check(StableMessage.Decode(l.Msg((StableOp)30,999,101,10,101,1,"",new byte[]{1}).Encode())==null,"unknown op 30 rejects");
+        // 26-28 are the mode-gated experimental world-join frames: inside the range now.
+        Check(StableMessage.Decode(l.Msg(StableOp.ExpSnapshotBegin,999,101,10,101,1,"",new byte[36]).Encode())!=null,"experimental snapshot begin decodes");
+        Check(StableMessage.Decode(l.Msg(StableOp.ExpSnapshotPart,999,101,10,101,1,"",new byte[]{1}).Encode())!=null,"experimental snapshot part decodes");
+        Check(StableMessage.Decode(l.Msg(StableOp.ExpSnapshotEnd,999,101,10,101,1,"",new byte[0]).Encode())!=null,"experimental snapshot end decodes");
+        Check(StableMessage.Decode(l.Msg(StableOp.ExpItemEvent,999,101,10,101,1,"",new byte[]{1}).Encode())!=null,"experimental item event decodes");
         Check(StableMessage.Decode(l.Msg(StableOp.RabbitState,999,101,10,101,1,"",new byte[]{1}).Encode())!=null,"op 24 decodes");
     }
     public static int Main(string[] a)

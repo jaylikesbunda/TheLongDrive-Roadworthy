@@ -1111,6 +1111,10 @@ public static class VerifyStability
                     {"syncScript.UpdAttachable/12","W:WrapNativeAttachment:0,1,2,3,4,7"},
                     {"syncScript.SyncStuff/0","R:SyncItems:-1"},
                     {"massScript.Mass/0","R:MassWithoutArray:-1"},
+                    // Test-data isolation: path() becomes a single call to the
+                    // redirect helper, which reproduces the native Documents path
+                    // when TLD_MP_SAVE_ROOT is unset.
+                    {"pathscript.path/0","SR:RedirectSaveRoot"},
                     {"MeshSlicer.BuildSlice/3","R:BuildBoxSlice:0,1,2"},
                     {"newRandomStuffSpawnScript.selectId/1","R:SelectPropCategory:0"},
                     {"mainscript.Awake/0","E:RegisterUrineFluid:-1"},
@@ -1151,6 +1155,10 @@ public static class VerifyStability
                     {"terrainGenScript.GenerateTileMesh/1","OVY:NativeTerrainMeshBegin:NativeTerrainMeshEnd:1:-1:-1:TerrainHoleBegin:TerrainHoleNeighbors:DedupeTerrainRoads"},
                     {"NoiseS3D.Noise/3","M:"},
                     {"roadGenScript.UpdChunksToRemove/0","K:RoadChunkKeep:RD"},
+                    {"roadGenScript.UpdDotChunk/1:UnityEngine.Vector3d","E:RoadDotChunkAdding:-1,0"},
+                    {"roadGenScript.UpdChunks/1:System.Boolean","E:RoadChunksRemoving:-1"},
+                    {"roadGenScript.ConnectDots/6:UnityEngine.Vector3d","E:RoadConnectionsStarting:-1"},
+                    {"roadGenScript.Restart/0","E:RoadStateReset:-1"},
                     {"tosaveitemscript.MorePosUpd/0","CB:CarPoseNeedsBurst:CarPoseBurst"},
                     {"washtriggerscript.GotDirty/0","E:CarBloodDirty:-1"},
                     {"washtriggerscript.GotClean/0","E:CarBloodClean:-1"},
@@ -1304,6 +1312,16 @@ public static class VerifyStability
                             if(def.ReturnType.FullName!="System.Void" || !def.Parameters.Select(p=>p.ParameterType.FullName).SequenceEqual(types))throw new Exception("Particle transfer signature changed.");
                             bm.Body.Instructions.Remove(arg0);bm.Body.Instructions.Remove(arg1);c.OpCode=nativeParticleCalls[0].OpCode;c.Operand=nativeParticleCalls[0].Operand;
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Particle transfer changed other native instructions.");
+                            continue;
+                        }
+                        else if(rule.StartsWith("SR:"))
+                        {
+                            var helper=rule.Substring(3);
+                            var calls=bm.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name==helper).ToArray();
+                            if(calls.Length!=1 || bm.Body.Instructions.Count!=2 || calls[0]!=bm.Body.Instructions[0] || bm.Body.Instructions[1].OpCode!=OpCodes.Ret)
+                                throw new Exception("Save-root redirect layout changed.");
+                            var def=BridgeDefinition(bridge,(MethodReference)calls[0].Operand);
+                            if(def.ReturnType.FullName!="System.String" || def.Parameters.Count!=0)throw new Exception("Save-root redirect signature changed.");
                             continue;
                         }
                         else if(rule.StartsWith("WT:"))
@@ -1752,7 +1770,8 @@ public static class VerifyStability
                 // Bus-ground diagnostics add two entry observers (AddPoi, poiScript.FStart): two methods, two sites.
                 // The terrain-align fix swaps two Transform.localPosition reads in poiGenScript.alignClass's constructor: one method, two sites.
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
-                if(bridgeUsers.Count!=133 || hookSites!=273)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                // Road-state epoch entries add four methods and four sites: UpdDotChunk, UpdChunks, ConnectDots, Restart.
+                if(bridgeUsers.Count!=138 || hookSites!=278)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }

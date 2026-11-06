@@ -170,7 +170,8 @@ public static class ExtractReplay
                 }:args.Length==4 && args[3]=="spawn"?new Dictionary<string,string[]> {
                     {"TldMp.StableGameBridge",new[]{"FixedSpawnFStart","VerifyAttachmentPacket","VerifyStoredPacket","CloseD","BytesEqual","SpawnHashMatches","ApplySpawn","ParseSpawnLedger","ApplySpawnLedger","VerifySpawnLedger","ReleaseLedger","VerifyPendingSpawnConstruction","ConstructionFence","RequireConstructionSettled"}}
                 }:args.Length==4 && args[3]=="vehicle"?new Dictionary<string,string[]> {
-                    {"TldMp.StableGameBridge",new[]{"ReceiveVehicleMotion","DispatchVehicleVelocity","DispatchSendTime","AllowForward","get_MotionSender"}}
+                    {"TldMp.StableGameBridge",new[]{"ReceiveVehicleMotion","ExperimentalAllowsPeer","DispatchVehicleVelocity","DispatchSendTime","AllowForward","get_MotionSender"}},
+                    {"TldMp.Experimental.ExperimentalBackend",new[]{"ProtectLocalCar"}}
                 }:args.Length==4 && args[3]=="worldnative"?new Dictionary<string,string[]> {
                     {"savedatascript",new[]{"SaveToDictionary","LoadStuff","Save","Load","Copy","IndexOfID","IndexOfID2","Remove","Remov2"}},
                     {"itemDataClass",new[]{"Copy","RemoveID"}},

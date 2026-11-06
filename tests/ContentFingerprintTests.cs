@@ -31,7 +31,7 @@ public static class ContentFingerprintTests
             const string identity="test-build-identity";
             string expected=LegacyFingerprint(managed,assets,custom,identity);
             string actual=ContentFingerprint.Compute(managed,assets,custom,identity);
-            Check(actual==expected,"Synchronous helper digest differs from the legacy canonical fingerprint");
+            Check(actual==expected,"Synchronous helper digest differs from the reference fingerprint");
 
             var job=ContentFingerprint.Start(managed,assets,custom,identity);
             string ready=null,error=null;var timer=Stopwatch.StartNew();
@@ -59,12 +59,21 @@ public static class ContentFingerprintTests
 
             Write(Path.Combine(managed,"Tld.Multiplayer.dll"),"helper changed but is intentionally excluded");
             Check(ContentFingerprint.Compute(managed,assets,custom,identity)==expected,"Excluded helper DLL changed the fingerprint");
+            Write(Path.Combine(managed,"TLDLoader.dll"),"an extra mod loader on one peer only");
+            Write(Path.Combine(managed,"plugin-a.dll"),"a different plugin build");
+            Check(ContentFingerprint.Compute(managed,assets,custom,identity)==expected,"Extra or different Managed DLLs must not block a join");
             Write(Path.Combine(custom,"Nested","POI.BIN"),"changed nested bytes");
+            Write(Path.Combine(custom,"only-on-this-peer.png"),"local custom map");
+            Check(ContentFingerprint.Compute(managed,assets,custom,identity)==expected,"Local Maps folder content must not block a join");
+            Write(Path.Combine(assets,"scene.assets"),"different game content");
             string changed=ContentFingerprint.Compute(managed,assets,custom,identity);
-            Check(changed!=expected,"Recursive custom-map content change was not reflected");
-            Check(changed==LegacyFingerprint(managed,assets,custom,identity),"Changed custom-map digest differs from legacy path handling");
+            Check(changed!=expected,"A game .assets change (different game version) was not reflected");
+            Check(changed==LegacyFingerprint(managed,assets,custom,identity),"Changed asset digest differs from the reference rule");
+            Write(Path.Combine(assets,"globalgamemanagers"),"different global managers");
+            Check(ContentFingerprint.Compute(managed,assets,custom,identity)!=changed,"A globalgamemanagers change was not reflected");
+            Check(ContentFingerprint.Compute(managed,assets,custom,identity+"-other-build")!=ContentFingerprint.Compute(managed,assets,custom,identity),"A different mod build identity was not reflected");
 
-            Console.WriteLine("PASS: "+checks+" content fingerprint checks (legacy digest parity, async completion, exclusions and recursive map content).");
+            Console.WriteLine("PASS: "+checks+" content fingerprint checks (reference digest parity, async completion, game-content and build sensitivity, tolerance of extra DLLs and local Maps).");
             return 0;
         }
         catch(Exception e){Console.Error.WriteLine(e);return 1;}
@@ -79,18 +88,16 @@ public static class ContentFingerprintTests
         return job.TryGetResult(out value,out error);
     }
 
-    // Independent replay of the exact pre-async implementation.
+    // Independent replay of the join rule: game .assets + globalgamemanagers + build identity.
     static string LegacyFingerprint(string managed,string assets,string custom,string identity)
     {
         var files=new List<string>();
-        foreach(var file in Directory.GetFiles(managed,"*.dll"))if(Path.GetFileName(file)!="Assembly-CSharp.dll" && Path.GetFileName(file)!="Tld.Multiplayer.dll")files.Add(file);
         foreach(string file in Directory.GetFiles(assets,"*.assets"))files.Add(file);
         if(File.Exists(Path.Combine(assets,"globalgamemanagers")))files.Add(Path.Combine(assets,"globalgamemanagers"));
-        if(Directory.Exists(custom))files.AddRange(Directory.GetFiles(custom,"*",SearchOption.AllDirectories));
-        var records=new List<string>();var text=new StringBuilder("TLD-STABLE-V3-1\n"+identity+"\nCF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000\n");
+        var records=new List<string>();var text=new StringBuilder("TLD-STABLE-V3-2\n"+identity+"\nCF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000\n");
         foreach(var file in files)
         {
-            string relative=file.StartsWith(custom,StringComparison.OrdinalIgnoreCase)?"Maps/"+file.Substring(custom.Length).Replace('\\','/'):Path.GetFileName(file);
+            string relative=Path.GetFileName(file);
             using(var sha=SHA256.Create())using(var stream=File.OpenRead(file))records.Add(relative.ToLowerInvariant()+":"+BitConverter.ToString(sha.ComputeHash(stream)));
         }
         records.Sort(StringComparer.Ordinal);foreach(string record in records)text.Append(record).Append('\n');
