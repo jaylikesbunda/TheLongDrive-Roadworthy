@@ -125,7 +125,7 @@ internal static class MenuLayoutPolicyTests
             }
 
             // Settings: every tab, with and without a preview and reset buttons.
-            object[] tabs = { "tab0", 400f, 88f, "tab1", 400f, 88f, "tab2", 400f, 88f, "tab3", 400f, 88f, "tab4", 400f, 88f, "setBack", "setReset", "setPanel" };
+            object[] tabs = { "tab0", 400f, 88f, "tab1", 400f, 88f, "tab2", 400f, 88f, "tab3", 400f, 88f, "tab4", 400f, 88f, "tab5", 400f, 88f, "setBack", "setReset", "setPanel" };
             foreach (object[] extra in new[] { new object[0], new object[] { "setResetKeys" }, new object[] { "setPreview", 460f, 881f }, new object[] { "setPreview", 420f, 748f } })
             {
                 MenuSizes s = Sizes(f, Join(tabs, extra));

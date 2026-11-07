@@ -372,7 +372,7 @@ namespace TldMp
             // finds the result ready instead of freezing the main thread while it waits.
             EnsureFingerprintStart();
             if(Connected)EnsureFingerprint();
-            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<FeedbackHotkey>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
+            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<FeedbackHotkey>();g.AddComponent<DrunkCameraSway>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
             Ensure();Debug.Log("[TLD MP v3] Native synchronization path active; checked world manifest/join. All peers require this exact build.");
         }
         public static void PrewarmContentFingerprint(SteamP2PMenuHandlerScript menu)
@@ -1613,7 +1613,7 @@ namespace TldMp
         {UrineLiquid.NormalizeBladder(bladder);}
         public static float SurvivalFoodRate(survivalscript survival){return SurvivalRates.Food(survival);}
         public static float SurvivalWaterRate(survivalscript survival){return SurvivalRates.Water(survival);}
-        public static void ResetSurvivalSickness(survivalscript survival){SurvivalRates.Clear(survival);}
+        public static void ResetSurvivalSickness(survivalscript survival){SurvivalRates.Clear(survival);DrunkEffects.Clear(survival);}
         public static void ConvertWaterToUrine(survivalscript survival,float amount)
         {
             survival.water=Mathf.Clamp(survival.water-amount,0f,survival.maxWater);
@@ -1685,9 +1685,13 @@ namespace TldMp
             var player=fluidDrinker;fluidDrinker=null;
             float before=player==null?0:UrineAmount(donor),mouthBefore=player==null?0:UrineAmount(receiver);
             float toxicBefore=player==null?0:BadFluidAmount(donor);
+            float alcohol=player==null?0:DrunkEffects.AlcoholDrunk(donor,amount);
+            float milk=player==null?0:DrunkEffects.MilkDrunk(donor,amount);
             receiver.pour(donor,amount,direct,filter,drinkFilter);
             if(player==null)return;
             NoteBadFluidDrink(player.survival,Mathf.Max(0f,toxicBefore-BadFluidAmount(donor)));
+            DrunkEffects.NoteAlcohol(player.survival,alcohol);
+            DrunkEffects.NoteMilk(player.survival,milk);
             float swallowed=Mathf.Max(0f,before-UrineAmount(donor));
             float retained=Mathf.Max(0f,UrineAmount(receiver)-mouthBefore);
             if(retained>0f)receiver.ChangeOne(-retained,UrineFluid);
@@ -1757,6 +1761,9 @@ namespace TldMp
         }
         public static void TankPourTick(tankcapscript tank){if(tank!=null && mainscript.s!=null && mainscript.s.player!=null && mainscript.s.player.piss==tank && tank.Tank!=null)ConvertBladderWater(tank.Tank.F);if(tank==null || !tank.started || tank.ps==null)return;int action=IdlePourPausePolicy.Decide(tank.em.enabled,tank.ps.isPaused,tank.ps.particleCount);if(action==IdlePourPausePolicy.Pause)tank.ps.Pause();else if(action==IdlePourPausePolicy.Resume)tank.ps.Play();}
         public static void WornItemDestroyed(pickupable item){WornItemGuard.Destroyed(item);}
+        public static void RadiatorRepairCheck(partconditionscript condition){try{RadiatorRepair.BeforeCanRepair(condition);}catch(Exception){}}
+        public static void TrailerGripStarted(attachgripscript grip){try{TrailerHitch.Wire(grip);TrailerSync.RegisterGrip(grip);}catch(Exception){}}
+        public static pickupable TrailerGripP(tosaveitemscript save){return TrailerHitch.P(save);}
         public static void HideListPrune(makeinvisible hide){WornItemGuard.PruneHide(hide);}
         public static void SafeSlice(randomSlice slice,bool darabForce,bool darabAlsoVagas,Vector3 terrainNormal,Vector3 lossyScale){try{slice.SSSLiceee(darabForce,darabAlsoVagas,terrainNormal,lossyScale);}catch(Exception error){SliceGuard.Failed(error);}finally{SliceGeometryEnd();SlicePairsEnd();}}
         public static bool MirrorVisible(Renderer renderer,Camera camera){return MirrorOnScreen.Visible(renderer,camera);}
@@ -1787,6 +1794,7 @@ namespace TldMp
                     bool isNewest=carStreams.TryGetValue(key,out newest) && newest==generation;
                     if(item==null || !CarPosePolicy.ContinueStream(isNewest,item.ThisOneInCharge(),CarPosePolicy.NeedsBurst(item),Time.time-start)) yield break;
                     item.ForcePosUpd(false,false,false);
+                    TrailerSync.ForwardPoses(item);
                 }
             }
             finally
@@ -1819,6 +1827,10 @@ namespace TldMp
         public static bool CreatureJumpGate(movecreaturescript creature){if(RabbitReplicas.GuestMove(creature))return false;return RabbitLocomotion.NativeJump(creature)&&WildlifeWeather.CreatureJump(creature);}
         // Guard on tosaveitemscript.ThisOneInChargeCar(carWhatDoing). False = this
         // machine is not in charge (CarOwnershipPolicy); true = the native rule.
+        // Return filter on tosaveitemscript.ThisOneInCharge: a hitched trailer follows its towing car.
+        public static bool TrailerChargeFilter(bool native,tosaveitemscript trailer){return TrailerSync.ChargeFilter(native,trailer);}
+        // Guard on syncScript.UpdInWorld: false drops a pose for a hitched trailer this machine owns.
+        public static bool TrailerInboundGate(uint id){return TrailerSync.AcceptInbound(id);}
         public static bool CarChargeGate(tosaveitemscript item,tosaveitemscript.carWhatDoing remote)
         {
             try

@@ -313,6 +313,36 @@ public static class VerifyStability
             {Instruction next=i.Next;patched.Body.Instructions.Remove(i);i=next;}
         }
     }
+    // Value filter (PatchStability.FilterReturns): each ret is preceded by the loads and a
+    // hook that takes the native value first. Strip the loads and hook, keep the value.
+    static void StripReturnValues(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge,string name,int expectedReturns,int[] loads)
+    {
+        var returns=patched.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray();
+        var calls=patched.Body.Instructions.Where(i=>IsBridge(i) && ((MethodReference)i.Operand).Name==name).ToArray();
+        int nativeReturns=native.Body.Instructions.Count(i=>i.OpCode==OpCodes.Ret);
+        if(nativeReturns!=expectedReturns || returns.Length!=expectedReturns || calls.Length!=expectedReturns)
+            throw new Exception("Wrong value-filter hook count for "+native.FullName+": nativeReturns="+nativeReturns+", patchedReturns="+returns.Length+", hooks="+calls.Length+", expected="+expectedReturns);
+        foreach(var call in calls)
+        {
+            if(call.Next==null || call.Next.OpCode!=OpCodes.Ret)throw new Exception("Value filter is not immediately before ret: "+native.FullName);
+            Instruction first=call;
+            for(int i=loads.Length-1;i>=0;i--)
+            {
+                first=first.Previous;
+                if(first==null || !IsLoad(first,loads[i],native))throw new Exception("Wrong value filter load: "+native.FullName);
+            }
+            ValidateHook(native,(MethodReference)call.Operand,bridge,loads,true,native.ReturnType.FullName);
+            Instruction stop=call.Next;
+            var nativeReturnsForMap=native.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray();
+            var patchedReturnsForMap=patched.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray();
+            int returnIndex=Array.IndexOf(patchedReturnsForMap,stop);
+            if(returnIndex<0 || returnIndex>=nativeReturnsForMap.Length)throw new Exception("Cannot map filtered return to native method: "+native.FullName);
+            VerifyAndRestoreExceptionEnd(native,patched,nativeReturnsForMap[returnIndex],first,stop);
+            RedirectBranches(patched,first,stop);
+            for(Instruction i=first;i!=stop;)
+            {Instruction next=i.Next;patched.Body.Instructions.Remove(i);i=next;}
+        }
+    }
     static int[] ParseLoads(string value)
     {
         if(value==null || value.Length==0 || value=="-")return new int[0];
@@ -577,6 +607,29 @@ public static class VerifyStability
             pi.OpCode=ni.OpCode;pi.Operand=ni.Operand;found++;
         }
         if(found!=expected)throw new Exception("Call-swap count mismatch: "+native.FullName+" found="+found+" expected="+expected);
+    }
+    // A native ldfld replaced one-for-one by a static bridge call taking the
+    // field's owner and returning the field's type.
+    static void StripFieldSwap(MethodDefinition native,MethodDefinition patched,TypeDefinition bridge,string hookName,int expected,
+        string fieldOwner,string fieldName,string expectedReturn,string expectedParam)
+    {
+        if(patched.Body.Instructions.Count!=native.Body.Instructions.Count)
+            throw new Exception("Field-swap changed instruction count: "+native.FullName);
+        int found=0;
+        for(int i=0;i<patched.Body.Instructions.Count;i++)
+        {
+            var pi=patched.Body.Instructions[i];
+            if(!IsBridge(pi) || ((MethodReference)pi.Operand).Name!=hookName)continue;
+            var ni=native.Body.Instructions[i];
+            var field=ni.Operand as FieldReference;
+            if(ni.OpCode!=OpCodes.Ldfld || field==null || field.DeclaringType.FullName!=fieldOwner || field.Name!=fieldName)
+                throw new Exception("Field-swap lost its native field load: "+native.FullName);
+            var definition=BridgeDefinition(bridge,(MethodReference)pi.Operand);
+            if(definition.ReturnType.FullName!=expectedReturn || definition.Parameters.Count!=1 || definition.Parameters[0].ParameterType.FullName!=expectedParam)
+                throw new Exception("Field-swap signature changed: "+native.FullName);
+            pi.OpCode=ni.OpCode;pi.Operand=ni.Operand;found++;
+        }
+        if(found!=expected)throw new Exception("Field-swap count mismatch: "+native.FullName+" found="+found+" expected="+expected);
     }
     static void StripBusOwner(MethodDefinition patched,TypeDefinition bridge)
     {
@@ -1197,6 +1250,13 @@ public static class VerifyStability
                     {"pickupable.OnDestroy/0","E:WornItemDestroyed:-1"},
                     {"makeinvisible.PreRender/0","E:HideListPrune:-1"},
                     {"makeinvisible.PostRender/0","E:HideListPrune:-1"},
+                    {"partconditionscript.CanRepair/1","E:RadiatorRepairCheck:-1"},
+                    {"attachgripscript.FStart/0","RX:TrailerGripStarted:2:-1"},
+                    {"attachablescript.FallOFf/0","FP:TrailerGripP:1"},
+                    {"attachablescript.Attach/2:UnityEngine.Transform","FP:TrailerGripP:1"},
+                    {"attachablescript.Attach/1:UnityEngine.Transform","FP:TrailerGripP:4"},
+                    {"attachablescript.Detach/0","FP:TrailerGripP:2"},
+                    {"attachablescript.SetCollider/2","FP:TrailerGripP:1"},
                     {"randomSlice.Slicc/3","SW:SafeSlice:randomSlice:SSSLiceee:4:System.Void:randomSlice:System.Boolean:System.Boolean:UnityEngine.Vector3:UnityEngine.Vector3"},
                     {"audioBasedOnInteriorsensscript.Update/0","O:NativeBehaviorAudioBegin:NativeBehaviorAudioEnd:2:-:-"},
                     {"sensorScript.Update/0","O:NativeBehaviorSensorBegin:NativeBehaviorSensorEnd:1:-:-"},
@@ -1212,6 +1272,8 @@ public static class VerifyStability
                     {"ragdollchildpos.UpdPos/0","E:BeforeRabbitPose:-1"},
                     {"movecreaturescript.Jump/0","G:CreatureJumpGate:-1"},
                     {"tosaveitemscript.ThisOneInChargeCar/1","G:CarChargeGate:-1,0"},
+                    {"tosaveitemscript.ThisOneInCharge/0","RV:TrailerChargeFilter:1:-1"},
+                    {"syncScript.UpdInWorld/4","G:TrailerInboundGate:0"},
                     {"newAiScript.Update/0","O:NativeBehaviorAiBegin:NativeBehaviorAiEnd:2:-:-"},
                     {"vultureAI.Update/0","O:NativeBehaviorVultureBegin:NativeBehaviorVultureEnd:1:-:-"},
                     {"randomFlyer.Update/0","O:NativeBehaviorFlyerBegin:NativeBehaviorFlyerEnd:1:-:-"},
@@ -1246,8 +1308,8 @@ public static class VerifyStability
                 // Every method below must be untouched IL: its hook was removed and
                 // the shipped native body restored.
                 var removed=new[]{
-                    "tosaveitemscript.ThisOneInCharge/0",
-                    // ThisOneInChargeCar/1 carries one narrow guard again (CarChargeGate:
+                    // ThisOneInCharge/0 carries a return filter (TrailerChargeFilter) again: hitched
+                    // trailers follow their towing car. ThisOneInChargeCar/1 carries one narrow guard again (CarChargeGate:
                     // a guest passenger never takes a car while the host is in range);
                     // the old lease/ownership system stays removed.
                     "seatscript.FreeCanSit/0","fpscontroller.Pickup/1","fpscontroller.Pickup/2","fpscontroller.Wear/1",
@@ -1282,7 +1344,7 @@ public static class VerifyStability
                     foreach(var am in a.Methods)
                     {
                         var bm=b.Methods.Single(m=>m.FullName==am.FullName);if(VerifyPatch.Fingerprint(am)==VerifyPatch.Fingerprint(bm)){unchanged++;continue;}
-                        changed++;kept.Add(bm);string key=a.Name+"."+am.Name+"/"+am.Parameters.Count,rule;if(a.Name=="roadGenScript" && am.Parameters.Count>0)key+=":"+am.Parameters[0].ParameterType.FullName;if(!expected.TryGetValue(key,out rule))throw new Exception("Unexpected edit: "+key);expected.Remove(key);
+                        changed++;kept.Add(bm);string key=a.Name+"."+am.Name+"/"+am.Parameters.Count,rule;if(a.Name=="roadGenScript" && am.Parameters.Count>0)key+=":"+am.Parameters[0].ParameterType.FullName;if(a.Name=="attachablescript" && am.Name=="Attach")key+=":"+am.Parameters[0].ParameterType.FullName;if(!expected.TryGetValue(key,out rule))throw new Exception("Unexpected edit: "+key);expected.Remove(key);
                         if(rule=="SP")
                         {
                             StripCallSwap(am,bm,bridge,"RestoreBuildingUsable",1,"save_usablescript","Load",1,"System.Void","save_usablescript","usablescript");
@@ -1368,7 +1430,7 @@ public static class VerifyStability
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(seatExit))throw new Exception("Seat-exit observers changed stock method body.");
                             continue;
                         }
-                        string[] bits=rule.Split(':');string mode=bits[0],name=bits[1];int[] loads=(mode=="T" || mode=="O" || mode=="GT" || mode=="X" || mode=="P" || mode=="OS" || mode=="Y" || mode=="F" || mode=="BOV" || mode=="OB" || mode=="OVY" || mode=="M" || mode=="K" || mode=="CB" || mode=="IC" || mode=="RM" || mode=="AS" || mode=="OV" || mode=="OW" || mode=="WK" || mode=="SW" || mode=="SW2" || mode=="OM" || mode=="RX" || mode=="FS" || bits[2]=="")?new int[0]:bits[2].Split(',').Select(Int32.Parse).ToArray();
+                        string[] bits=rule.Split(':');string mode=bits[0],name=bits[1];int[] loads=(mode=="T" || mode=="O" || mode=="GT" || mode=="X" || mode=="P" || mode=="OS" || mode=="Y" || mode=="F" || mode=="BOV" || mode=="OB" || mode=="OVY" || mode=="M" || mode=="K" || mode=="CB" || mode=="IC" || mode=="RM" || mode=="AS" || mode=="OV" || mode=="OW" || mode=="WK" || mode=="SW" || mode=="SW2" || mode=="OM" || mode=="RX" || mode=="RV" || mode=="FS" || bits[2]=="")?new int[0]:bits[2].Split(',').Select(Int32.Parse).ToArray();
                         var instructions=bm.Body.Instructions;
                         if(mode=="BOV")
                         {
@@ -1503,6 +1565,13 @@ public static class VerifyStability
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Double call-swap edit changed stock method body: "+key);
                             continue;
                         }
+                        if(mode=="FP")
+                        {
+                            if(bits.Length!=3)throw new Exception("Bad field-swap rule: "+key);
+                            StripFieldSwap(am,bm,bridge,bits[1],Int32.Parse(bits[2]),"tosaveitemscript","P","pickupable","tosaveitemscript");
+                            if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Field-swap edit changed stock method body: "+key);
+                            continue;
+                        }
                         if(mode=="SW")
                         {
                             if(bits.Length<7)throw new Exception("Bad call-swap rule: "+key);
@@ -1608,6 +1677,13 @@ public static class VerifyStability
                             if(bits.Length!=2)throw new Exception("Bad place-order rule: "+key);
                             StripPlaceOrder(am,bm,bridge,bits[1]);
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Place-order edit changed stock method body: "+key);
+                            continue;
+                        }
+                        if(mode=="RV")
+                        {
+                            if(bits.Length!=4)throw new Exception("Bad value-filter rule: "+key);
+                            StripReturnValues(am,bm,bridge,bits[1],Int32.Parse(bits[2]),ParseLoads(bits[3]));
+                            if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Value filter changed stock method body: "+key);
                             continue;
                         }
                         if(mode=="RX")
@@ -1771,7 +1847,8 @@ public static class VerifyStability
                 // The terrain-align fix swaps two Transform.localPosition reads in poiGenScript.alignClass's constructor: one method, two sites.
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
                 // Road-state epoch entries add four methods and four sites: UpdDotChunk, UpdChunks, ConnectDots, Restart.
-                if(bridgeUsers.Count!=138 || hookSites!=278)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                // Trailer sync adds the ThisOneInCharge return filter and the syncScript.UpdInWorld inbound guard: two methods, two sites.
+                if(bridgeUsers.Count!=147 || hookSites!=292)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }

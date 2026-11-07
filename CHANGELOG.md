@@ -2,6 +2,29 @@
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
+## v0.2.0-pre3
+
+### Settings
+
+- A new Roadworthy tab in the settings menu holds all Roadworthy options in one place.
+- Shadow quality, performance preset, and the experimental multiplayer option moved there from the Graphics and Misc tabs.
+- Some options have clearer names: "Faster multiplayer" (was High multiplayer update rate) and "New Buggy multiplayer" (was Experimental multiplayer).
+- A Reset button on the tab puts every Roadworthy option back to its default.
+
+### Driving and riding
+
+- Trailers can be hitched to cars again.
+- Hitched trailers follow whoever is driving and move smoothly for everyone in multiplayer.
+
+### Repairs
+
+- A wire brush can repair a radiator's condition, the same way it fixes doors. Turn it on in Roadworthy settings > Repairable radiators (off by default).
+
+### Survival
+
+- Drinking alcohol makes your view sway and zoom in and out, and it gets stronger the more you drink. Steering is not affected. Turn it off in Roadworthy settings > Drunk effects.
+- Drinking milk sobers you up faster.
+
 ## v0.2.0-pre2
 
 ### Joining and playing together

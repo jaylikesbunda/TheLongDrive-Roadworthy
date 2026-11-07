@@ -13,7 +13,10 @@ param(
     # test-data isolation, so that helper is part of the candidate JIT set.
     # 216: road-state epoch entry hooks on roadGenScript.UpdDotChunk, UpdChunks,
     # ConnectDots and Restart add four selected native methods.
-    [int]$ExpectedCandidateMethods=216,
+    # 217: radiator repair entry hook on partconditionscript.CanRepair.
+    # 223: trailer hitch hooks attachgripscript.FStart and five attachablescript methods.
+    # 225: trailer sync return filter on tosaveitemscript.ThisOneInCharge and inbound guard on syncScript.UpdInWorld.
+    [int]$ExpectedCandidateMethods=225,
     [int]$ExpectedControlMethods=6
 )
 $ErrorActionPreference='Stop'

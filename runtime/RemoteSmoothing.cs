@@ -111,7 +111,8 @@ namespace TldMp
         // Guard on tosaveitemscript.GotSync. Returns true for the native body.
         internal static bool Gate(tosaveitemscript item, Vector3 pos, Vector3 rot)
         {
-            if (item == null || item.car == null) return true;
+            if (item == null) return true;
+            if (item.car == null) return TrailerSync.Gate(item, pos, rot);
             // The complete paired replica is the sole pose path regardless of
             // the smoothing option: bookkeeping only, never a native teleport.
             if (BusPairReplica.Owns(item))
@@ -321,6 +322,7 @@ namespace TldMp
             try
             {
                 RemoteCarSmoothing.Drive();
+                TrailerSync.Drive();
             }
             catch (Exception e)
             {

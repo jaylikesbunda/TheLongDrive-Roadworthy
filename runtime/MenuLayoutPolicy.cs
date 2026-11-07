@@ -242,7 +242,8 @@ namespace TldMp
 
         // Settings: tab column, Reset/Back at the column bottom, one panel size for
         // every tab, and the Player/Steering preview to the right of the panel.
-        public static readonly string[] Tabs = { "tab0", "tab1", "tab2", "tab3", "tab4" };
+        // tab5 (Roadworthy) is only placed when its button exists; Column skips absent ids.
+        public static readonly string[] Tabs = { "tab0", "tab1", "tab2", "tab3", "tab4", "tab5" };
         public static MenuPlan Settings(LRect f, MenuSizes s)
         {
             var p = new MenuPlan();

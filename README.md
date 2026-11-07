@@ -16,7 +16,7 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Menus and interface
 
-- Graphics settings have Shadow quality and Performance preset options.
+- The Roadworthy settings tab has Shadow quality and Performance preset options.
 - Custom settings stay available after loading a world or returning to the main menu.
 - Menus fit the screen at any resolution and aspect ratio.
 - Menu backgrounds fill ultrawide screens.
@@ -57,10 +57,10 @@ A multiplayer and performance patch for **The Long Drive**.
 - Wheels and attached parts no longer drift away from moving cars.
 - A car being pushed by another player moves smoothly instead of jumping once a second.
 - When a car crashes and gets bloody, everyone sees the blood, not just the driver.
-- Car smoothing can be turned on or off in Settings > Misc.
+- Car smoothing can be turned on or off in Settings > Roadworthy.
 - Passengers receive car position updates up to 60 times a second instead of about 5.
 - Other players' movement updates 30 times a second instead of about 3.
-- High update rate can be turned off in Settings > Misc.
+- Faster multiplayer can be turned off in Settings > Roadworthy.
 - Passengers no longer see the car freeze for up to a second every few seconds.
 - Outdated position updates no longer queue behind newer ones.
 - Late position updates are ignored, so cars and players no longer jump back to old positions.
@@ -176,8 +176,8 @@ A multiplayer and performance patch for **The Long Drive**.
 
 - Hosting removes rabbits from the world, so guests no longer freeze or get flung by them.
 - Removed warning spam from flying animals.
-- Rabbits spawn in single-player again (toggle in Settings > Misc).
-- Sandstorms occur again in single-player (toggle in Settings > Misc).
+- Rabbits spawn in single-player again (toggle in Settings > Roadworthy).
+- Sandstorms occur again in single-player (toggle in Settings > Roadworthy).
 - Removed warning spam from frozen far-away creatures.
 
 ### Saving and diagnostics
@@ -283,7 +283,7 @@ with the highest native car role, so each car has exactly one writer. The two
 backends use different handshake signatures, so mixed-mode peers reject each
 other before any world state is exchanged.
 
-Select it in **Settings → Misc → Experimental multiplayer (preview)** before
+Select it in **Settings → Roadworthy → New Buggy multiplayer** before
 creating or joining a session. The row stays interactive; if you change it before
 any peer joins, the bridge recreates the session with the selected signature. Once
 a peer is present the backend is fixed until the session ends. For development,
@@ -293,7 +293,7 @@ process. Every peer must choose the same backend.
 - Supported: session start/teardown, native world join, players, items/cargo,
   vehicle pose and velocity with host-issued ownership and epochs, per-car lease
   with stale-owner recovery, and atomic fitted-parts/stored-cargo groups.
-- Selecting **Experimental multiplayer (preview)** in Misc enables the whole
+- Selecting **New Buggy multiplayer** in the Roadworthy tab enables the whole
   experimental path for the session: external snapshot/journal join (loopback),
   host item/state relay, player identity gate and breakable/prop authority. Native
   remains the untouched default. The env vars are kill switches:
@@ -335,8 +335,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File Start-Loopback.ps1 -Role Hos
 powershell -NoProfile -ExecutionPolicy Bypass -File Start-Loopback.ps1 -Role Client -Experimental -RttMs 200 -LossPercent 5 -JitterMs 40
 ```
 
-You can also omit `-Experimental` and enable **Experimental multiplayer (preview)**
-in Misc on both instances before joining. Load a save on the host and wait until
+You can also omit `-Experimental` and enable **New Buggy multiplayer**
+in the Roadworthy tab on both instances before joining. Load a save on the host and wait until
 the world is visible before starting the client. Logs:
 `.local-analysis/loopback-logs/` (Unity) and `.local-analysis/loopback-data/<role>/diagnostics/`
 (bridge). Prove the redirect against the staged assembly before launching a world:

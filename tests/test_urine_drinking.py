@@ -14,6 +14,7 @@ struct Vector3 {public static Vector3 zero;}
 static class Mathf {public static float Max(float a,float b){return Math.Max(a,b);}}
 class survival {public float maxHp=150,water,damage;public void Drink(float a){water+=a;}public void Damage(float a,Vector3 d){damage+=a;}}
 class survivalscript : survival {}
+static class DrunkEffects {public static float AlcoholDrunk(mainscript.fluidcontainer c,float a){return 0;}public static void NoteAlcohol(survivalscript s,float l){}public static float MilkDrunk(mainscript.fluidcontainer c,float a){return 0;}public static void NoteMilk(survivalscript s,float l){}}
 static class SurvivalRates {public static float dose;public static void AddSickness(survivalscript s,float a){dose+=a;}}
 class fpscontroller {public survivalscript survival=new survivalscript();}
 class mainscript {

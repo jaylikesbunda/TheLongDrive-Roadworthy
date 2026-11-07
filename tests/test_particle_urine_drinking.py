@@ -23,6 +23,7 @@ public class tankscript {public mainscript.fluidcontainer F;}
 public class tankcapscript {public bool isDrinkCap;public fpscontroller player;public tankscript Tank;}
 public class tankcapparticledetectionscript {public tankcapscript T;}
 namespace TldMp {public static class StableGameBridge {internal const mainscript.fluidenum UrineFluid=(mainscript.fluidenum)7;public static float dose;public static float BadFluidAmount(mainscript.fluidcontainer f){float n=0;foreach(var x in f.fluids)if((int)x.type==0||(int)x.type==1||(int)x.type==5)n+=x.amount;return n;}public static void NoteBadFluidDrink(survival s,float a){dose+=a;}public static void TraceUrineDrink(float a,float b,float c){}}}
+namespace TldMp {public static class DrunkEffects {public static float AlcoholDrunk(mainscript.fluidcontainer c,float a){return 0;}public static void NoteAlcohol(survival s,float l){}public static float MilkDrunk(mainscript.fluidcontainer c,float a){return 0;}public static void NoteMilk(survival s,float l){}}}
 public class Test {
  static int n;static void Near(float a,float b){n++;if(Math.Abs(a-b)>0.0001f)throw new Exception("check "+n+" "+a+" != "+b);}
  static mainscript.fluidcontainer Tank(float cap,float u,float w){var t=new mainscript.fluidcontainer{maxC=cap};t.ChangeOne(u,mainscript.fluidenum.urine);t.ChangeOne(w,mainscript.fluidenum.water);return t;}

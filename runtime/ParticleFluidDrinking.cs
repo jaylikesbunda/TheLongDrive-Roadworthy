@@ -25,9 +25,13 @@ namespace TldMp
                 destination.Tank!=detector.T.Tank && receiver==destination.Tank.F && donor==detector.T.Tank.F;
             float before=mouth?UrineAmount(receiver):0f;
             float toxicBefore=mouth?StableGameBridge.BadFluidAmount(receiver):0f;
+            float alcohol=mouth?DrunkEffects.AlcoholDrunk(donor,amount):0f;
+            float milk=mouth?DrunkEffects.MilkDrunk(donor,amount):0f;
             receiver.pour(donor,amount,direct,filter,drinkFilter);
             if(!mouth)return;
             StableGameBridge.NoteBadFluidDrink(destination.player.survival,Mathf.Max(0f,StableGameBridge.BadFluidAmount(receiver)-toxicBefore));
+            DrunkEffects.NoteAlcohol(destination.player.survival,alcohol);
+            DrunkEffects.NoteMilk(destination.player.survival,milk);
             float consumed=Mathf.Max(0f,UrineAmount(receiver)-before);
             if(consumed<=0f)return;
             receiver.ChangeOne(-consumed,StableGameBridge.UrineFluid);

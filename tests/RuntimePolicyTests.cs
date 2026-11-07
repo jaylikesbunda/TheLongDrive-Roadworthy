@@ -25,7 +25,7 @@ internal static class RuntimePolicyTests
     {
         MirrorSwitchesAndReflections();
         SmallFixes();
-        Console.WriteLine("PASS: " + checks + " runtime-policy assertions; mirror switches default off, the reflection hold only fires for the preset, and the four small fixes change only their guarded cases.");
+        Console.WriteLine("PASS: " + checks + " runtime-policy assertions; mirror switches default off, the reflection hold only fires for the preset, the four small fixes change only their guarded cases, radiators borrow the metal repair table only with the option on, and the trailer grip stands in only for a wired trailer.");
         return 0;
     }
 
@@ -59,6 +59,30 @@ internal static class RuntimePolicyTests
 
         Check(SliceGuard.FirstFailure(ref sliceLogged), "the first slicer failure is reported");
         Check(!SliceGuard.FirstFailure(ref sliceLogged), "later slicer failures are not reported again");
+
+        Check(RadiatorRepairPolicy.Metal == (int)itemdatabase.repairProperty.metal, "the borrowed table is the native metal entry");
+        Check(RadiatorRepairPolicy.UseMetal(true, true, false), "a radiator borrows the metal table while the option is on");
+        Check(!RadiatorRepairPolicy.UseMetal(false, true, false), "turning the option off restores the native table");
+        Check(!RadiatorRepairPolicy.UseMetal(true, false, false), "other parts keep their own table");
+        Check(!RadiatorRepairPolicy.UseMetal(true, true, true), "a radiator that already accepts the brush is left alone");
+        var none = new bool[][] { new bool[7], new bool[7] };
+        var brush = new bool[][] { new bool[7], new bool[] { false, true, false, false, false, false, false } };
+        Check(!RadiatorRepairPolicy.AcceptsTool(none, RadiatorRepairPolicy.WireBrush) && RadiatorRepairPolicy.AcceptsTool(brush, RadiatorRepairPolicy.WireBrush), "brush acceptance reads any state row");
+        Check(!RadiatorRepairPolicy.AcceptsTool(null, 1) && !RadiatorRepairPolicy.AcceptsTool(brush, 9), "missing tables and tools are refused");
+        PatchOptions.Parse(null);
+        Check(!PatchOptions.RadiatorRepair, "radiator repair defaults off");
+        PatchOptions.Parse("radiatorrepair=on\n");
+        Check(PatchOptions.RadiatorRepair && PatchOptions.Format().Contains("radiatorrepair=on\n"), "radiator repair can be turned on and is saved");
+        PatchOptions.Parse(null);
+
+        Check(TrailerHitchPolicy.ShouldWire(true, true), "a trailer grip is linked to its trailer save");
+        Check(!TrailerHitchPolicy.ShouldWire(false, true) && !TrailerHitchPolicy.ShouldWire(true, false), "a missing grip or trailer save is skipped");
+        Check(TrailerHitchPolicy.UseGrip(false, true), "a wired trailer without its own pickupable reads the grip");
+        Check(!TrailerHitchPolicy.UseGrip(true, true), "a native pickupable always wins");
+        Check(!TrailerHitchPolicy.UseGrip(false, false), "unwired items keep the native null");
+        PatchOptions.Parse("trailerhitch=off\nradiatorrepair=on\n");
+        Check(PatchOptions.RadiatorRepair && !PatchOptions.Format().Contains("trailerhitch"), "a retired trailerhitch line is ignored and never saved");
+        PatchOptions.Parse(null);
     }
 
     static bool sliceLogged;

@@ -300,6 +300,34 @@ public static class PatchStability
             RedirectRetBranches(m,ret,entry??call);MoveExceptionEndBoundaries(m,ret,entry??call);
         }
     }
+    // Return filter: before each ret the native value is passed to a hook that takes
+    // (value, args...) and returns the value the caller receives. Branches to the ret
+    // are retargeted to the first injected load, which still has the value on the stack.
+    static void FilterReturns(MethodDefinition m,string name,int expectedReturns,params int[] args)
+    {
+        if(m.ReturnType.FullName=="System.Void" || args.Length==0)throw new Exception("Return filter requires a native return value and arguments: "+m.FullName);
+        var hook=Hook(name);
+        if(hook.ReturnType.FullName!=m.ReturnType.FullName || hook.Parameters.Count!=args.Length+1 || hook.Parameters[0].ParameterType.FullName!=m.ReturnType.FullName)
+            throw new Exception("Return filter signature mismatch: "+m.FullName+" -> "+hook.FullName);
+        for(int a=0;a<args.Length;a++)
+        {
+            int arg=args[a];var source=arg==-1?m.DeclaringType:m.Parameters[arg].ParameterType;
+            if(source.FullName!=hook.Parameters[a+1].ParameterType.FullName)
+                throw new Exception("Return filter argument type mismatch: "+name+" argument "+a);
+        }
+        var il=m.Body.GetILProcessor();var returns=m.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray();
+        if(returns.Length!=expectedReturns)throw new Exception("Unexpected native return count for return filter: "+m.FullName+" count="+returns.Length);
+        foreach(var ret in returns)
+        {
+            Instruction entry=null;
+            foreach(int arg in args)
+            {
+                var load=arg==-1?Instruction.Create(OpCodes.Ldarg_0):Instruction.Create(OpCodes.Ldarg,m.Parameters[arg]);
+                if(entry==null)entry=load;il.InsertBefore(ret,load);
+            }
+            il.InsertBefore(ret,Instruction.Create(OpCodes.Call,hook));RedirectRetBranches(m,ret,entry);MoveExceptionEndBoundaries(m,ret,entry);
+        }
+    }
     static void Observe(MethodDefinition m,string begin,string end,int expectedReturns,int[] beginArgs,int[] endArgs)
     {
         Entry(m,begin,beginArgs);
@@ -904,6 +932,31 @@ public static class PatchStability
         Entry(Method("makeinvisible","PreRender",0),"HideListPrune",-1);
         Entry(Method("makeinvisible","PostRender",0),"HideListPrune",-1);
     }
+    // Radiators may borrow the metal repair table (Misc option) just before the
+    // native CanRepair lookup; Repair and CanPaint go through CanRepair too.
+    // Beta trailer grip: link it to its trailer when the grip spawns, and
+    // let the attachable methods read the grip's pickupable through TrailerGripP
+    // wherever they dereference tosave.P without a null check.
+    static void FixTrailerHitch()
+    {
+        AfterReturns(Method("attachgripscript","FStart",0),"TrailerGripStarted",2,new[]{-1});
+        SwapSaveP(Method("attachablescript","FallOFf",0),1);
+        SwapSaveP(Method("attachablescript","Attach",2,"UnityEngine.Transform"),1);
+        SwapSaveP(Method("attachablescript","Attach",1,"UnityEngine.Transform"),4);
+        SwapSaveP(Method("attachablescript","Detach",0),2);
+        SwapSaveP(Method("attachablescript","SetCollider",2),1);
+    }
+    static void SwapSaveP(MethodDefinition m,int expected)
+    {
+        var loads=m.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ldfld && i.Operand is FieldReference &&
+            ((FieldReference)i.Operand).Name=="P" && ((FieldReference)i.Operand).DeclaringType.FullName=="tosaveitemscript").ToArray();
+        if(loads.Length!=expected)throw new Exception("Unexpected tosave.P read count in "+m.FullName+": "+loads.Length+" expected "+expected);
+        foreach(var load in loads){load.OpCode=OpCodes.Call;load.Operand=Hook("TrailerGripP");}
+    }
+    static void OptimizeRadiatorRepair()
+    {
+        Entry(Method("partconditionscript","CanRepair",1),"RadiatorRepairCheck",-1);
+    }
     // The shared slicer call in randomSlice.Slicc goes through SafeSlice, which
     // catches and logs one failure; the native caller still destroys the object.
     static void OptimizeSliceGuard()
@@ -1225,6 +1278,8 @@ public static class PatchStability
                     OptimizeParkedCarSleep();
                     OptimizeIdlePourPause();
                     OptimizeWornDestroyed();
+                    OptimizeRadiatorRepair();
+                    FixTrailerHitch();
                     OptimizeSliceGuard();
                     // Item streaming: parented items are measured from their root, and a
                     // frozen item stays frozen while no ground is loaded under it (20 s cap).
@@ -1249,6 +1304,10 @@ public static class PatchStability
                     AfterReturn(Method("ragdollactivatescript","SetRagdol",1),"ConfigureRabbitImpact",-1);
                     Guard(Method("movecreaturescript","Jump",0),"CreatureJumpGate",-1);
                     Guard(Method("tosaveitemscript","ThisOneInChargeCar",1),"CarChargeGate",-1,0);
+                    // Hitched trailers follow their towing car: the charge answer is filtered, and
+                    // the inbound pose for an item without a car is dropped when this machine owns it.
+                    FilterReturns(Method("tosaveitemscript","ThisOneInCharge",0),"TrailerChargeFilter",1,-1);
+                    Guard(Method("syncScript","UpdInWorld",4),"TrailerInboundGate",0);
                     // Remote smoothing. GotUpd and the car GotSync guard only record or withhold
                     // their own bookkeeping; Upd overwrites the pose after the native body runs.
                     Entry(Method("syncScript/playerSyncClass","GotUpd",9),"RemotePlayerSample",-1,0,1,3);
@@ -1345,7 +1404,10 @@ public static class PatchStability
                     // pathscript.path() adds one rewritten method with one bridge call
                     // (RedirectSaveRoot) for test-data isolation.
                     // Road-state epoch entries add four methods and four sites: UpdDotChunk, UpdChunks, ConnectDots, Restart.
-                    if(hooked!=132 || sites!=273)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    // Radiator repair adds one entry hook on partconditionscript.CanRepair.
+                    // Trailer hitch adds attachgripscript.FStart (2 return sites) and five attachable methods (9 P reads).
+                    // Trailer sync adds the ThisOneInCharge return filter and the syncScript.UpdInWorld inbound guard (two methods, two sites).
+                    if(hooked!=141 || sites!=287)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
                     var sliceFactory=Method("randomSlice","Slicc",3);
                     var additions=sliceFactory.Body.Instructions.Where(i=>i.Operand is GenericInstanceMethod && ((GenericInstanceMethod)i.Operand).Name=="AddComponent" && ((GenericInstanceMethod)i.Operand).GenericArguments[0].FullName=="randomSlice").ToArray();
                     if(additions.Length!=2)throw new Exception("Expected two native slice component additions.");

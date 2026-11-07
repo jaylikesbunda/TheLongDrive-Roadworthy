@@ -31,8 +31,10 @@ namespace TldMp
             MENU, O + "/MenuBackGround/ScreenShotBackGroundMenu", SL + "/BackGround", SL + "/TextLoad (1)/LoadTextBackGround",
             NS + "/BG", WS + "/WheelSetupBackground", O + "/TextLoad/LoadTextBackGround", MENU + "/MainMenu/Poszter", MAIN + "/CarSelectScreen",
         };
-        static readonly string[] TabRoots = { "TabGraphics", "TabControls", "TabSteeringWheel", "TabMisc", "TabPlayer" };
-        static readonly string[] TabButtons = { "ButtonGraphics", "ButtonControls", "ButtonSteeringWheel", "ButtonMisc", "ButtonPlayer" };
+        // The sixth tab (Roadworthy) is a clone made by PatchOptionsMenu; it is absent
+        // on vanilla or fallback menus, and then nothing is registered for it.
+        static readonly string[] TabRoots = { "TabGraphics", "TabControls", "TabSteeringWheel", "TabMisc", "TabPlayer", "TabRoadworthy" };
+        static readonly string[] TabButtons = { "ButtonGraphics", "ButtonControls", "ButtonSteeringWheel", "ButtonMisc", "ButtonPlayer", "ButtonRoadworthy" };
 
         // A placeable element: one or more roots (moved together), extra rects that are
         // part of its footprint (icons hanging outside it), and the token size kind.
@@ -50,6 +52,11 @@ namespace TldMp
         readonly List<Transform> watched = new List<Transform>();
         static readonly Vector3[] corners = new Vector3[4];
         bool off, logged;
+        // Set when another component adds menu elements after the last pass (the
+        // Roadworthy tab is cloned a few frames after Settings opens); the next frame
+        // rebuilds the watch list and lays the menus out again.
+        static bool rescan;
+        public static void Rescan() { rescan = true; }
         int lastSig, pending = -1;
         RectTransform canvas;
 
@@ -65,6 +72,7 @@ namespace TldMp
                 if (canvas == null || mainscript.IsVR()) return;
                 Canvas c = canvas.GetComponent<Canvas>();
                 if (c == null || c.renderMode != RenderMode.ScreenSpaceOverlay) return;
+                if (rescan) { rescan = false; watched.Clear(); lastSig = 0; }
                 int sig = Signature();
                 if (sig != lastSig) { lastSig = sig; pending = Time.frameCount + 10; Apply(); }
                 else if (pending >= 0 && Time.frameCount >= pending) { pending = -1; Apply(); }
@@ -235,9 +243,9 @@ namespace TldMp
             Add(c, "saveBack", SL + "/ButtonBack", null);
             Add(c, "setActive", SL + "/ButtonSetActive", null);
 
-            for (int i = 0; i < 5; i++) Add(c, "tab" + i, NS + "/" + TabButtons[i], "setTab", "ImageLedOff");
+            for (int i = 0; i < TabButtons.Length; i++) Add(c, "tab" + i, NS + "/" + TabButtons[i], "setTab", "ImageLedOff");
             Add(c, "setBack", NS + "/ButtonBack", null);
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < TabRoots.Length; i++)
             {
                 if (!On(Rt(c, NS + "/" + TabRoots[i]))) continue;
                 Add(c, "setPanel", NS + "/" + TabRoots[i] + "/BG", null);

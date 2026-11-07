@@ -964,8 +964,8 @@ namespace TldMp
             if(Get(h,"build")!=Get(g,"build"))return "Roadworthy builds differ (both v"+Get(h,"ver")+"). Reinstall the same release on both PCs.";
             if(Get(h,"game")!=Get(g,"game"))return "Your game files differ from the host's. Update the game on both PCs, or use Steam's Verify integrity of game files.";
             if(Get(h,"net")!=Get(g,"net"))return "Network transport settings differ (host "+Get(h,"net")+", you "+Get(g,"net")+"). Remove TLD_MP_TRANSPORT on both PCs.";
-            foreach(var key in h.Keys)if(key.StartsWith("flag:",StringComparison.Ordinal) && !g.ContainsKey(key))return "The host has Experimental multiplayer on and you do not. Use the same setting on both PCs.";
-            foreach(var key in g.Keys)if(key.StartsWith("flag:",StringComparison.Ordinal) && !h.ContainsKey(key))return "You have Experimental multiplayer on and the host does not. Use the same setting on both PCs.";
+            foreach(var key in h.Keys)if(key.StartsWith("flag:",StringComparison.Ordinal) && !g.ContainsKey(key))return "The host has New Buggy multiplayer on and you do not. Use the same setting on both PCs.";
+            foreach(var key in g.Keys)if(key.StartsWith("flag:",StringComparison.Ordinal) && !h.ContainsKey(key))return "You have New Buggy multiplayer on and the host does not. Use the same setting on both PCs.";
             return "Multiplayer compatibility check failed. Install the same Roadworthy release on both PCs.";
         }
         // Short, player-facing text for a guest's join failure (shown in the native popup).

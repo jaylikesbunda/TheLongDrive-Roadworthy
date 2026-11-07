@@ -63,6 +63,8 @@ namespace TldMp
         internal const string SandstormsKey = "sandstorms";
         internal const string HighRateKey = "highrate";
         internal const string MultiplayerKey = "mpmode";
+        internal const string RadiatorRepairKey = "radiatorrepair";
+        internal const string DrunkEffectsKey = "drunkeffects";
 
         internal static readonly PresetValues[] Presets =
         {
@@ -105,6 +107,10 @@ namespace TldMp
         // Multiplayer: players 30 Hz and passenger cars up to 60 Hz (off = 20 Hz cars,
         // native player rate).
         internal static bool HighRate = true;
+        // Opt-in: radiators can be restored with the wire brush and other metal tools, like doors.
+        internal static bool RadiatorRepair;
+        // Local camera sway after drinking alcohol. Never changes controls or what other players see.
+        internal static bool DrunkEffects = true;
         // Experimental multiplayer is opt-in and defaults off. Native remains the
         // backend for every existing install until the user explicitly selects it.
         internal static bool ExperimentalMultiplayer;
@@ -162,6 +168,8 @@ namespace TldMp
             Rabbits = true;
             Sandstorms = true;
             HighRate = true;
+            RadiatorRepair = false;
+            DrunkEffects = true;
             ExperimentalMultiplayer = false;
             loaded = true;
         }
@@ -216,6 +224,8 @@ namespace TldMp
             text.Append(RabbitsKey).Append('=').Append(Rabbits ? "on" : "off").Append('\n');
             text.Append(SandstormsKey).Append('=').Append(Sandstorms ? "on" : "off").Append('\n');
             text.Append(HighRateKey).Append('=').Append(HighRate ? "on" : "off").Append('\n');
+            text.Append(RadiatorRepairKey).Append('=').Append(RadiatorRepair ? "on" : "off").Append('\n');
+            text.Append(DrunkEffectsKey).Append('=').Append(DrunkEffects ? "on" : "off").Append('\n');
             text.Append(MultiplayerKey).Append('=').Append(ExperimentalMultiplayer ? "experimental" : "native").Append('\n');
             return text.ToString();
         }
@@ -238,6 +248,8 @@ namespace TldMp
             Rabbits = true;
             Sandstorms = true;
             HighRate = true;
+            RadiatorRepair = false;
+            DrunkEffects = true;
             ExperimentalMultiplayer = false;
             if (String.IsNullOrEmpty(text)) return;
             string[] lines = text.Replace("\r", "").Split('\n');
@@ -278,6 +290,16 @@ namespace TldMp
                 {
                     bool on;
                     if (TryOnOff(value, out on)) HighRate = on;
+                }
+                else if (key == RadiatorRepairKey)
+                {
+                    bool on;
+                    if (TryOnOff(value, out on)) RadiatorRepair = on;
+                }
+                else if (key == DrunkEffectsKey)
+                {
+                    bool on;
+                    if (TryOnOff(value, out on)) DrunkEffects = on;
                 }
                 else if (key == MultiplayerKey)
                 {
