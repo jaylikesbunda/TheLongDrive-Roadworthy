@@ -372,7 +372,7 @@ namespace TldMp
             // finds the result ready instead of freezing the main thread while it waits.
             EnsureFingerprintStart();
             if(Connected)EnsureFingerprint();
-            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<FeedbackHotkey>();g.AddComponent<DrunkCameraSway>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
+            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<MultiplayerMenuSkin>();g.AddComponent<FeedbackHotkey>();g.AddComponent<DrunkCameraSway>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
             Ensure();Debug.Log("[TLD MP v3] Native synchronization path active; checked world manifest/join. All peers require this exact build.");
         }
         public static void PrewarmContentFingerprint(SteamP2PMenuHandlerScript menu)

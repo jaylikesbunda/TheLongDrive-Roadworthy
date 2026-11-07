@@ -23,8 +23,8 @@ public static class JoinCompatibilityTests
             Check(Has(JoinCompatibility.Describe(host,JoinCompatibility.Compose("0.2.0-pre2","BUILDB","GAMEAAAAAAAAAAAAAAAAAA","sdr")),"builds differ"),"build mismatch not described");
             Check(Has(JoinCompatibility.Describe(host,JoinCompatibility.Compose("0.2.0-pre2","BUILDAAAAAAAAAAAAAAAAAA","GAMEB","sdr")),"game files differ"),"game mismatch not described");
             Check(Has(JoinCompatibility.Describe(host,JoinCompatibility.Compose("0.2.0-pre2","BUILDAAAAAAAAAAAAAAAAAA","GAMEAAAAAAAAAAAAAAAAAA","p2p")),"transport"),"transport mismatch not described");
-            Check(Has(JoinCompatibility.Describe(host+"|exp-mp-1",host),"host has Experimental"),"host-only experimental flag not described");
-            Check(Has(JoinCompatibility.Describe(host,host+"|exp-mp-1"),"You have Experimental"),"guest-only experimental flag not described");
+            Check(Has(JoinCompatibility.Describe(host+"|exp-mp-1",host),"host has New Buggy multiplayer"),"host-only experimental flag not described");
+            Check(Has(JoinCompatibility.Describe(host,host+"|exp-mp-1"),"You have New Buggy multiplayer"),"guest-only experimental flag not described");
             // Version is reported before build/game so the most actionable fix comes first.
             Check(Has(JoinCompatibility.Describe(host,JoinCompatibility.Compose("0.1.9","X","Y","p2p")),"versions differ"),"version is not the first reported difference");
 

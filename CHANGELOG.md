@@ -11,6 +11,11 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Some options have clearer names: "Faster multiplayer" (was High multiplayer update rate) and "New Buggy multiplayer" (was Experimental multiplayer).
 - A Reset button on the tab puts every Roadworthy option back to its default.
 
+### Menus
+
+- The multiplayer menu now matches the rest of the game: plank buttons, a paper panel, and native checkboxes, sliders and text boxes.
+- The multiplayer menu no longer shows developer debug text.
+
 ### Driving and riding
 
 - Trailers can be hitched to cars again.
