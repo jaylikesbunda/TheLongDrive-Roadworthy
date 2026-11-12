@@ -19,10 +19,11 @@ namespace TldMp
         public static readonly Color Colour=new Color(0.86f,0.58f,0.12f,1f);
 
         // Per liter of beer drunk. Native "alcohol" is the game's spirit; beer
-        // quenches thirst a little less than water and carries a fifth of the
-        // spirit's healing, diuretic and drunk effect.
+        // quenches thirst a little less than water and carries a third of the
+        // spirit's healing, diuretic and drunk effect (a 0.5 L bottle counts
+        // as 1/6 L of spirit).
         public const float Hydration=0.9f;
-        public const float AlcoholShare=0.2f;
+        public const float AlcoholShare=1f/3f;
 
         // Chance weight added to bottle random liquid lists: the same weight as
         // the bottle's native alcohol entry, so about as many bottles hold beer.

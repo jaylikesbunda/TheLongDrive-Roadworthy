@@ -93,7 +93,7 @@ internal static class BeerLiquidTests
     {
         float hydration, alcohol;
         BeerLiquid.Effects(0.5f, out hydration, out alcohol);
-        Check(Math.Abs(hydration - 0.45f) < 1e-6f && Math.Abs(alcohol - 0.1f) < 1e-6f, "half a liter: 0.45 water and 0.1 alcohol equivalent");
+        Check(Math.Abs(hydration - 0.45f) < 1e-6f && Math.Abs(alcohol - 0.5f / 3f) < 1e-6f, "half a liter: 0.45 water and a third as much alcohol equivalent (1/6)");
         BeerLiquid.Effects(0f, out hydration, out alcohol);
         Check(hydration == 0f && alcohol == 0f, "nothing drunk, no effect");
         BeerLiquid.Effects(-1f, out hydration, out alcohol);
