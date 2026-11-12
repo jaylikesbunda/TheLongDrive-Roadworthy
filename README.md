@@ -9,6 +9,8 @@ A multiplayer and performance patch for **The Long Drive**.
 - Smoother multiplayer movement and better vehicle and item syncing.
 - Faster world streaming and fewer performance spikes.
 - Graphics presets and shadow controls.
+- Join friends over Steam even if your mods or maps differ.
+- New survival touches: beer, drunk effects and visible pee.
 - Lots of fixes to terrain, saves, multiplayer and gameplay.
 
 <details>
@@ -16,7 +18,8 @@ A multiplayer and performance patch for **The Long Drive**.
 
 ### Menus and interface
 
-- The Roadworthy settings tab has Shadow quality and Performance preset options.
+- A Roadworthy tab in the settings menu holds all Roadworthy options in one place, including Shadow quality and Performance preset. Its Reset button puts every option back to its default.
+- Some options have clearer names: "Faster multiplayer" (was High multiplayer update rate) and "New Buggy multiplayer" (was Experimental multiplayer).
 - Custom settings stay available after loading a world or returning to the main menu.
 - Menus fit the screen at any resolution and aspect ratio.
 - Menu backgrounds fill ultrawide screens.
@@ -26,12 +29,14 @@ A multiplayer and performance patch for **The Long Drive**.
 - Save/Load buttons and confirmations line up in fixed spots.
 - Steering wheel setup no longer shows the settings tab behind it.
 - Multiplayer window, lobby list and dialogs stay inside the window.
+- The multiplayer menu matches the rest of the game: plank buttons, a paper panel, and native checkboxes, sliders and text boxes.
+- The multiplayer menu no longer shows developer debug text.
 - The version label reads v0.2.0 Roadworthy.
 - Roadworthy lobbies show their patch version in the lobby browser.
 
 ### Joining and world loading
 
-- Joining refuses to start if your map or build differs from the host's.
+- Guests can join even if their mods, extra game files or custom maps differ from the host's. Only the game version and the Roadworthy version must match.
 - Test clients running on the same PC use the host's map and starting position.
 - A joining player is not released until the ground under them has loaded.
 - A joining player is moved to a clear spot on solid ground instead of dropping inside a car, prop or wall.
@@ -45,6 +50,11 @@ A multiplayer and performance patch for **The Long Drive**.
 - Game-file checks start earlier, so the first join stalls less.
 - Multiplayer startup can continue while game files are checked.
 - Multiplayer joining since v0.1.1 is potentially fixed: joins are faster and cars and cargo stay above the ground.
+- If a join fails, a pop-up says why, such as which version each player has, and you go back to the server list instead of being stuck at the main menu.
+- Guests keep retrying the Steam connection for up to a minute, and retry once if the first connection drops.
+- Steam joins start the connection sooner and the host accepts it right away, so guests are less likely to sit in the lobby without the world loading.
+- Hosts no longer turn away guests who joined the lobby a moment ago.
+- Different local physics settings no longer block joining.
 
 ### Multiplayer players and vehicles
 
@@ -68,6 +78,10 @@ A multiplayer and performance patch for **The Long Drive**.
 - Cars and players no longer snap back and forth after a network hitch.
 - A passenger no longer takes over the car while the host is nearby; whoever drives owns it.
 - Doors, windows, mirrors and seats move smoothly for other players.
+- Other players can see your cigarette smoke.
+- Other players can see and hear you peeing, hear you eating and see the crumbs, and hear the key click when you turn a car's ignition on or off.
+- Trailers can be hitched to cars again, follow whoever is driving, and move smoothly for everyone in multiplayer.
+- Both sections of a double bus move together more smoothly for passengers and guests, the rear section is less likely to snap out of place, and its wheels stay mounted more reliably.
 - Position updates reach other players sooner over Steam.
 - Passengers no longer flash to the wrong terrain on long drives.
 
@@ -114,6 +128,7 @@ A multiplayer and performance patch for **The Long Drive**.
 - Terrain and prop checks no longer redo work that has not changed.
 - Large prop requests are split up to reduce frame spikes.
 - Items loading in cause fewer visible stutters.
+- Buildings in new areas may appear a moment later instead of freezing the game.
 - Breaking objects takes less repeated processing.
 - Spawning items uses less memory.
 - Choosing random items uses less memory.
@@ -143,6 +158,9 @@ A multiplayer and performance patch for **The Long Drive**.
 - Sprinting uses more food and water.
 - Drinking fuel or oil can temporarily make you thirstier.
 - Your water bar pulses yellow while you are sick.
+- Beer is a new drink. It quenches thirst a little less than water and makes you a little drunk. The starting house has beer in glass bottles and a barrel, and bottles found elsewhere can contain it too.
+- Drinking alcohol or beer makes your view sway and zoom in and out, stronger the more you drink. Steering is not affected. Turn it off in Settings > Roadworthy > Drunk effects.
+- Drinking milk sobers you up faster.
 - Cars can now damage enemy NPCs.
 - Hard car hits can now kill and ragdoll rabbits.
 - Multiplayer rabbits spawn around the host and guests, including in Steam sessions.
@@ -161,10 +179,13 @@ A multiplayer and performance patch for **The Long Drive**.
 - Changing view distance no longer removes the ground under you.
 - Fixed terrain corruption when several pieces generate at once.
 - The starting-area bus stop is placed on the ground once terrain loads.
+- If the starting house doesn't appear in a new world, the game tries placing it again before the loading screen closes.
+- While the loading screen is up, you're held in place until there's ground under you, so you shouldn't fall through the map.
 - Bus stops are placed beside the road instead of on it.
 - Cars no longer vanish when one of their parts is far away.
 - Items no longer fall through unloaded ground.
 - Car radiators explode properly again.
+- A wire brush can repair a radiator's condition, the same way it fixes doors. Turn it on in Settings > Roadworthy > Repairable radiators (off by default).
 
 ### Graphics settings
 
