@@ -33,13 +33,17 @@ namespace TldMp
         readonly Dictionary<ulong,HSteamNetConnection> byPeer=new Dictionary<ulong,HSteamNetConnection>();
         readonly Dictionary<uint,ulong> byHandle=new Dictionary<uint,ulong>();
         readonly HashSet<uint> connectedHandles=new HashSet<uint>();
-        // Incoming connections from a Steam ID the local lobby member list does not
-        // show yet. Steam's lobby membership update can lag the joiner's ConnectP2P
-        // by a few seconds, so the handshake is held (not accepted) and re-checked
-        // instead of being closed. Unaccepted after the deadline, it is closed.
-        struct PendingIncoming{internal ulong Peer;internal HSteamNetConnection Connection;internal long Deadline;}
-        readonly Dictionary<uint,PendingIncoming> pendingIncoming=new Dictionary<uint,PendingIncoming>();
-        internal const double PendingMemberSeconds=15.0;
+        // Steam connections that are up but whose Steam ID the local lobby member
+        // list does not show yet. Steam's lobby update can lag the joiner's
+        // ConnectP2P by a few seconds. Incoming connections are accepted at once
+        // (holding them unaccepted can outlast Steam's own initial connection
+        // timeout), and the lobby check happens here instead: the peer is not
+        // reported connected, nothing is read from it (Steam keeps its messages
+        // queued) and nothing is sent to it until the list shows it. Not a member
+        // after the deadline, the connection is closed.
+        struct Unverified{internal ulong Peer;internal HSteamNetConnection Connection;internal long Deadline;}
+        readonly Dictionary<uint,Unverified> unverified=new Dictionary<uint,Unverified>();
+        internal static double PendingMemberSeconds=15.0;
         readonly IntPtr[] receiveBatch=new IntPtr[64];
         readonly Callback<SteamNetConnectionStatusChangedCallback_t> statusCallback;
         HSteamListenSocket listen=HSteamListenSocket.Invalid;
@@ -99,63 +103,61 @@ namespace TldMp
             if(state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connecting &&
                IsIncomingConnection(listen.m_HSteamListenSocket,change.m_info.m_hListenSocket.m_HSteamListenSocket,HSteamListenSocket.Invalid.m_HSteamListenSocket))
             {
-                if(peer==0){SteamNetworkingSockets.CloseConnection(change.m_hConn,1002,"Peer is not a current lobby member",false);return;}
-                if(!AcceptRemote(peer))
-                {
-                    pendingIncoming[change.m_hConn.m_HSteamNetConnection]=new PendingIncoming{Peer=peer,Connection=change.m_hConn,
-                        Deadline=Stopwatch.GetTimestamp()+(long)(PendingMemberSeconds*Stopwatch.Frequency)};
-                    if(Trace!=null)Trace("holding peer="+peer+" until the lobby member list shows it (up to "+PendingMemberSeconds+" s)");
-                    return;
-                }
+                if(peer==0){SteamNetworkingSockets.CloseConnection(change.m_hConn,1002,"Peer has no Steam identity",false);return;}
                 AcceptIncoming(peer,change.m_hConn);return;
             }
-            if(pendingIncoming.ContainsKey(change.m_hConn.m_HSteamNetConnection) &&
-               (state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ClosedByPeer||
-                state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally||
-                state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Dead))
-            {pendingIncoming.Remove(change.m_hConn.m_HSteamNetConnection);SteamNetworkingSockets.CloseConnection(change.m_hConn,0,null,false);return;}
             if(state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected)
             {
                 peer=PeerFor(change.m_hConn);if(peer==0)return;
                 if(!AcceptRemote(peer))
                 {
-                    Unbind(peer,change.m_hConn);
-                    SteamNetworkingSockets.CloseConnection(change.m_hConn,1002,"Peer is not a current lobby member",false);return;
-                }
-                if(!connectedHandles.Contains(change.m_hConn.m_HSteamNetConnection))
-                {
-                    try
+                    if(!unverified.ContainsKey(change.m_hConn.m_HSteamNetConnection))
                     {
-                        if(!legacyLanes)
-                        {
-                            try{ConfigureLanes(change.m_hConn);}
-                            catch(EntryPointNotFoundException)
-                            {
-                                // The game's older steam_api64 has no lane API.
-                                // Its default ordered lane supports every packet.
-                                legacyLanes=true;
-                                if(Trace!=null)Trace("lane API unavailable; using default Steam lane");
-                            }
-                        }
+                        unverified[change.m_hConn.m_HSteamNetConnection]=new Unverified{Peer=peer,Connection=change.m_hConn,
+                            Deadline=Stopwatch.GetTimestamp()+(long)(PendingMemberSeconds*Stopwatch.Frequency)};
+                        if(Trace!=null)Trace("connected peer="+peer+"; waiting for the lobby member list to show it (up to "+PendingMemberSeconds+" s)");
                     }
-                    catch(Exception e)
-                    {
-                        Unbind(peer,change.m_hConn);
-                        SteamNetworkingSockets.CloseConnection(change.m_hConn,1003,"Failed to configure SDR traffic lanes",false);
-                        var failure=ReceiveFailure;if(failure!=null)failure(e);return;
-                    }
-                    connectedHandles.Add(change.m_hConn.m_HSteamNetConnection);
-                    var connected=PeerConnected;if(connected!=null)connected(peer);
+                    return;
                 }
-                return;
+                Admit(peer,change.m_hConn);return;
             }
             if(state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ClosedByPeer||
                state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally||
                state==ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Dead)
             {
+                unverified.Remove(change.m_hConn.m_HSteamNetConnection);
                 peer=PeerFor(change.m_hConn);if(peer==0 || !Unbind(peer,change.m_hConn))return;
                 SteamNetworkingSockets.CloseConnection(change.m_hConn,0,null,false);
                 var disconnected=PeerDisconnected;if(disconnected!=null)disconnected(peer,change.m_info.m_eEndReason,change.m_info.m_szEndDebug);return;
+            }
+        }
+        // A connected peer the lobby list confirms: configure lanes and report it.
+        void Admit(ulong peer,HSteamNetConnection connection)
+        {
+            if(!connectedHandles.Contains(connection.m_HSteamNetConnection))
+            {
+                try
+                {
+                    if(!legacyLanes)
+                    {
+                        try{ConfigureLanes(connection);}
+                        catch(EntryPointNotFoundException)
+                        {
+                            // The game's older steam_api64 has no lane API.
+                            // Its default ordered lane supports every packet.
+                            legacyLanes=true;
+                            if(Trace!=null)Trace("lane API unavailable; using default Steam lane");
+                        }
+                    }
+                }
+                catch(Exception e)
+                {
+                    Unbind(peer,connection);
+                    SteamNetworkingSockets.CloseConnection(connection,1003,"Failed to configure SDR traffic lanes",false);
+                    var failure=ReceiveFailure;if(failure!=null)failure(e);return;
+                }
+                connectedHandles.Add(connection.m_HSteamNetConnection);
+                var connected=PeerConnected;if(connected!=null)connected(peer);
             }
         }
         bool AcceptRemote(ulong peer){var accept=AcceptPeer;return accept!=null && accept(peer);}
@@ -165,26 +167,27 @@ namespace TldMp
             {SteamNetworkingSockets.CloseConnection(connection,1001,"Connection rejected",false);return;}
             Bind(peer,connection);
         }
-        // Called from Poll each frame: admit held connections once the lobby list
-        // shows the peer; close them at the deadline.
-        void CheckPendingIncoming()
+        // Called from Poll each frame: admit waiting connections once the lobby
+        // list shows the peer; close them at the deadline.
+        void CheckUnverified()
         {
-            if(pendingIncoming.Count==0)return;
+            if(unverified.Count==0)return;
             long now=Stopwatch.GetTimestamp();
-            foreach(var pair in new List<KeyValuePair<uint,PendingIncoming>>(pendingIncoming))
+            foreach(var pair in new List<KeyValuePair<uint,Unverified>>(unverified))
             {
-                var pending=pair.Value;
-                if(AcceptRemote(pending.Peer))
+                var waiting=pair.Value;
+                if(AcceptRemote(waiting.Peer))
                 {
-                    pendingIncoming.Remove(pair.Key);
-                    if(Trace!=null)Trace("lobby member list now shows peer="+pending.Peer+"; accepting held connection");
-                    AcceptIncoming(pending.Peer,pending.Connection);
+                    unverified.Remove(pair.Key);
+                    if(Trace!=null)Trace("lobby member list now shows peer="+waiting.Peer+"; admitting connection");
+                    Admit(waiting.Peer,waiting.Connection);
                 }
-                else if(now>=pending.Deadline)
+                else if(now>=waiting.Deadline)
                 {
-                    pendingIncoming.Remove(pair.Key);
-                    if(Trace!=null)Trace("closing held peer="+pending.Peer+": not a lobby member after "+PendingMemberSeconds+" s");
-                    SteamNetworkingSockets.CloseConnection(pending.Connection,1002,"Peer is not a current lobby member",false);
+                    unverified.Remove(pair.Key);
+                    if(Trace!=null)Trace("closing peer="+waiting.Peer+": not a lobby member after "+PendingMemberSeconds+" s");
+                    Unbind(waiting.Peer,waiting.Connection);
+                    SteamNetworkingSockets.CloseConnection(waiting.Connection,1002,"Peer is not a current lobby member",false);
                 }
             }
         }
@@ -238,7 +241,10 @@ namespace TldMp
             // explicitly not for applications using Steam's callback dispatch.
             // Calling it here would be a second, interface-specific pump that
             // this transport does not use. SteamTransportPumpTests guards this.
-            ThrowIfDisposed();CheckPendingIncoming();long started=Stopwatch.GetTimestamp();if(received==null||maxMessages<=0)return 0;int handled=0;var connections=new List<KeyValuePair<ulong,HSteamNetConnection>>(byPeer);
+            ThrowIfDisposed();CheckUnverified();long started=Stopwatch.GetTimestamp();if(received==null||maxMessages<=0)return 0;int handled=0;
+            // Only admitted connections are read; an unverified peer's messages stay queued in Steam.
+            var connections=new List<KeyValuePair<ulong,HSteamNetConnection>>();
+            foreach(var pair in byPeer)if(connectedHandles.Contains(pair.Value.m_HSteamNetConnection))connections.Add(pair);
             int connectionCount=connections.Count;if(connectionCount==0){pollPeerCursor=0;return 0;}
             int cursor=pollPeerCursor%connectionCount;if(cursor<0)cursor+=connectionCount;
             while(handled<maxMessages && InReceiveBudget(started))
@@ -308,8 +314,7 @@ namespace TldMp
         {
             if(disposed)return;disposed=true;statusCallback.Dispose();
             foreach(var pair in byPeer)SteamNetworkingSockets.CloseConnection(pair.Value,1000,"Session closed",false);
-            foreach(var pair in pendingIncoming)SteamNetworkingSockets.CloseConnection(pair.Value.Connection,1000,"Session closed",false);
-            pendingIncoming.Clear();byPeer.Clear();byHandle.Clear();connectedHandles.Clear();if(listen.m_HSteamListenSocket!=HSteamListenSocket.Invalid.m_HSteamListenSocket)SteamNetworkingSockets.CloseListenSocket(listen);
+            unverified.Clear();byPeer.Clear();byHandle.Clear();connectedHandles.Clear();if(listen.m_HSteamListenSocket!=HSteamListenSocket.Invalid.m_HSteamListenSocket)SteamNetworkingSockets.CloseListenSocket(listen);
         }
         void ThrowIfDisposed(){if(disposed)throw new ObjectDisposedException("SteamSdrTransport");}
     }

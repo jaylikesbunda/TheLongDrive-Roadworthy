@@ -208,7 +208,7 @@ namespace TldMp
             ResetBusPair();RabbitContact.Reset();
             RabbitMotionReset();
             RabbitPlayers.Reset();
-            SmokeReset();
+            SmokeReset();CosmeticReset();
             ResetNativeSafety();
             lastPlayers.Clear();lastItems.Clear();pendingCarBlood.Clear();diagnosticNext.Clear();loopbackBootstrapReceived=false;loopbackPreviousMap=null;
             if(steamTransport!=null){steamTransport.Dispose();steamTransport=null;}transportLobby=transportHost=0;nextSdrRetry=0;deliveryPeerCursor=0;delivery.Clear();hostWorldEvidence=restartSteamJoin=steamJoinRetried=false;
@@ -311,7 +311,7 @@ namespace TldMp
             node.Trace=JoinDiagnostic;
             node.DeferMapWork=true;
             node.WatermarkChanged=delegate(uint high){if(savedatascript.s!=null && savedatascript.s.data!=null)savedatascript.s.data.lastID=Math.Max(savedatascript.s.data.lastID,high);};
-            node.PeerLeft=delegate(ulong peer){SmokePeerLeft(peer);spawnLedgers.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.AuthorityReceived=ExperimentalBackend.ApplyGrant;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;node.SpawnProgress=delegate(ulong transaction,int next){spawnAttempts=0;};
+            node.PeerLeft=delegate(ulong peer){SmokePeerLeft(peer);CosmeticPeerLeft(peer);spawnLedgers.Remove(peer);RemovePlayer(peer);};node.CarBloodReceived=ApplyCarBlood;node.AuthorityReceived=ExperimentalBackend.ApplyGrant;node.SpawnReceived=ApplySpawn;node.SpawnAcknowledged=AckSpawn;node.SpawnProgress=delegate(ulong transaction,int next){spawnAttempts=0;};
             if(experimentalActive)
                 Debug.Log("[TLD MP experimental] backend=experimental host="+node.IsHost+" signature="+ExperimentalBackend.SignatureTag+
                     " item-owner-gate="+(itemGateEnabled?"on":"off (native interaction fallback)")+
@@ -372,7 +372,7 @@ namespace TldMp
             // finds the result ready instead of freezing the main thread while it waits.
             EnsureFingerprintStart();
             if(Connected)EnsureFingerprint();
-            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<MultiplayerMenuSkin>();g.AddComponent<FeedbackHotkey>();g.AddComponent<DrunkCameraSway>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
+            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);SpawnProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<MultiplayerMenuSkin>();g.AddComponent<FeedbackHotkey>();g.AddComponent<DrunkCameraSway>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
             Ensure();Debug.Log("[TLD MP v3] Native synchronization path active; checked world manifest/join. All peers require this exact build.");
         }
         public static void PrewarmContentFingerprint(SteamP2PMenuHandlerScript menu)
@@ -945,6 +945,7 @@ namespace TldMp
                 return true;
             }
             if(Now<nextSdrRetry)return false;
+            SteamInterfaceCompat.WarmUp();SteamInterfaceCompat.Apply();
             if(steamTransport!=null)steamTransport.Dispose();
             steamTransport=null;transportLobby=transportHost=0;
             try
@@ -2198,7 +2199,7 @@ namespace TldMp
                 if(ReceiveExperimentalItemRelay(source,b))return;
                 if(!AcceptSequenced(source,ref b))return;
                 if(!SteamP2PNetworkingUnderTheHoodScript.Expected(sender,(msgType)b[0]))return;
-                long handlerStart=Stopwatch.GetTimestamp();DispatchType=b[0];
+                var foodProbe=ProbeFood(b);long handlerStart=Stopwatch.GetTimestamp();DispatchType=b[0];
                 bool previousReliable=hood.forceReliable;
                 // Sequence zero marks reliable one-off state. Preserve it if
                 // the host's native dispatcher relays a repair pose onward.
@@ -2206,7 +2207,7 @@ namespace TldMp
                 try{networkingScript.s.ProcessMessage(sender,b,(msgType)b[0]);}
                 catch(Exception e){packetErrors++;if(Now>=nextFailure){nextFailure=Now+5;Debug.LogError("[TLD MP v3] Handler failure "+packetErrors+": "+e);}}
                 finally{hood.forceReliable=previousReliable;DispatchType=-1;dispatchSequence=PoseSequence.Unordered;}
-                NoteHandler(b,Stopwatch.GetTimestamp()-handlerStart);
+                ReplayFood(foodProbe,source);NoteHandler(b,Stopwatch.GetTimestamp()-handlerStart);
             },128);
         }
         static void ReadLoopback(SteamP2PNetworkingUnderTheHoodScript hood)
@@ -2241,13 +2242,13 @@ namespace TldMp
                 if(ReceiveExperimentalItemRelay(item.From,item.Bytes))continue;
                 byte[] received=item.Bytes;if(!AcceptSequenced(item.From,ref received))continue;item.Bytes=received;
                 // Same entry point Steam uses: AllowIncoming then the stock dispatch.
-                long handlerStart=Stopwatch.GetTimestamp();DispatchType=item.Bytes[0];
+                var foodProbe=ProbeFood(item.Bytes);long handlerStart=Stopwatch.GetTimestamp();DispatchType=item.Bytes[0];
                 bool previousReliable=hood.forceReliable;
                 if(dispatchSequence==PoseSequence.Unordered && PoseSequence.Stamped(item.Bytes[0]))hood.forceReliable=true;
                 try{networkingScript.s.ProcessMessage(new CSteamID(item.From),item.Bytes,(msgType)item.Bytes[0]);}
                 catch(Exception e){packetErrors++;if(Now>=nextFailure){nextFailure=Now+5;Debug.LogError("[TLD MP v3] Handler failure "+packetErrors+": "+e);}}
                 finally{hood.forceReliable=previousReliable;DispatchType=-1;dispatchSequence=PoseSequence.Unordered;}
-                NoteHandler(item.Bytes,Stopwatch.GetTimestamp()-handlerStart);
+                ReplayFood(foodProbe,item.From);NoteHandler(item.Bytes,Stopwatch.GetTimestamp()-handlerStart);
             }
         }
         // Per-type handler cost for the net line; a single slow message is logged.
@@ -3780,6 +3781,7 @@ namespace TldMp
             void Update()
             {
                 DiagAggregateFlush();
+                if(!loopbackMode)SteamInterfaceCompat.WarmUp();
                 EnsureRabbitRuntime();RabbitFlowDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node!=null&&node.IsHost,savedatascript.s,Now);
                 RabbitAttackDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node,savedatascript.s,mainscript.s==null?null:mainscript.s.player,Now);
                 UpdateCoverage.Flush();
@@ -3808,7 +3810,7 @@ namespace TldMp
                 // No try/finally: RabbitReplicas.Tick must stay the last call (RabbitNetworkGuardTests).
                 // An escaping exception leaves the stage open; UpdateCoverage.End then drops it.
                 long lateStage=UpdateCoverage.Begin();
-                RabbitMotionTick();SmokeTick();TickImpactAudio(false,true);TickNativeSeatSafety();TickJoinPhysics();try{RemoteCarSmoothing.CheckDrift();CarCargo.HoldTick(RemoteCarSmoothing.IsSmoothed);WorldJump.Tick(Connected);PartsCensus.Tick(Connected);}catch(Exception e){if(!worldJumpFailed){worldJumpFailed=true;Debug.LogWarning("[TLD MP world] diagnostics disabled after error: "+e.GetType().Name);}}
+                RabbitMotionTick();SmokeTick();CosmeticTick();TickImpactAudio(false,true);TickNativeSeatSafety();TickJoinPhysics();try{RemoteCarSmoothing.CheckDrift();CarCargo.HoldTick(RemoteCarSmoothing.IsSmoothed);WorldJump.Tick(Connected);PartsCensus.Tick(Connected);}catch(Exception e){if(!worldJumpFailed){worldJumpFailed=true;Debug.LogWarning("[TLD MP world] diagnostics disabled after error: "+e.GetType().Name);}}
                 UpdateCoverage.End("Bridge.LateUpdate",lateStage);
                 RabbitReplicas.Tick(IsRabbitGuest);
             }

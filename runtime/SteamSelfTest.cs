@@ -56,7 +56,8 @@ namespace TldMp
                 case 0:
                     if(!SteamManager.Initialized || Time.realtimeSinceStartup<5f)return;
                     own=(ulong)SteamUser.GetSteamID();
-                    Log("start own="+own+" binding=SteamNetworkingSockets012/Utils004/Networking006; see Player.log for each step");
+                    bool pinned=SteamInterfaceCompat.Apply();
+                    Log("start own="+own+" interfaces="+(pinned?SteamInterfaceCompat.SocketsVersion+"/"+SteamInterfaceCompat.UtilsVersion+" (pinned)":"Steamworks.NET default (012/004)")+"; see Player.log for each step");
                     Next();return;
                 case 1:
                 {

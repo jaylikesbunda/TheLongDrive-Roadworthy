@@ -178,7 +178,7 @@ namespace TldMp
             if(loadingOwner!=menu)
             {
                 loadingOwner=menu;loadingFinished=false;loadingStarted=Time.realtimeSinceStartup;
-                loadingReadySince=0;loadingNextCheck=0;loadingBlock="";loadingLifted=false;
+                loadingReadySince=0;loadingNextCheck=0;loadingBlock="";loadingLifted=false;holding=false;startHouseRetries=0;startHouseGaveUp=false;
                 if(menu.GLoadText!=null)menu.GLoadText.SetActive(true);
                 // The game's own loading screen is a stack: the opaque
                 // MenuBackGround base (a screenshot after a session, else the
@@ -219,6 +219,7 @@ namespace TldMp
                 loadingFinished=true;ReleaseLoadingOverlay(menu);
                 Debug.Log("[TLD MP loading] overlay released after timeout; last wait="+loadingBlock);return;
             }
+            HoldPlayer();
             if(now<loadingNextCheck)return;
             loadingNextCheck=now+.25f;
             string blocked=null;double gap=double.NaN;
@@ -403,6 +404,7 @@ namespace TldMp
 
         static void ReleaseLoadingOverlay(menuhandler menu)
         {
+            holding=false;
             RestoreLoadingBackground();
             if(menu!=null && menu.GLoadText!=null)menu.GLoadText.SetActive(false);
         }
@@ -427,6 +429,43 @@ namespace TldMp
             return false;
         }
 
+        static bool holding;
+        static Vector3 holdPosition;
+        static int startHouseRetries;
+        static bool startHouseGaveUp;
+        const int MaxStartHouseRetries=20;
+
+        // A new world whose start house was never added (the game's road lookup
+        // found nothing on its single try). Saved worlds and joins never retry.
+        static bool StartHouseMissing(poiGenScript pois)
+        {
+            var data=DataFromMenuScript.s;
+            if(data==null || !data.newgame || data.multi || !pois.placeStartHouse || !pois.startHouseStarted || !pois.roadAffects || pois.roadgen==null || pois.chunks==null)return false;
+            int type=(int)pois.startHouseType;
+            foreach(var chunk in pois.chunks)
+            {
+                if(chunk.Value==null || chunk.Value.pois==null)continue;
+                foreach(var entry in chunk.Value.pois)if(entry.Value!=null && entry.Value.id==type)return false;
+            }
+            return true;
+        }
+
+        // While the loading screen is up and nothing is under the player, keep
+        // them where they are instead of letting gravity pull them through
+        // ground that has not loaded yet. A real move (the game teleporting
+        // the player to the house) is accepted as the new hold point.
+        static void HoldPlayer()
+        {
+            if(!holding || mainscript.s==null || mainscript.s.player==null){holding=false;return;}
+            var player=mainscript.s.player;
+            if(player.seat!=null){holding=false;return;}
+            var at=player.transform.position;
+            float dx=at.x-holdPosition.x,dz=at.z-holdPosition.z;
+            if(dx*dx+dz*dz>1f || at.y-holdPosition.y>2f){holdPosition=at;return;}
+            player.transform.position=holdPosition;
+            if(player.RB!=null){player.RB.position=holdPosition;player.RB.velocity=Vector3.zero;player.RB.angularVelocity=Vector3.zero;}
+        }
+
         static bool LoadingWorldReady(menuhandler menu,out string blocked,out double gap)
         {
             blocked="world";gap=double.NaN;
@@ -439,7 +478,7 @@ namespace TldMp
             if(!double.IsNaN(ground) && !double.IsInfinity(ground))
             {
                 gap=position.y-ground;
-                if(gap<-1.5)
+                if(gap<-1.5 && !PlayerSupported(player))
                 {
                     // The ray above the player hit ground, but the player is under
                     // that surface. A fresh world can leave the body at its pre-load
@@ -458,17 +497,55 @@ namespace TldMp
                         loadingLifted=true;
                         Debug.Log("[TLD MP loading] lifted player "+F(lift)+"m onto ground y="+F(ground));
                     }
+                    holdPosition=unity;holding=true;
                     blocked="player below ground";return false;
                 }
             }
             blocked=gen==null?"near terrain generator":"player support";
-            if(!PlayerSupported(player))return false;
+            if(!PlayerSupported(player))
+            {
+                if(!double.IsNaN(gap) && gap>3.0)
+                {
+                    // Known ground far below and nothing underfoot: put the
+                    // player on it instead of letting them drop from height.
+                    var unity=player.transform.position;
+                    unity.y-=(float)(gap-.05);
+                    player.transform.position=unity;
+                    if(player.RB!=null){player.RB.velocity=Vector3.zero;player.RB.angularVelocity=Vector3.zero;}
+                    holdPosition=unity;holding=true;
+                    Debug.Log("[TLD MP loading] lowered unsupported player "+F(gap)+"m onto ground y="+F(ground));
+                    return false;
+                }
+                if(!holding)
+                {
+                    holding=true;holdPosition=player.transform.position;
+                    Debug.Log("[TLD MP loading] holding unsupported player at "+F(position.x)+","+F(position.y)+","+F(position.z)+" groundTile="+tile+" collider="+collider);
+                }
+                return false;
+            }
+            holding=false;
             if(map.poiGens==null || itemPlaceRemoveScript.s==null)return false;
             foreach(var pois in map.poiGens)
             {
                 if(pois==null || !pois.isActiveAndEnabled)continue;
                 blocked="start house";
                 if(pois.placeStartHouse && !pois.startHouseStarted)return false;
+                if(StartHouseMissing(pois))
+                {
+                    if(startHouseRetries<MaxStartHouseRetries)
+                    {
+                        startHouseRetries++;
+                        // The game looks for a road once and gives up for good when
+                        // none is ready yet. Let its own placement run again; the
+                        // marker it made on the failed try has no position.
+                        if(pois.startHousePos!=null && pois.startHousePos.gameObject.name=="StartHousePos")UnityEngine.Object.Destroy(pois.startHousePos.gameObject);
+                        pois.startHousePos=null;
+                        pois.startHouseStarted=false;
+                        Debug.Log("[TLD MP loading] start house missing; retrying placement ("+startHouseRetries+"/"+MaxStartHouseRetries+")");
+                        return false;
+                    }
+                    if(!startHouseGaveUp){startHouseGaveUp=true;Debug.LogWarning("[TLD MP loading] start house still missing after "+MaxStartHouseRetries+" retries");}
+                }
                 if(pois.chunks==null || pois.chunkSize<=0)return false;
                 poiGenScript.chunkClass center;
                 blocked="center chunk";

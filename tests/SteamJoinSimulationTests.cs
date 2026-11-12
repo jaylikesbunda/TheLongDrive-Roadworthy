@@ -80,7 +80,7 @@ public static class SteamJoinSimulationTests
         }
         Check(Simulation.Allocations==0,"public lobby releases all native message allocations");
     }
-    static void Run(bool correct,string build,bool refuse,bool member,int biome=2)
+    static void Run(bool correct,string build,bool refuse,bool member,int biome=2,bool lateMember=false)
     {
         using(var host=new Peer(10,"same"))using(var client=new Peer(20,build)){
             host.Other=client;client.Other=host;host.Member=member;
@@ -88,7 +88,20 @@ public static class SteamJoinSimulationTests
             client.Node.ConfigReceived=delegate(byte[] b){Check(b.Length==4 && BitConverter.ToInt32(b,0)==(5 | (biome<<4)),"calendar and biome config byte parity");client.ConfigApplied=true;};
             Simulation.Current=10;host.Socket.Listen(0);Simulation.Current=20;Check(client.Socket.Connect(10,0),"connection handle allocated");Simulation.Pump();
             Check(Simulation.InvalidAccepts==0,"client never accepts its outgoing connection");
-            if(!member){Check(host.Connected==0 && client.Connected==0,"nonmember blocked before authentication");return;}
+            if(!member)
+            {
+                // Accepted at once, but not admitted until the host lobby list shows the guest.
+                Check(host.Connected==0 && client.Connected==1,"nonmember accepted by Steam but not admitted by the host");
+                client.SendPassword("secret");
+                for(int frame=0;frame<20;frame++){double t=frame*.02;client.Tick(t);host.Tick(t);Simulation.Pump();}
+                Check(host.Connected==0 && !host.Authenticated,"nothing is read from an unadmitted peer");
+                if(!lateMember)return;
+                host.Member=true;host.Tick(.5);Simulation.Pump();
+                Check(host.Connected==1,"a lagging lobby list admits the peer once it shows them");
+                for(int frame=25;frame<1000 && !client.Node.Ready && client.Node.Error==null;frame++){double t=frame*.02;client.Tick(t);host.Tick(t);Simulation.Pump();}
+                Check(client.Authenticated && client.Node.Ready && host.Node.Peers[20].Ready,"queued password survives the wait and the join completes");
+                return;
+            }
             Check(host.Connected==1 && client.Connected==1,"both endpoints configure and connect");
             string health=host.Socket.TakeHealthSummary();
             Check(health.Contains("pending reliable=0") && !health.Contains("\n"),"bounded textual Steam status is available without lane APIs");
@@ -103,7 +116,7 @@ public static class SteamJoinSimulationTests
     }
     public static int Main()
     {
-        for(int biome=0;biome<4;biome++)Run(true,"same",false,true,biome);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);Run(true,"same",false,false);PublicLobbyWithDelayedWorld();
+        for(int biome=0;biome<4;biome++)Run(true,"same",false,true,biome);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);Run(true,"same",false,false);Run(true,"same",false,false,2,true);PublicLobbyWithDelayedWorld();
         Simulation.MissingLaneApi=true;
         for(int biome=0;biome<4;biome++)Run(true,"same",false,true,biome);Run(true,"same",true,true);Run(false,"same",false,true);Run(true,"different",false,true);PublicLobbyWithDelayedWorld();
         Check(Simulation.LegacySends>0,"missing lane export uses byte-buffer API");

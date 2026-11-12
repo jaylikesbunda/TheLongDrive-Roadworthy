@@ -355,6 +355,7 @@ namespace TldMp
         public static bool CarSyncGotSync(tosaveitemscript item, Vector3 pos, Vector3 rot)
         {
             CargoGhost.NoteSync(item, pos);
+            CosmeticIgnition.Note(item);
             try { return RemoteCarSmoothing.Gate(item, pos, rot); }
             catch (Exception e) { RemoteSmoothFailed("car sample", e); return true; }
         }

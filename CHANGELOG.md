@@ -16,6 +16,13 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - The multiplayer menu now matches the rest of the game: plank buttons, a paper panel, and native checkboxes, sliders and text boxes.
 - The multiplayer menu no longer shows developer debug text.
 
+### Playing together
+
+- Other players can see and hear you peeing.
+- Other players hear you eating and see the crumbs.
+- You hear the key click when another player turns a car's ignition on or off.
+- Joining a friend over Steam should no longer get stuck in the lobby without loading the world: the Steam connection now starts sooner and is accepted right away.
+
 ### Driving and riding
 
 - Trailers can be hitched to cars again.
@@ -29,6 +36,11 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 - Drinking alcohol makes your view sway and zoom in and out, and it gets stronger the more you drink. Steering is not affected. Turn it off in Roadworthy settings > Drunk effects.
 - Drinking milk sobers you up faster.
+
+### Starting a new world
+
+- If the starting house doesn't appear in a new world, the game tries placing it again before the loading screen closes.
+- While the loading screen is up, you're held in place until there's ground under you, so you shouldn't fall through the map.
 
 ## v0.2.0-pre2
 
