@@ -27,8 +27,12 @@ namespace TldMp
             float toxicBefore=mouth?StableGameBridge.BadFluidAmount(receiver):0f;
             float alcohol=mouth?DrunkEffects.AlcoholDrunk(donor,amount):0f;
             float milk=mouth?DrunkEffects.MilkDrunk(donor,amount):0f;
+            float beerBefore=mouth?BeerLiquid.Amount(receiver):0f;
             receiver.pour(donor,amount,direct,filter,drinkFilter);
             if(!mouth)return;
+            // Beer is absorbed like water: what reached the mouth is drunk.
+            float beer=Mathf.Max(0f,BeerLiquid.Amount(receiver)-beerBefore);
+            if(beer>0f){receiver.ChangeOne(-beer,BeerLiquid.Fluid);BeerLiquid.ApplyDrink(destination.player.survival,beer);}
             StableGameBridge.NoteBadFluidDrink(destination.player.survival,Mathf.Max(0f,StableGameBridge.BadFluidAmount(receiver)-toxicBefore));
             DrunkEffects.NoteAlcohol(destination.player.survival,alcohol);
             DrunkEffects.NoteMilk(destination.player.survival,milk);

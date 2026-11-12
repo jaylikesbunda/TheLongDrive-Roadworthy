@@ -16,7 +16,7 @@ internal static class DrunkPolicyTests
         Sway();
         Fov();
         Option();
-        Console.WriteLine("PASS: " + checks + " drunk policy assertions; alcohol adds a liter-scaled level clamped to 0..3, one level wears off per five minutes (three levels in fifteen), milk sobers at two levels per liter (half a liter removes one), sway grows as l + l*l degrees up to 12 and speeds up with the level, angles are bounded by their amplitude (roll by 0.95 of it), never go quiet at max level, and are exactly zero when sober, the field of view breathes up to 6 degrees with the level, and the drunk-effects option defaults on and round-trips.");
+        Console.WriteLine("PASS: " + checks + " drunk policy assertions; alcohol adds a liter-scaled level clamped to 0..3, one level wears off per five minutes (three levels in fifteen), milk sobers at two levels per liter (half a liter removes one), sway grows with intake up to 16 degrees and speeds up with the level, angles are bounded by their amplitude (roll by 0.95 of it), never go quiet at max level, and are exactly zero when sober, the field of view breathes up to 6 degrees with the level, and the drunk-effects option defaults on and round-trips.");
         return 0;
     }
 
@@ -71,11 +71,11 @@ internal static class DrunkPolicyTests
     static void Sway()
     {
         Check(Near(DrunkPolicy.SwayAmplitude(0f), 0f), "sober means no sway");
-        Check(Near(DrunkPolicy.SwayAmplitude(0.5f), 0.75f), "half a level sways 0.75 degrees");
-        Check(Near(DrunkPolicy.SwayAmplitude(1f), 2f), "one level sways 2 degrees");
-        Check(Near(DrunkPolicy.SwayAmplitude(2f), 6f), "two levels sway 6 degrees");
-        Check(Near(DrunkPolicy.SwayAmplitude(3f), 12f), "three levels sway 12 degrees");
-        Check(Near(DrunkPolicy.SwayAmplitude(5f), 12f), "sway is capped at the maximum");
+        Check(Near(DrunkPolicy.SwayAmplitude(0.5f), 1.2777778f), "half a level sways about 1.28 degrees");
+        Check(Near(DrunkPolicy.SwayAmplitude(1f), 3.111111f), "one level sways about 3.11 degrees");
+        Check(Near(DrunkPolicy.SwayAmplitude(2f), 8.444444f), "two levels sway about 8.44 degrees");
+        Check(Near(DrunkPolicy.SwayAmplitude(3f), 16f), "three levels sway 16 degrees");
+        Check(Near(DrunkPolicy.SwayAmplitude(5f), 16f), "sway is capped at the maximum");
         Check(Near(DrunkPolicy.SwayAmplitude(float.NaN), 0f), "a NaN level has no sway");
         float prev = -1f;
         for (int i = 0; i <= 30; i++)
@@ -95,9 +95,9 @@ internal static class DrunkPolicyTests
         for (int i = 0; i < 4000; i++)
         {
             DrunkPolicy.Angles(3f, i * 0.05f, out pitch, out yaw, out roll);
-            Check(Math.Abs(pitch) <= 12f + 0.0001f, "pitch stays within its amplitude");
-            Check(Math.Abs(yaw) <= 12f + 0.0001f, "yaw stays within its amplitude");
-            Check(Math.Abs(roll) <= 0.95f * 12f + 0.0001f, "roll stays within 0.95 of its amplitude");
+            Check(Math.Abs(pitch) <= 16f + 0.0001f, "pitch stays within its amplitude");
+            Check(Math.Abs(yaw) <= 16f + 0.0001f, "yaw stays within its amplitude");
+            Check(Math.Abs(roll) <= 0.95f * 16f + 0.0001f, "roll stays within 0.95 of its amplitude");
             if (Math.Abs(pitch) > maxSeen) maxSeen = Math.Abs(pitch);
         }
         Check(maxSeen > 6f, "the sway actually moves");
@@ -113,7 +113,7 @@ internal static class DrunkPolicyTests
         const int step = 1; // sample index, 0.05 s each
         const int samples = 2401; // 0..120 s inclusive
         const int window = 41; // 2.0 s inclusive
-        float limit = 0.4f * 12f;
+        float limit = 0.4f * 16f;
         var peak = new float[samples];
         for (int i = 0; i < samples; i += step)
         {

@@ -24,6 +24,7 @@ public class tankcapscript {public bool isDrinkCap;public fpscontroller player;p
 public class tankcapparticledetectionscript {public tankcapscript T;}
 namespace TldMp {public static class StableGameBridge {internal const mainscript.fluidenum UrineFluid=(mainscript.fluidenum)7;public static float dose;public static float BadFluidAmount(mainscript.fluidcontainer f){float n=0;foreach(var x in f.fluids)if((int)x.type==0||(int)x.type==1||(int)x.type==5)n+=x.amount;return n;}public static void NoteBadFluidDrink(survival s,float a){dose+=a;}public static void TraceUrineDrink(float a,float b,float c){}}}
 namespace TldMp {public static class DrunkEffects {public static float AlcoholDrunk(mainscript.fluidcontainer c,float a){return 0;}public static void NoteAlcohol(survival s,float l){}public static float MilkDrunk(mainscript.fluidcontainer c,float a){return 0;}public static void NoteMilk(survival s,float l){}}}
+namespace TldMp {static class BeerLiquid {public const mainscript.fluidenum Fluid=(mainscript.fluidenum)8;public static float alcohol;public static float Amount(mainscript.fluidcontainer c){return c.Amount(Fluid);}public static void ApplyDrink(survival s,float a){s.Drink(a*.9f);alcohol+=a*.2f;}}}
 public class Test {
  static int n;static void Near(float a,float b){n++;if(Math.Abs(a-b)>0.0001f)throw new Exception("check "+n+" "+a+" != "+b);}
  static mainscript.fluidcontainer Tank(float cap,float u,float w){var t=new mainscript.fluidcontainer{maxC=cap};t.ChangeOne(u,mainscript.fluidenum.urine);t.ChangeOne(w,mainscript.fluidenum.water);return t;}
@@ -35,6 +36,7 @@ public class Test {
   mouth=Tank(1,0,1);cap.Tank.F=mouth;ParticleFluidDrinking.Transfer(mouth,source,1,false,false,null,det,cap);Near(mouth.Amount(mainscript.fluidenum.urine),0);Near(p.survival.damage,3.6f);
   mouth=Tank(10,.4f,0);source=Tank(10,1,1);cap.Tank.F=mouth;det.T.Tank.F=source;ParticleFluidDrinking.Transfer(mouth,source,1,false,false,null,det,cap);Near(mouth.Amount(mainscript.fluidenum.urine),.4f);Near(source.Amount(mainscript.fluidenum.urine),1);Near(p.survival.water,.425f);Near(p.survival.damage,5.1f);
   mouth=Tank(10,0,0);source=Tank(10,1,0);cap.Tank.F=mouth;det.T.Tank.F=source;cap.isDrinkCap=false;ParticleFluidDrinking.Transfer(mouth,source,.5f,false,false,null,det,cap);Near(mouth.Amount(mainscript.fluidenum.urine),.5f);Near(p.survival.damage,5.1f);Near(source.Amount(mainscript.fluidenum.urine),1);
+  p=new fpscontroller();mouth=Tank(.2f,0,0);source=Tank(10,0,0);source.ChangeOne(1,BeerLiquid.Fluid);cap.player=p;cap.isDrinkCap=true;cap.Tank.F=mouth;det.T.Tank.F=source;ParticleFluidDrinking.Transfer(mouth,source,1,false,false,null,det,cap);Near(BeerLiquid.Amount(source),1);Near(BeerLiquid.Amount(mouth),0);Near(p.survival.water,.18f);Near(BeerLiquid.alcohol,.04f);
   Console.WriteLine("PASS "+n+" particle drinking transfer checks");
  }
 }

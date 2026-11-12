@@ -8,8 +8,8 @@ namespace TldMp
     // liter lasts five minutes and a full three levels lasts fifteen.
     // Milk sobers you up: each liter removes MilkSoberPerLiter levels, so half
     // a liter of milk takes off one level.
-    // Sway grows faster than linearly with the level: l + l*l degrees, so a
-    // light drink is barely visible and three levels reach 12 degrees. The
+    // Sway grows faster than linearly with the level: 2*l + 10*l*l/9 degrees, so a
+    // light drink is barely visible and three levels reach 16 degrees. The
     // sway also speeds up with the level (SwaySpeed), so heavy drinking
     // wobbles faster as well as wider. Angles and FovOffset take a phase clock
     // the caller advances by deltaTime * SwaySpeed(level), so changing the
@@ -20,7 +20,7 @@ namespace TldMp
         public const float GainPerLiter = 1f;
         public const float MilkSoberPerLiter = 2f;
         public const float DecaySeconds = 300f;
-        public const float MaxSwayDegrees = 12f;
+        public const float MaxSwayDegrees = 16f;
         // Peak field-of-view change in degrees at max level. A slow "breathing"
         // zoom, so the effect reads indoors and while standing still.
         public const float MaxFovPulse = 6f;
@@ -57,7 +57,7 @@ namespace TldMp
         public static float SwayAmplitude(float level)
         {
             float l = Clamp(level);
-            float degrees = l + l * l;
+            float degrees = 2f * l + (10f / 9f) * l * l;
             return degrees > MaxSwayDegrees ? MaxSwayDegrees : degrees;
         }
 

@@ -1598,17 +1598,24 @@ namespace TldMp
         }
         // New numeric identity is appended; all seven native ordinals stay intact.
         internal const mainscript.fluidenum UrineFluid=(mainscript.fluidenum)7;
+        // Also registers beer (id 8, runtime/BeerLiquid.cs) after urine.
         public static void RegisterUrineFluid(mainscript main)
         {
             if(main.fluids.Length>7)
             {
                 if(main.fluids[7]==null || main.fluids[7].type!=UrineFluid || main.fluids[7].lname!=ls.w.piss)throw new InvalidOperationException("Conflicting fluid identity 7.");
-                return;
+                if(main.fluids.Length>8)
+                {
+                    if(main.fluids[8]==null || main.fluids[8].type!=BeerLiquid.Fluid)throw new InvalidOperationException("Conflicting fluid identity 8.");
+                    return;
+                }
             }
-            if(main.fluids.Length!=7)throw new InvalidOperationException("Unsupported native fluid table.");
-            var table=new mainscript.fluidtype[8];Array.Copy(main.fluids,table,7);
-            table[7]=new mainscript.fluidtype{name="Piss",lname=ls.w.piss,type=UrineFluid,color=new Color(0.85f,0.72f,0.10f,1f),burnColor=new Color(0,0,0,0)};
+            else if(main.fluids.Length!=7)throw new InvalidOperationException("Unsupported native fluid table.");
+            var table=new mainscript.fluidtype[9];Array.Copy(main.fluids,table,main.fluids.Length);
+            if(main.fluids.Length==7)table[7]=new mainscript.fluidtype{name="Piss",lname=ls.w.piss,type=UrineFluid,color=new Color(0.85f,0.72f,0.10f,1f),burnColor=new Color(0,0,0,0)};
+            table[8]=new mainscript.fluidtype{name=BeerLiquid.Name,lname=BeerLiquid.Word,type=BeerLiquid.Fluid,color=BeerLiquid.Colour,burnColor=new Color(0,0,0,0)};
             main.fluids=table;
+            BeerLiquid.EnsureWord();
         }
         static void ConvertBladderWater(mainscript.fluidcontainer bladder)
         {UrineLiquid.NormalizeBladder(bladder);}
@@ -1688,8 +1695,14 @@ namespace TldMp
             float toxicBefore=player==null?0:BadFluidAmount(donor);
             float alcohol=player==null?0:DrunkEffects.AlcoholDrunk(donor,amount);
             float milk=player==null?0:DrunkEffects.MilkDrunk(donor,amount);
+            float beerBefore=player==null?0:BeerLiquid.Amount(donor),beerMouthBefore=player==null?0:BeerLiquid.Amount(receiver);
             receiver.pour(donor,amount,direct,filter,drinkFilter);
             if(player==null)return;
+            // Beer is absorbed like water: it does not collect in the mouth.
+            float beerSwallowed=Mathf.Max(0f,beerBefore-BeerLiquid.Amount(donor));
+            float beerRetained=Mathf.Max(0f,BeerLiquid.Amount(receiver)-beerMouthBefore);
+            if(beerRetained>0f)receiver.ChangeOne(-beerRetained,BeerLiquid.Fluid);
+            BeerLiquid.ApplyDrink(player.survival,beerSwallowed);
             NoteBadFluidDrink(player.survival,Mathf.Max(0f,toxicBefore-BadFluidAmount(donor)));
             DrunkEffects.NoteAlcohol(player.survival,alcohol);
             DrunkEffects.NoteMilk(player.survival,milk);
@@ -2644,8 +2657,9 @@ namespace TldMp
         static void RunNativePoiSpawn(poiScript script,poiGenScript.poiClass poi)
         {
             bool spawnedItems=poi.spawnedItems,spawnedFixed=poi.spawnedFixed;
+            uint diagnosticBefore=PropSpawnDiagnostics.Begin();
             spawnNativeCallDepth++;
-            try{script.SpawnStuff(poi);}
+            try{script.SpawnStuff(poi);try{BeerLiquid.SpawnStartingBarrel(script,poi,spawnedFixed);}catch(Exception e){Debug.LogError("[Roadworthy beer] starting barrel: "+e);}PropSpawnDiagnostics.Completed(script,poi,diagnosticBefore);}
             catch{poi.spawnedItems=spawnedItems;poi.spawnedFixed=spawnedFixed;throw;}
             finally{spawnNativeCallDepth--;}
         }
@@ -2875,7 +2889,11 @@ namespace TldMp
 	        }finally{ReturnPropWeights(array);ReturnPropWeights(array2);}
 }
         public static GameObject ConstructFixedProps(GameObject source,Vector3 position,Quaternion rotation,Transform parent)
-        {return FixedPropConstruction.Instantiate(source,position,rotation,parent);}
+        {
+            var result=FixedPropConstruction.Instantiate(source,position,rotation,parent);
+            foreach(var item in result.GetComponentsInChildren<tosaveitemscript>(true))BeerLiquid.PrepareFixedBottle(item);
+            return result;
+        }
         public static void FixedSpawnFStart(fixedSpawnScript script)
         {
             if(script.useStartCar)
@@ -3782,6 +3800,7 @@ namespace TldMp
             {
                 DiagAggregateFlush();
                 if(!loopbackMode)SteamInterfaceCompat.WarmUp();
+                BeerLiquid.EnsureWord();BeerLiquid.EnsureBottles();PropSpawnDiagnostics.Tick();
                 EnsureRabbitRuntime();RabbitFlowDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node!=null&&node.IsHost,savedatascript.s,Now);
                 RabbitAttackDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node,savedatascript.s,mainscript.s==null?null:mainscript.s.player,Now);
                 UpdateCoverage.Flush();
@@ -4356,7 +4375,7 @@ namespace TldMp
             if(menu==null || menu.windowWrongPassword==null)return;
             Debug.Log("[TLD MP join] Showing the join failure window preview");
             JoinFailurePopup.Show(JoinCompatibility.Describe(
-                JoinCompatibility.Compose("0.2.0-pre2","PREVIEW-HOST","PREVIEW","sdr"),
+                JoinCompatibility.Compose("0.2.0","PREVIEW-HOST","PREVIEW","sdr"),
                 JoinCompatibility.Compose(PatchInfo.Version,"PREVIEW-YOU","PREVIEW","sdr")),false);
             enabled=false;
         }

@@ -2,7 +2,7 @@
 
 Experimental build for game version `2024.11.26b_test`. Host and guests need the same build.
 
-## v0.2.0-pre3
+## v0.2.0
 
 ### Settings
 
@@ -16,36 +16,12 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - The multiplayer menu now matches the rest of the game: plank buttons, a paper panel, and native checkboxes, sliders and text boxes.
 - The multiplayer menu no longer shows developer debug text.
 
-### Playing together
+### Joining and playing together
 
 - Other players can see and hear you peeing.
 - Other players hear you eating and see the crumbs.
 - You hear the key click when another player turns a car's ignition on or off.
 - Joining a friend over Steam should no longer get stuck in the lobby without loading the world: the Steam connection now starts sooner and is accepted right away.
-
-### Driving and riding
-
-- Trailers can be hitched to cars again.
-- Hitched trailers follow whoever is driving and move smoothly for everyone in multiplayer.
-
-### Repairs
-
-- A wire brush can repair a radiator's condition, the same way it fixes doors. Turn it on in Roadworthy settings > Repairable radiators (off by default).
-
-### Survival
-
-- Drinking alcohol makes your view sway and zoom in and out, and it gets stronger the more you drink. Steering is not affected. Turn it off in Roadworthy settings > Drunk effects.
-- Drinking milk sobers you up faster.
-
-### Starting a new world
-
-- If the starting house doesn't appear in a new world, the game tries placing it again before the loading screen closes.
-- While the loading screen is up, you're held in place until there's ground under you, so you shouldn't fall through the map.
-
-## v0.2.0-pre2
-
-### Joining and playing together
-
 - Guests can join even if their mods, extra game files, or custom maps differ from the host's.
 - Only the game version and the Roadworthy version still need to match.
 - If a join fails, a pop-up now says why, such as which version each player has.
@@ -53,35 +29,62 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Guests keep retrying the Steam connection for up to a minute before giving up.
 - Hosts no longer turn away guests who joined the lobby a moment ago.
 - Different local physics settings no longer block joining.
+- Steam guests are less likely to get stuck at the main menu while joining.
+- The game retries once if the first Steam connection drops during joining.
+- Large objects spawned by guests are more likely to appear for everyone.
+- Other players can see your cigarette smoke.
+- The game, Steam lobby, and installer show Roadworthy v0.2.0.
+
+### Driving and riding
+
+- Trailers can be hitched to cars again.
+- Hitched trailers follow whoever is driving and move smoothly for everyone in multiplayer.
+- Both sections of a double bus move together more smoothly for passengers and guests.
+- The rear section of a double bus is less likely to snap out of place while you drive.
+- Wheels on the rear section of a double bus stay mounted more reliably.
+
+### Repairs
+
+- A wire brush can repair a radiator's condition, the same way it fixes doors. Turn it on in Roadworthy settings > Repairable radiators (off by default).
+
+### Survival
+
+- Added beer as a new drink: it quenches thirst and makes you a little drunk. The starting house has beer in glass bottles and a half-full barrel, and bottles found elsewhere can contain it too.
+- Drinking alcohol makes your view sway and zoom in and out, and it gets stronger the more you drink. Steering is not affected. Turn it off in Roadworthy settings > Drunk effects.
+- Beer and alcohol produce more noticeable camera sway, growing stronger as you drink more.
+- Drinking milk sobers you up faster.
+- Press `;` to reverse which container pours into the other.
+- You can collect, mix, and drink your pee.
+- Drinking pee quenches less thirst than water and slightly hurts your health.
+- Peeing into a container in a new world adds pee to it instead of alcohol.
+- You get thirsty faster, and sprinting uses more food and water.
+- Drinking fuel or oil can make you thirstier for a while.
+- Your water bar pulses yellow while you’re sick from drinking fuel or oil.
+
+### Starting a new world
+
+- If the starting house doesn't appear in a new world, the game tries placing it again before the loading screen closes.
+- While the loading screen is up, you're held in place until there's ground under you, so you shouldn't fall through the map.
 
 ### Performance
 
 - Much less stuttering when new areas, buildings, and roadside stops load in.
 - Building and roadside placement is faster, with the same results as before.
 - Buildings in new areas may appear a moment later instead of freezing the game.
+- Driving, using fluid containers, and updating wheels or stored items use less processing time.
+- Breaking objects uses less processing time, and heavy impacts play fewer overlapping sounds.
+- Loose fragments pass through each other and use simpler shapes when hitting other objects.
+- Checking item weight and spawning objects use less memory.
+- Frozen animals produce fewer warnings in the game log.
+- Optional performance logs help identify stutters and write in the background.
+- Put `tldmp-debris-speculative.on` beside `TheLongDrive.exe` and restart to test fast debris collisions.
 
 ### Experimental multiplayer (preview)
 
-- A new "Experimental multiplayer (preview)" option is in the Misc settings. It is off by default.
+- The "New Buggy multiplayer" option is in Roadworthy settings. It is off by default.
 - Players with the preview on can only join players who also have it on.
 - The preview hands cars, their parts, and their cargo between players as one unit.
 - The preview shares door, part, paint, damage, fluid, and breakable-object changes from the host.
-
-## v0.2.0-pre1
-
-### Joining and playing together
-
-- Steam guests are less likely to get stuck at the main menu while joining.
-- The game retries once if the first Steam connection drops during joining.
-- Large objects spawned by guests are more likely to appear for everyone.
-- Other players can see your cigarette smoke.
-- The game, Steam lobby, and installer show Roadworthy v0.2.0-pre1.
-
-### Driving and riding
-
-- Both sections of a double bus move together more smoothly for passengers and guests.
-- The rear section of a double bus is less likely to snap out of place while you drive.
-- Wheels on the rear section of a double bus stay mounted more reliably.
 
 ### Rabbits and other wildlife
 
@@ -92,16 +95,6 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Multiplayer rabbits spawn around the host and guests, including in Steam sessions.
 - Guests see shared rabbit movement and can bump into rabbits or be bitten.
 
-### Drinking and survival
-
-- Press `;` to reverse which container pours into the other.
-- You can collect, mix, and drink your pee.
-- Drinking pee quenches less thirst than water and slightly hurts your health.
-- Peeing into a container in a new world adds pee to it instead of alcohol.
-- You get thirsty faster, and sprinting uses more food and water.
-- Drinking fuel or oil can make you thirstier for a while.
-- Your water bar pulses yellow while you’re sick from drinking fuel or oil.
-
 ### Roads, buildings, and saves
 
 - New worlds use the biome you select. Existing saves load with their original biome.
@@ -111,16 +104,6 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 - Fixed gaps caused by road sections getting skipped when nearby areas load.
 - The world can keep loading when it encounters a damaged building record.
 - Objects finish spawning before they’re included in a save or sent to a joining player.
-
-### Performance and diagnostics
-
-- Driving, using fluid containers, and updating wheels or stored items use less processing time.
-- Breaking objects uses less processing time, and heavy impacts play fewer overlapping sounds.
-- Loose fragments pass through each other and use simpler shapes when hitting other objects.
-- Checking item weight and spawning objects use less memory.
-- Frozen animals produce fewer warnings in the game log.
-- Optional performance logs help identify stutters and write in the background.
-- Put `tldmp-debris-speculative.on` beside `TheLongDrive.exe` and restart to test fast debris collisions.
 
 ## v0.1.3
 

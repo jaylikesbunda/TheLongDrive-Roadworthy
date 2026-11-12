@@ -30,6 +30,7 @@ class mainscript {
   }
  }
 }
+static class BeerLiquid {public const mainscript.fluidenum Fluid=(mainscript.fluidenum)8;public static float alcohol;public static float Amount(mainscript.fluidcontainer c){return c.Amount(Fluid);}public static void ApplyDrink(survivalscript s,float a){s.Drink(a*.9f);alcohol+=a*.2f;}}
 class Test {
  const mainscript.fluidenum UrineFluid=(mainscript.fluidenum)7;
  static void TraceUrineDrink(float a,float b,float c){}
@@ -44,6 +45,7 @@ class Test {
   src=Tank(10,1,1);mouth=Tank(10,0,0);fluidDrinker=p;DrinkTransfer(mouth,src,1,true,false,null);Near(src.Amount(UrineFluid),.5f);Near(mouth.Amount(UrineFluid),0);Near(p.survival.water,.425f);Near(p.survival.damage,5.1f);
   src=Tank(10,1,0);mouth=Tank(10,0,0);DrinkTransfer(mouth,src,.5f,true,false,null);Near(src.Amount(UrineFluid),.5f);Near(mouth.Amount(UrineFluid),.5f);Near(p.survival.water,.425f);Near(p.survival.damage,5.1f);
   src=Tank(10,0,0);mouth=Tank(10,0,0);fluidDrinker=p;DrinkTransfer(mouth,src,1,true,false,null);Near(p.survival.water,.425f);Near(p.survival.damage,5.1f);
+  p=new fpscontroller();src=Tank(10,0,0);src.ChangeOne(1,BeerLiquid.Fluid);mouth=Tank(.2f,0,0);fluidDrinker=p;DrinkTransfer(mouth,src,1,true,false,null);Near(BeerLiquid.Amount(src),.8f);Near(BeerLiquid.Amount(mouth),0);Near(p.survival.water,.18f);Near(BeerLiquid.alcohol,.04f);
   Console.WriteLine("PASS "+checks+" production urine transfer checks");
  }
 }

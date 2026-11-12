@@ -114,11 +114,197 @@ namespace TldMp
                     try { Sample(ref houseLogged); } catch (Exception e) { Log("sample error " + e.GetType().Name + " " + e.Message); }
                     yield return new WaitForSecondsRealtime(.5f);
                 }
+                if (Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_DUMP") == "1") { try { DumpFluids(); VerifyBeer(); } catch (Exception e) { Log("dump error " + e); } }
+                if(Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_POI")=="12")yield return CheckPoiProps();
                 Flush();
             }
             if (originalBiome >= 0 && gamemodesettingsscript.s != null && gamemodesettingsscript.s.S != null) gamemodesettingsscript.s.S.biome = originalBiome;
             Flush();
             Quit();
+        }
+
+        // Developer dump: every item prefab with a tank and its random liquids, and
+        // every tank in the scene near the start house with what it holds.
+        void DumpFluids()
+        {
+            var db = itemdatabase.s;
+            if (db != null && db.items != null)
+                for (int i = 0; i < db.items.Length; i++)
+                {
+                    var item = db.items[i]; if (item == null) continue;
+                    foreach (var t in item.GetComponentsInChildren<tankscript>(true))
+                    {
+                        var sb = new System.Text.StringBuilder();
+                        if (t.randomFluids != null) foreach (var r in t.randomFluids) sb.Append(" " + r.type + ":" + F(r.chance));
+                        var def = new System.Text.StringBuilder();
+                        if (t.defaultFluid != null) foreach (var d in t.defaultFluid) def.Append(" " + d.type + ":" + F(d.amount));
+                        Log("item[" + i + "] " + item.name + " tank=" + t.name + " max=" + F(t.F == null ? -1 : t.F.maxC) + " empty=" + F(t.emptyChance) + " mix=" + F(t.mixChance) + " min=" + F(t.minFluid) + " maxFluid=" + F(t.maxFluid) + " always=" + t.alwaysDefaultFluid + " random{" + sb + " } default{" + def + " }");
+                    }
+                }
+            var map = menuhandler.s == null ? null : menuhandler.s.currentMainMap;
+            if (map != null && map.poiGens != null)
+                foreach (var g in map.poiGens)
+                {
+                    if (g == null || !g.placeStartHouse || g.chunks == null) continue;
+                    foreach (var chunk in g.chunks) foreach (var entry in chunk.Value.pois)
+                    {
+                        var poi = entry.Value;
+                        if (poi == null || poi.id != (int)g.startHouseType || poi.pobj == null) continue;
+                        var house = poi.pobj.transform;
+                        Log("house root " + house.name + " pos=" + house.position + " rot=" + house.eulerAngles);
+                        foreach (var sp in house.GetComponentsInChildren<newRandomStuffSpawnScript>(true))
+                        {
+                            string path = sp.name; for (var q = sp.transform.parent; q != null && q != house; q = q.parent) path = q.name + "/" + path;
+                            var sb = new System.Text.StringBuilder();
+                            if (sp.items != null) foreach (var it in sp.items)
+                            {
+                                sb.Append(" [" + (it.G != null ? "G:" + it.G.name : it.prefab) + " isitem=" + it.isitem + " chance=" + it.chance);
+                                if (it.overrideFluidType && it.fluids != null) { sb.Append(" fluids:"); foreach (var f in it.fluids) sb.Append(f.type + "/" + F(f.chance) + ","); }
+                                if (it.overrideFluidAmount) sb.Append(" amount=" + F(it.minFluid) + "-" + F(it.maxFluid));
+                                if (it.places != null) { sb.Append(" places:"); foreach (var pl in it.places) sb.Append(pl.T == null ? "null;" : house.InverseTransformPoint(pl.T.position).ToString("F2") + ";"); }
+                                sb.Append("]");
+                            }
+                            Log("spawner " + path + " local=" + house.InverseTransformPoint(sp.transform.position).ToString("F2") + " chance=" + F(sp.chanceToSpawn) + " spawned=" + sp.spawned + sb);
+                        }
+                    }
+                }
+            var player = mainscript.s == null || mainscript.s.player == null ? null : mainscript.s.player.transform;
+            if (player == null) return;
+            foreach (var t in FindObjectsOfType<tankscript>())
+            {
+                if (Vector3.Distance(t.transform.position, player.position) > 80f) continue;
+                var sb = new System.Text.StringBuilder();
+                if (t.F != null && t.F.fluids != null) foreach (var f in t.F.fluids) sb.Append(" " + f.type + ":" + F(f.amount));
+                string path = t.name; for (var p = t.transform.parent; p != null; p = p.parent) path = p.name + "/" + path;
+                Log("scene tank " + path + " max=" + F(t.F == null ? -1 : t.F.maxC) + " holds{" + sb + " } dist=" + F(Vector3.Distance(t.transform.position, player.position)));
+            }
+        }
+
+        sealed class PropSample
+        {
+            internal tosaveitemscript Item;
+            internal Vector3 Start;
+            internal float Floor=float.NaN;
+            internal bool Crossed;
+        }
+
+        IEnumerator CheckPoiProps()
+        {
+            var map=menuhandler.s.currentMainMap;poiGenScript.poiClass target=null;float nearest=float.MaxValue;
+            foreach(var gen in map.poiGens)foreach(var chunk in gen.chunks)foreach(var pair in chunk.Value.pois)
+            {
+                var poi=pair.Value;if(poi==null || poi.id!=12)continue;
+                float distance=Vector3.Distance(mainscript.UnityPosFromGlobal(poi.pos),mainscript.s.player.transform.position);
+                if(distance<nearest){nearest=distance;target=poi;}
+            }
+            if(target==null){Log("FAIL POI probe: no Vizmu generated seed="+map.seed);yield break;}
+            Log("POI probe Vizmu seed="+map.seed+" global="+V(target.pos)+" spawnedItems="+target.spawnedItems);
+            var player=mainscript.s.player;
+            var destination=mainscript.UnityPosFromGlobal(target.pos)+Vector3.up*2f;
+            player.Teleport(destination,Vector3.zero);
+            var samples=new Dictionary<int,PropSample>();int crossings=0;float until=Time.realtimeSinceStartup+25f;
+            while(Time.realtimeSinceStartup<until)
+            {
+                var root=target.pobj==null?null:target.pobj.transform;
+                if(root!=null)
+                {
+                    // Keep the player at the destination without altering prop physics.
+                    foreach(var pair in savedatascript.s.items)
+                    {
+                        var item=pair.Value;
+                        if(item==null || item.RB==null || Vector3.Distance(item.transform.position,root.position)>60f || item.transform.IsChildOf(player.transform))continue;
+                        int key=item.GetInstanceID();PropSample sample;
+                        var center=item.RB.worldCenterOfMass;
+                        if(!samples.TryGetValue(key,out sample))
+                        {
+                            sample=new PropSample{Item=item,Start=root.InverseTransformPoint(center)};samples.Add(key,sample);
+                            foreach(var hit in Physics.RaycastAll(center+Vector3.up*.1f,Vector3.down,30f,~0,QueryTriggerInteraction.Ignore))
+                            {
+                                if(hit.collider.attachedRigidbody!=null || !hit.collider.transform.IsChildOf(root) || hit.normal.y<.5f)continue;
+                                float y=root.InverseTransformPoint(hit.point).y;
+                                if(float.IsNaN(sample.Floor) || y>sample.Floor)sample.Floor=y;
+                            }
+                            Log("POI prop start "+item.name+" id="+item.idInSave+" local="+sample.Start.ToString("F2")+" floor="+F(sample.Floor)+" kinematic="+item.RB.isKinematic+" mode="+item.RB.collisionDetectionMode);
+                        }
+                        var current=root.InverseTransformPoint(center);
+                        if(!sample.Crossed && !float.IsNaN(sample.Floor) && sample.Start.y>=sample.Floor && current.y<sample.Floor-.3f && new Vector2(current.x-sample.Start.x,current.z-sample.Start.z).magnitude<2f)
+                        {
+                            sample.Crossed=true;string surface;
+                            bool blocked=PropSpawnDiagnostics.HasOriginalSurface(root,current,sample.Floor,out surface);
+                            if(blocked)crossings++;
+                            Log((blocked?"FAIL POI prop crossed floor ":"POI prop left support edge ")+item.name+" id="+item.idInSave+" start="+sample.Start+" now="+current+" floor="+F(sample.Floor)+" surface="+surface);
+                        }
+                    }
+                }
+                yield return null;
+            }
+            var finalRoot=target.pobj==null?null:target.pobj.transform;
+            if(finalRoot!=null)foreach(var sample in samples.Values)
+            {
+                if(sample.Item==null)continue;
+                var current=finalRoot.InverseTransformPoint(sample.Item.RB.worldCenterOfMass);
+                Log("POI prop end "+sample.Item.name+" id="+sample.Item.idInSave+" drop="+F(sample.Start.y-current.y)+" local="+current.ToString("F2"));
+            }
+            Log("POI prop probe finished: tracked="+samples.Count+" floorCrossings="+crossings+" spawnedItems="+target.spawnedItems+" spawnedFixed="+target.spawnedFixed);
+            Flush();
+        }
+
+        void VerifyBeer()
+        {
+            var main=mainscript.s;var player=main.player;var survival=player.survival;
+            bool label=main.fluids.Length>8 && ls.l.g(main.fluids[8].lname)=="Beer";
+            int houseBeerBottles=0,houseAlcoholBottles=0;
+            foreach(var item in FindObjectsOfType<tosaveitemscript>())
+            {
+                if(item.id!=71 || Vector3.Distance(item.transform.position,player.transform.position)>20f)continue;
+                foreach(var tank in item.GetComponentsInChildren<tankscript>(true))
+                {
+                    float beer=BeerLiquid.Amount(tank.F),alcohol=tank.F.GetPercent(mainscript.fluidenum.alcohol)*tank.F.GetAmount();
+                    if(beer>.01f)houseBeerBottles++;
+                    if(alcohol>.01f)houseAlcoholBottles++;
+                    Log("house bottle "+item.name+" id="+item.idInSave+" registered="+item.started+" beer="+F(beer)+" alcohol="+F(alcohol));
+                }
+            }
+            Log((houseBeerBottles>0 && houseAlcoholBottles==0?"PASS":"FAIL")+" house bottle contents: beer="+houseBeerBottles+" alcohol="+houseAlcoholBottles);
+            int barrels=0;string capText="";
+            foreach(var tank in FindObjectsOfType<tankscript>())
+            {
+                if(!tank.name.StartsWith("BARREL",StringComparison.Ordinal) || Mathf.Abs(BeerLiquid.Amount(tank.F)-40f)>.1f || Vector3.Distance(tank.transform.position,player.transform.position)>40f)continue;
+                barrels++;
+                foreach(var cap in tank.GetComponentsInChildren<tankcapscript>(true))
+                    if(cap.Tank==tank && !cap.noText)capText=cap.GetCapString().Replace("\n"," | ");
+                var save=tank.GetComponent<tosaveitemscript>();
+                Log("beer barrel id="+(save==null?"missing":save.idInSave.ToString())+" registered="+(save!=null && save.started)+" label="+capText);
+            }
+            var randomState=UnityEngine.Random.state;GameObject bottle=null;bool bottleBeer=false;
+            try
+            {
+                bottle=Instantiate(itemdatabase.s.items[71],player.transform.position+Vector3.up*100f,Quaternion.identity);
+                var tank=bottle.GetComponentInChildren<tankscript>();
+                for(int i=0;i<256 && !bottleBeer;i++){tank.RandomFluid();bottleBeer=BeerLiquid.Amount(tank.F)>0f;}
+            }
+            finally{if(bottle!=null)Destroy(bottle);UnityEngine.Random.state=randomState;}
+            float water=survival.water,queued=survival.toDrink,heal=survival.toHp;
+            var bladder=new System.Collections.Generic.List<mainscript.fluid>();
+            foreach(var f in player.piss.Tank.F.fluids)bladder.Add(new mainscript.fluid(f));
+            bool drink=false;
+            try
+            {
+                DrunkEffects.Clear(survival);
+                var source=new mainscript.fluidcontainer{maxC=.5f};source.ChangeOne(.5f,BeerLiquid.Fluid);
+                var mouth=new mainscript.fluidcontainer{maxC=1f};
+                StableGameBridge.NativeFluidFillAllowed(player,null,null,true);
+                StableGameBridge.DrinkTransfer(mouth,source,.5f,true,false,null);
+                float hydration=survival.toDrink-queued,drunk=DrunkEffects.Level(survival);
+                drink=Mathf.Abs(hydration-.45f)<.0001f && Mathf.Abs(drunk-.1f)<.0001f && BeerLiquid.Amount(source)<.0001f && BeerLiquid.Amount(mouth)<.0001f;
+                Log("beer drink hydration="+F(hydration)+" drunk="+F(drunk)+" mouth="+F(BeerLiquid.Amount(mouth)));
+            }
+            finally
+            {
+                survival.water=water;survival.toDrink=queued;survival.toHp=heal;
+                player.piss.Tank.F.Copy(bladder);DrunkEffects.Clear(survival);
+            }
+            Log((label && bottleBeer && houseBeerBottles>0 && houseAlcoholBottles==0 && barrels==1 && capText.Contains("Beer") && drink?"PASS":"FAIL")+" beer integration: name="+label+" randomizedBottle="+bottleBeer+" beerBarrels="+barrels+" drinking="+drink);
         }
 
         void Quit()
