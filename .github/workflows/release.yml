@@ -98,7 +98,9 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          $version = python -c "import pathlib,re; t=pathlib.Path('installer/core/src/consts.rs').read_text(); print(re.search(r'pub const VERSION: &str = \"([^\"]+)\"', t).group(1))"
+          $contents = Get-Content -LiteralPath 'installer/core/src/consts.rs' -Raw
+          if ($contents -notmatch 'pub const VERSION: &str = "([^"]+)";') { throw 'Package version was not found' }
+          $version = $Matches[1]
           if ($env:RELEASE_TAG -ne "v$version") { throw "Tag $env:RELEASE_TAG does not match package version v$version" }
           $tagRef = "refs/tags/$env:RELEASE_TAG"
           $existing = git ls-remote --tags origin $tagRef "$tagRef^{}"
