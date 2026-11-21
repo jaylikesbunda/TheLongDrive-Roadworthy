@@ -6,61 +6,39 @@ Experimental build for game version `2024.11.26b_test`. Host and guests need the
 
 ### World
 
-- Eight new roadside buildings in new worlds:
-  - a ruined chapel
-  - a roadside motel
-  - an abandoned drive-in cinema
-  - a grain silo yard
-  - an old airstrip hangar with a car up on blocks under an engine hoist
-  - a red barn with a hayloft
-  - a scrapyard of real car wrecks: some bare shells, some with parts left that can be fixed up
-  - a railway siding with a boxcar and a signal box
-- Items spawn in them the same way as in the game's own buildings: barrels with liquid, breakable crates, beds, TVs, fridges, tools, parts and junk.
-- Their doors are real doors that open and close, and stay that way in multiplayer and after saving.
-- The ground is smoothed under them, trees and rocks stay out of them, and grass doesn't grow through their floors.
-- About a third of roadside buildings in a new world become one of them; any kind can be replaced except the starting house.
-- A new "New buildings (new worlds)" setting in the Roadworthy tab turns them on or off for worlds you create from then on. Existing saves always keep their layout.
+- Eight new roadside buildings, with loot and working doors.
+- New buildings appear in new worlds and can be disabled in settings.
+- Ground is smoothed and vegetation cleared around new buildings.
 
 ### Cars
 
-- New Part wear option (off by default): engines, radiators and tires slowly wear as you drive.
-- A worn engine has less power, starts less reliably, uses more oil, and runs hotter and smokier. A worn radiator cools less, and worn tires grip less.
-- Overheating, running low on oil and wheelspin wear parts much faster.
-- The wire brush restores a switched-off engine or a radiator back to new, with the last two steps slower. Worn tires never go below old; fit a fresh set to get back to new.
+- Optional part wear affects engines, radiators and tires.
+- Overheating, low oil and wheelspin increase wear.
+- Repair engines and radiators with a wire brush. Replace worn tires.
 
 ### Mods
 
-- TLDLoader mods from Documents\TheLongDrive\Mods now load on the beta, including mods that add items. It can be turned off in the Roadworthy settings.
-- Mods made for the stable version of the game are translated for the beta as they load, so most of them work unchanged.
-- Parts added by mods fit properly into car slots. For example, the Car Batteries mod's battery now mounts and works.
-- Mods still run when TLDLoader's own menu files are missing; an on-screen note says to reinstall TLDLoader to get its menu back.
-- Mod features that depended on the old road and terrain generators, which the beta replaced, can't work; the rest of those mods still runs.
+- TLDLoader supports stable-game mods and custom items on the beta.
+- Modded parts can fit car slots, including Car Batteries.
+- Mods load without TLDLoader menu files, but its menu needs them installed.
+- Mods using the old road and terrain generators have limited support.
 
 ### Camera
 
-- New Promo camera option for filming: F6 free camera, Shift+F6 orbit camera around your car, F7 records a clip, F8 slow motion (single-player), plus keyframed camera paths.
+- Promo camera adds free and orbit views, recording, slow motion and camera paths.
+- First-person views stay clear of car interiors.
 
-### Driving
+### Performance and fixes
 
-- In first person, your view no longer goes into the roof, pillars or door frame when you lean or the car bounces.
-
-### Performance
-
-- Smoother frame rate in single-player: roads are no longer rechecked every frame when nothing near you has changed.
-- Less stutter while the world streams in around you.
-- Binoculars no longer draw their lens picture while they are out of sight.
-- Cobwebs more than about 20 m away no longer cast shadows; close up they look the same.
-
-### Fixes
-
-- Distant terrain keeps loading after you raise the draw distance (before, it could stop while roads still appeared).
-- Grass no longer shows through roads because of a Roadworthy grass optimisation; that optimisation is now off.
+- Reduced road checks and world-streaming stutter.
+- Off-screen binocular lenses and distant cobweb shadows use less rendering.
+- Fixed distant terrain stopping after increasing draw distance.
+- Fixed grass showing through roads.
 
 ### Other
 
-- The game, Steam lobby, and installer show Roadworthy v0.3.0-pre1.
-- Roadworthy is now released under the MIT License.
-- GitHub releases include the standalone installer EXE as well as the ZIP.
+- Released under the MIT License.
+- Releases include a standalone installer and ZIP.
 
 ## v0.2.0
 
