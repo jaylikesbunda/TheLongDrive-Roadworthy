@@ -724,8 +724,49 @@ namespace TldMp
             catch { WorldRelocationLedger.Remove(1, gen.index, 0, originalId); throw; }
         }
 
+        // Version 6+: some minor roadside POIs become Roadworthy buildings (CustomPois),
+        // moved back from the road when their front would reach it.
+        public delegate bool CustomChooser(poiGenScript gen, Vector3d pos, int type, bool aligned, out int id, out double frontExtent);
+        // Set by StableGameBridge to CustomPois.Choose; null in tests and stub builds.
+        public static CustomChooser CustomChoose;
+
+        static void SwapCustom(poiGenScript gen, ref Vector3d pos, Vector3 rot, ref itemdatabase.b type, bool aligned)
+        {
+            int id; double front;
+            var choose = CustomChoose;
+            if (choose == null || !choose(gen, pos, (int)type, aligned, out id, out front)) return;
+            type = (itemdatabase.b)id;
+            if (!gen.roadAffects || gen.roadgen == null) return;
+            Vector3d near;
+            var road = roadGenScript.NearestPointOnRoadBone(pos, gen.roadgen.RoadsNear(pos, true, poiGenScript.alignToRoadEmu.anyRoad), out near);
+            if (road == null) return;
+            double dx = pos.x - near.x, dz = pos.z - near.z, d = Math.Sqrt(dx * dx + dz * dz);
+            double push = CustomPoiPolicy.PushOut(d, front);
+            if (!(push > 0)) return;
+            if (d < 1e-3)
+            {
+                // Standing on the road line: move back along the building's own +X (away from its front).
+                // Unity yaw by rot.y degrees turns +X into (cos, 0, -sin).
+                double yaw = rot.y * Math.PI / 180.0;
+                dx = Math.Cos(yaw); dz = -Math.Sin(yaw); d = 1.0;
+                if (d < 1e-6) return;
+            }
+            double oldY = pos.y;
+            pos.x += dx / d * push; pos.z += dz / d * push;
+            pos.y = RawHeight(gen, pos);
+            if (customLogs++ < 40)
+                UnityEngine.Debug.LogWarning("[Roadworthy POI] placed type " + id + " pushed " + push.ToString("F1") + " m from the road; height " + oldY.ToString("F1") + " -> " + pos.y.ToString("F1"));
+        }
+        static int customLogs;
+
         public static poiGenScript.poiClass AddRandomPoi(poiGenScript gen, Vector3d pos, Vector3 rot, itemdatabase.b type, bool alignedToRoad)
         {
+            if (WorldPlacementPolicy.Version >= CustomPoiPolicy.MinPlacementVersion)
+            {
+                Vector3d swappedPos = pos; itemdatabase.b swappedType = type;
+                try { SwapCustom(gen, ref swappedPos, rot, ref swappedType, alignedToRoad); pos = swappedPos; type = swappedType; }
+                catch (Exception e) { UnityEngine.Debug.LogWarning("[Roadworthy POI] swap failed, keeping vanilla: " + e.Message); }
+            }
             if (WorldPlacementPolicy.Version >= 4)
             {
                 if (preGenEnabled) PreGenerate(gen, pos);

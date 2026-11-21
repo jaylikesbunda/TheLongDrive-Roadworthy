@@ -23,9 +23,10 @@ public static class FlyerProductionBehaviorTests
         {
             if (args.Length != 2) throw new Exception("Usage: FlyerProductionBehaviorTests Assembly-CSharp.dll baseline|candidate");
             string role = args[1];
-            string output = Path.Combine(Path.GetTempPath(), "NativeFlyerExtracted-" + Guid.NewGuid().ToString("N") + ".dll");
+            byte[] replayImage;
             using (var fixture = AssemblyDefinition.ReadAssembly(Assembly.GetExecutingAssembly().Location))
             using (var source = AssemblyDefinition.ReadAssembly(args[0]))
+            using (var output = new MemoryStream())
             {
                 target = fixture.MainModule;
                 sourceFlyer = source.MainModule.GetTypes().Single(t => t.FullName == "randomFlyer");
@@ -35,8 +36,9 @@ public static class FlyerProductionBehaviorTests
                 CopyBody(src, dst, role == "candidate");
                 fixture.Name.Name = "NativeFlyerExtracted" + Guid.NewGuid().ToString("N");
                 fixture.Write(output);
+                replayImage = output.ToArray();
             }
-            var extracted = Assembly.LoadFrom(output);
+            var extracted = Assembly.Load(replayImage);
             var flyerType = extracted.GetType("randomFlyer", true);
             RunDynamic(flyerType);
             RunKinematic(flyerType, role == "candidate");

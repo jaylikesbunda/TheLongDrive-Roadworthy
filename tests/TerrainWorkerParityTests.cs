@@ -23,17 +23,18 @@ public static class TerrainWorkerParityTests
 
     public static int Main(string[] args)
     {
-        AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs e)
-        {
-            string name = new AssemblyName(e.Name).Name;
-            string p = name == "Assembly-CSharp" ? args[1] : Path.Combine(args[0], name + ".dll");
-            return File.Exists(p) ? Assembly.LoadFrom(p) : null;
-        };
         try
         {
-            Assembly.LoadFrom(Path.GetFullPath(args[1]));
+            var selected = Assembly.Load(File.ReadAllBytes(args[1]));
+            AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs e)
+            {
+                string name = new AssemblyName(e.Name).Name;
+                if (name == "Assembly-CSharp") return selected;
+                string path = Path.Combine(args[0], name + ".dll");
+                return File.Exists(path) ? Assembly.LoadFrom(path) : null;
+            };
             string mode = args.Length > 2 ? args[2] : "baseline";
-            return Run(mode == "patched", args[1]);
+            return Run(mode == "patched", selected);
         }
         catch (Exception e)
         {
@@ -43,9 +44,9 @@ public static class TerrainWorkerParityTests
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static int Run(bool patched, string selected)
+    static int Run(bool patched, Assembly selected)
     {
-        if (!String.Equals(Path.GetFullPath(typeof(terrainGenSettings).Assembly.Location), Path.GetFullPath(selected), StringComparison.OrdinalIgnoreCase))
+        if (typeof(terrainGenSettings).Assembly != selected)
             throw new Exception("Wrong terrain assembly loaded.");
         // The game sets this on map load (mapSettingScript). Without it the shared
         // permutation table has no random source and noise cannot be evaluated here.

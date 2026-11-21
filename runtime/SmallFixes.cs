@@ -16,6 +16,7 @@ namespace TldMp
     //                    failure and lets the native caller continue and destroy the object.
     //   RadiatorRepair:  partconditionscript.CanRepair lets radiators use the metal repair
     //                    table (wire brush and the other metal tools) while the option is on.
+    //                    With Part wear on, radiators and switched-off worn engines get the same table.
     //   TrailerHitch:    attachgripscript.FStart links the beta trailer grip to its trailer, and
     //                    attachablescript reads the grip's pickupable where the trailer has none.
     //                    TrailerGripWatch logs each wired grip's attach/detach state changes.
@@ -117,7 +118,7 @@ namespace TldMp
     // path while a tool is aimed is one dictionary lookup.
     internal static class RadiatorRepair
     {
-        sealed class Seen { public itemdatabase.repairProperty Original; public bool Radiator; }
+        sealed class Seen { public itemdatabase.repairProperty Original; public bool Radiator; public enginescript Engine; }
         static readonly Dictionary<int, Seen> seen = new Dictionary<int, Seen>();
 
         internal static void BeforeCanRepair(partconditionscript condition)
@@ -128,12 +129,23 @@ namespace TldMp
             if (!seen.TryGetValue(id, out entry))
             {
                 if (seen.Count > 4096) seen.Clear();
-                entry = new Seen { Original = condition.RepairProperty, Radiator = IsRadiator(condition) };
+                entry = new Seen { Original = condition.RepairProperty, Radiator = IsRadiator(condition), Engine = EngineWear.EngineOf(condition) };
                 seen[id] = entry;
+            }
+            if (entry.Engine != null)
+            {
+                // Engine wear: the brush works on a switched-off worn engine (EngineWear slows the last steps).
+                PatchOptions.Load();
+                EngineWear.Track(entry.Engine, condition);
+                bool brush = EngineWear.BrushAllowed(entry.Engine, condition) && !NativeAcceptsBrush(entry.Original);
+                var wantEngine = brush ? (itemdatabase.repairProperty)RadiatorRepairPolicy.Metal : entry.Original;
+                if (condition.RepairProperty != wantEngine) condition.RepairProperty = wantEngine;
+                return;
             }
             if (!entry.Radiator) return;
             PatchOptions.Load();
-            bool metal = RadiatorRepairPolicy.UseMetal(PatchOptions.RadiatorRepair, true, NativeAcceptsBrush(entry.Original));
+            // Part wear wears radiators down, so it also lets the brush fix them.
+            bool metal = RadiatorRepairPolicy.UseMetal(PatchOptions.RadiatorRepair || PatchOptions.EngineWear, true, NativeAcceptsBrush(entry.Original));
             var want = metal ? (itemdatabase.repairProperty)RadiatorRepairPolicy.Metal : entry.Original;
             if (condition.RepairProperty != want) condition.RepairProperty = want;
         }

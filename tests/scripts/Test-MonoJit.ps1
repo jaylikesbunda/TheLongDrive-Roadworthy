@@ -16,7 +16,10 @@ param(
     # 217: radiator repair entry hook on partconditionscript.CanRepair.
     # 223: trailer hitch hooks attachgripscript.FStart and five attachablescript methods.
     # 225: trailer sync return filter on tosaveitemscript.ThisOneInCharge and inbound guard on syncScript.UpdInWorld.
-    [int]$ExpectedCandidateMethods=225,
+    # 228: stable-mod attachment initialization, ray attachment, and part-slot spawn.
+    # 229: legacy item spawn quantities on tosaveitemscript.RandomSpawned.
+    # 231: stable terrain marker startup and native terrain alignment filter.
+    [int]$ExpectedCandidateMethods=231,
     [int]$ExpectedControlMethods=6
 )
 $ErrorActionPreference='Stop'

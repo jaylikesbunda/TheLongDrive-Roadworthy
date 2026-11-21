@@ -589,23 +589,12 @@ namespace TldMp
         static float nextBusPlacement;
         static string busPlacementReason = "road data unavailable";
         // The roadside search must finish before the stop's detached props spawn,
-        // or they stay behind on the road. It runs every frame, so a few seconds
-        // is plenty of attempts; this deadline only guarantees props appear.
-        const float SpawnDeadline = 5f;
-        // Some search results depend only on fixed geometry and cannot change by
-        // retrying. Give the geometry a moment to settle, then let the props spawn
-        // at the stop's current position instead of waiting out the full deadline.
-        const float TerminalSettle = 0.5f;
-
-        static bool TerminalPlacement(string reason)
-        {
-            if (string.IsNullOrEmpty(reason)) return false;
-            return reason.StartsWith("road clearance too far", StringComparison.Ordinal)
-                || reason == "road clearance did not converge"
-                || reason == "house blocks destination"
-                || reason == "missing stop footprint"
-                || reason == "road has no usable segment";
-        }
+        // or they stay behind on the road. Deadlines are in BusPlacementPolicy:
+        // short normally, longer while the near terrain or road is still building.
+        // Stops whose props were released before any placement still get put on
+        // the ground (height only) once the terrain exists, so none is left floating
+        // at the prefab's height.
+        static readonly Dictionary<poiScript, float> busGroundOnly = new Dictionary<poiScript, float>();
 
         static Transform StartingBusMarker(poiScript script)
         {
@@ -637,14 +626,15 @@ namespace TldMp
             if (!busPlacementStarted.TryGetValue(script, out started))
                 busPlacementStarted[script] = started = Time.unscaledTime;
             float waited = Time.unscaledTime - started;
-            bool settled = waited >= TerminalSettle && TerminalPlacement(busPlacementReason);
-            if (waited < SpawnDeadline && !settled) return false;
-            // Stop moving the stop now: its props are about to spawn at whatever
-            // position it has, and must not be left behind by a later move.
+            if (!BusPlacementPolicy.ReleaseProps(waited, busPlacementReason)) return false;
+            bool settled = BusPlacementPolicy.Terminal(busPlacementReason);
+            // Stop moving the stop sideways now: its props are about to spawn at
+            // whatever position it has, and must not be left behind by a later move.
             busPlacementComplete.Add(script);
             busPlacementPending.Remove(script);
             busPlacementStarted.Remove(script);
-            Debug.Log("[TLD MP bus-placement] props released after " + F(waited) + "s; reason=" + busPlacementReason + (settled ? " (terminal)" : ""));
+            if (!settled) busGroundOnly[script] = Time.unscaledTime;
+            Debug.Log("[TLD MP bus-placement] props released after " + F(waited) + "s; reason=" + busPlacementReason + (settled ? " (terminal)" : "; grounding the stop when terrain loads"));
             return true;
         }
 
@@ -822,6 +812,7 @@ namespace TldMp
                 if (script == null) { busPlacementPending.RemoveAt(i); continue; }
                 TryBusPlacement(script);
             }
+            TickBusGroundOnly();
             busPlacementComplete.RemoveWhere(script => script == null);
             if (busPlacementStarted.Count > 0)
             {
@@ -829,6 +820,38 @@ namespace TldMp
                 foreach (var pair in busPlacementStarted) if (pair.Key == null) (gone ?? (gone = new List<poiScript>())).Add(pair.Key);
                 if (gone != null) for (int i = 0; i < gone.Count; i++) busPlacementStarted.Remove(gone[i]);
             }
+        }
+
+        // Height-only grounding for stops released before their placement ran.
+        static List<poiScript> busGroundDone;
+        static void TickBusGroundOnly()
+        {
+            if (busGroundOnly.Count == 0) return;
+            if (busGroundDone == null) busGroundDone = new List<poiScript>();
+            busGroundDone.Clear();
+            foreach (var pair in busGroundOnly)
+            {
+                var script = pair.Key;
+                var marker = script == null ? null : StartingBusMarker(script);
+                if (marker == null || marker.parent == null) { busGroundDone.Add(script); continue; }
+                var global = mainscript.GlobalFromUnityPos(marker.position);
+                bool tile, collider;
+                double ground = ColliderY(NearGen(Map()), global, out tile, out collider);
+                if (double.IsNaN(ground) || double.IsInfinity(ground))
+                {
+                    if (Time.unscaledTime - pair.Value > BusPlacementPolicy.GroundOnlyLimit)
+                    {
+                        busGroundDone.Add(script);
+                        Debug.Log("[TLD MP bus-placement] gave up grounding the stop: terrain still unavailable (tile=" + tile + " collider=" + collider + ")");
+                    }
+                    continue;
+                }
+                double shift = BusPlacementPolicy.GroundShift(global.y, ground);
+                if (shift != 0) marker.parent.position += Vector3.up * (float)shift;
+                busGroundDone.Add(script);
+                Debug.Log("[TLD MP bus-placement] grounded the stop in place after " + F(Time.unscaledTime - pair.Value) + "s; shift=" + F(shift) + "m");
+            }
+            for (int i = 0; i < busGroundDone.Count; i++) busGroundOnly.Remove(busGroundDone[i]);
         }
 
         // Hook: poiGenScript.AddPoi(Vector3d, Vector3, int, bool) entry. The position is the height placement used.

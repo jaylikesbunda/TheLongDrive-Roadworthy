@@ -29,9 +29,10 @@ public static class WorldCleanupProductionTests
             int rounds=args.Length>5?Int32.Parse(args[5]):3;
             if(chunks<1 || needed<0 || needed>chunks || rounds<1)throw new Exception("Invalid benchmark sizes");
             string self=Assembly.GetExecutingAssembly().Location;
-            string output=Path.Combine(Path.GetTempPath(),"NativeCleanupExtracted-"+Guid.NewGuid().ToString("N")+".dll");
+            byte[] replayImage;
             using(var fixture=AssemblyDefinition.ReadAssembly(self))
             using(var source=AssemblyDefinition.ReadAssembly(args[0]))
+            using(var output=new MemoryStream())
             {
                 target=fixture.MainModule;
                 IndexLocalTypes(target.Types);
@@ -42,15 +43,17 @@ public static class WorldCleanupProductionTests
                 CopyCleanup(src,dst.Methods.Single(m=>m.Name=="Cleanup"),args[2]=="candidate");
                 fixture.Name.Name="NativeCleanupExtracted"+Guid.NewGuid().ToString("N");
                 fixture.Write(output);
+                replayImage=output.ToArray();
             }
+            var native=Assembly.Load(File.ReadAllBytes(args[0]));
             AppDomain.CurrentDomain.AssemblyResolve+=delegate(object sender,ResolveEventArgs e)
             {
                 string name=new AssemblyName(e.Name).Name;
-                string path=name=="Assembly-CSharp"?args[0]:Path.Combine(args[1],name+".dll");
+                if(name=="Assembly-CSharp")return native;
+                string path=Path.Combine(args[1],name+".dll");
                 return File.Exists(path)?Assembly.LoadFrom(path):null;
             };
-            var native=Assembly.LoadFrom(args[0]);
-            var assembly=Assembly.LoadFrom(output);
+            var assembly=Assembly.Load(replayImage);
             var category=assembly.GetType("objGenScript+categoryClass",true);
             var vector=native.GetType("UnityEngine.Vector3d",true);
             var chunk=native.GetType("objGenScript+chunkClass",true);

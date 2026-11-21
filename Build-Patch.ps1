@@ -54,7 +54,7 @@ $signatureInputs=[regex]::Matches($signatureLine,"'([^']+)'") | ForEach-Object {
 $signatureText=($signatureInputs | ForEach-Object {$_+':'+(Hash (Join-Path $PSScriptRoot $_))}) -join "`n"
 $hasher=[Security.Cryptography.SHA256]::Create()
 try{$sourceSignature=[BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($signatureText))).Replace('-','')}finally{$hasher.Dispose()}
-$runtimeSources=@($signatureInputs | Where-Object {$_.StartsWith('runtime\')} | ForEach-Object {Join-Path $PSScriptRoot $_})
+$runtimeSources=@($signatureInputs | Where-Object {$_.StartsWith('runtime\') -and $_.EndsWith('.cs') -and $_ -ne 'runtime\TldLoaderTranslator.cs'} | ForEach-Object {Join-Path $PSScriptRoot $_})
 
 # v1: the base hook pass on the original assembly.
 $v1=Join-Path $out 'Assembly-CSharp.v1.dll'
@@ -71,7 +71,14 @@ $notes=Join-Path $out 'PatchNotes.cs'
 $notesB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'CHANGELOG.md'))))
 Set-Content -LiteralPath $notes -Encoding UTF8 -Value ('namespace TldMp { internal static class PatchNotes { public const string ChangelogBase64="'+$notesB64+'"; } }')
 $runtime=Join-Path $out 'Tld.Multiplayer.dll'
-$references=@('UnityEngine.CoreModule.dll','UnityEngine.AnimationModule.dll','UnityEngine.PhysicsModule.dll','UnityEngine.ImageConversionModule.dll','UnityEngine.AudioModule.dll','UnityEngine.VehiclesModule.dll','UnityEngine.ParticleSystemModule.dll','UnityEngine.JSONSerializeModule.dll','com.rlabrecque.steamworks.net.dll','UnityEngine.UI.dll','UnityEngine.UIModule.dll','UnityEngine.ScreenCaptureModule.dll','netstandard.dll','System.IO.Compression.dll','Unity.TextMeshPro.dll','UnityEngine.InputLegacyModule.dll') | ForEach-Object {'/reference:'+(Join-Path $managed $_)}
+$references=@('UnityEngine.CoreModule.dll','UnityEngine.AnimationModule.dll','UnityEngine.PhysicsModule.dll','UnityEngine.ImageConversionModule.dll','UnityEngine.AudioModule.dll','UnityEngine.VehiclesModule.dll','UnityEngine.ParticleSystemModule.dll','UnityEngine.JSONSerializeModule.dll','com.rlabrecque.steamworks.net.dll','UnityEngine.UI.dll','UnityEngine.UIModule.dll','UnityEngine.ScreenCaptureModule.dll','netstandard.dll','System.IO.Compression.dll','Unity.TextMeshPro.dll','UnityEngine.InputLegacyModule.dll','UnityEngine.IMGUIModule.dll','UnityEngine.TextRenderingModule.dll') | ForEach-Object {'/reference:'+(Join-Path $managed $_)}
+# Mono.Cecil and the TLDLoader translator travel inside the runtime (EmbeddedCecil). The runtime
+# itself must not reference Cecil: a type scan before Cecil loads would break it for the session.
+$tldTranslatorDll=Join-Path $out 'TldMp.TldLoaderTranslator.dll'
+RunCsc @('/nologo','/target:library','/optimize+',('/out:'+$tldTranslatorDll),('/reference:'+$cecil),(Join-Path $PSScriptRoot 'runtime\TldLoaderCompatPolicy.cs'),(Join-Path $PSScriptRoot 'runtime\TldStableShellNames.cs'),(Join-Path $PSScriptRoot 'runtime\TldLoaderTranslator.cs'))
+$references+=@(('/resource:'+$cecil+',TldMp.Mono.Cecil.dll'),('/resource:'+$tldTranslatorDll+',TldMp.TldLoaderTranslator.dll'))
+# Roadworthy's own roadside buildings (tools/PoiBuildings/build_pois.py output, read by CustomPois).
+$references+=@('/resource:'+(Join-Path $PSScriptRoot 'runtime\assets\RoadworthyPois.bin')+',TldMp.RoadworthyPois.bin')
 RunCsc (@('/nologo','/target:library','/optimize+',('/out:'+$runtime),('/reference:'+$original))+$references+$runtimeSources+@($identity,$notes))
 
 # v3: the multiplayer hooks on top of v1, checked by the independent verifier.

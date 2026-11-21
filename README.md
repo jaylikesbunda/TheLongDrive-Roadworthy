@@ -2,7 +2,9 @@
 
 A multiplayer and performance patch for **The Long Drive**.
 
-**v0.3.0 experimental** | Windows | Game build `2024.11.26b_test`
+**v0.3.0-pre1 experimental** | Windows | Game build `2024.11.26b_test`
+
+**[Download the latest release](https://github.com/jaylikesbunda/TheLongDrive-Roadworthy/releases/latest)** · [Website and install guide](https://thelongdrivemod.com/) · [Multiplayer guide](https://thelongdrivemod.com/multiplayer/) · [Discord](https://discord.gg/utEDpKGGYG)
 
 ## What does this patch do?
 
@@ -192,6 +194,22 @@ A multiplayer and performance patch for **The Long Drive**.
 
 </details>
 
+## Numbers
+
+Roadworthy and [TLD RevaMP](https://tldrevamp.com/) against the base game on the same PC, world and runs. The better mod in each row is in **bold**.
+
+| Test | Base game | Roadworthy | Change | RevaMP | Change |
+|---|---:|---:|---:|---:|---:|
+| 16 parked cars | 23.2 FPS | 38.0 FPS | +64% | **44.0 FPS** | **+90%** |
+| 300 items lying around | 38.1 FPS | **78.7 FPS** | **+106%** | 67.4 FPS | +77% |
+| 300 items falling | 22.3 FPS | **62.0 FPS** | **+178%** | 54.2 FPS | +142% |
+| Driving at 30 m/s | 54.1 FPS | **130.4 FPS** | **+141%** | 104.1 FPS | +92% |
+| Slowest 1% of frames while driving | 29.5 FPS | 51.1 FPS | +73% | **56.3 FPS** | **+91%** |
+| Worst frame while driving | 40.6 ms | 33.5 ms | −17% | **31.9 ms** | **−22%** |
+| Script memory | 97 MB | **91 MB** | **−6%** | 119 MB | +22% |
+
+Roadworthy 0.3.0, RevaMP 0.69.1 and the untouched beta build. Median of 3 runs, 1280×720 Ultra, no frame cap, a fresh world on the same seed for every test. FPS is the average over the whole test (frames divided by seconds), not the median frame. All three builds were driven by RevaMP's own benchmark scenarios and measured by the same frame recorder. Driving moves the player along the ground at 30 m/s. Script memory is measured after a full garbage collection. Your FPS will differ with your hardware; compare the percentages.
+
 ## Install
 
 1. Windows 10/11 x64.
@@ -201,18 +219,18 @@ A multiplayer and performance patch for **The Long Drive**.
 
 The installer builds the patch against your own game files and checks it before swapping it in. It does not modify your saves.
 
+The [install guide](https://thelongdrivemod.com/install/) covers switching to the beta branch, updating after a game update, mods and troubleshooting.
+
 ## Restore
 
 Run the EXE again and click *Restore original*, or run `Restore Original.cmd`.
-
-## New Buggy multiplayer (experimental)
-
-An optional second multiplayer mode that gives each car exactly one player in control of its movement. The normal multiplayer mode is the default and is unchanged.
-
-Turn it on in **Settings → Roadworthy → New Buggy multiplayer** before creating or joining a session. Every player must choose the same mode; players on different modes can't join each other.
 
 ## Reporting problems
 
 Press **F11** in game to save a feedback bundle of your logs, and attach it to your report.
 
 For stutter reports, you can turn on detailed performance logs: create an empty file named `tldmp-diagnostics.on` beside `TheLongDrive.exe` and restart. Reproduce the problem for 30-60 seconds, then press F11. Delete the file and restart to turn the logs off again, since they cost some performance.
+
+## License
+
+Roadworthy is released under the [MIT License](LICENSE): you can use, change and share it, including in other projects, as long as you keep the copyright notice. The Long Drive is by Gab and Genesz; this is an unofficial fan project, and every player needs their own copy of the game.

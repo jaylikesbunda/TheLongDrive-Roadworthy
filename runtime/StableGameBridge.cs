@@ -25,6 +25,25 @@ namespace TldMp
     // validation, object-ID collision prevention and diagnostics only.
     public static partial class StableGameBridge
     {
+        public static void CaptureAttachOriginalParent(attachablescript attach) { TldLoaderBridge.CaptureAttachOriginalParent(attach); }
+        public static bool NativeRayAttach(attachablescript attach, RaycastHit hit) { return TldLoaderBridge.NativeRayAttach(attach, hit); }
+        public static void NativeAttachmentMounted(attachablescript attach) { TldLoaderBridge.NativeAttachmentMounted(attach); }
+        public static void NativeAttachmentDetached(attachablescript attach) { TldLoaderBridge.NativeAttachmentDetached(attach); }
+        public static bool NativeSlotSpawn(partslotscript slot) { return TldLoaderBridge.NativeSlotSpawn(slot); }
+        public static void ApplySpawnAmmo(tosaveitemscript item, newRandomStuffSpawnScript.item settings) { TldLoaderBridge.ApplySpawnAmmo(item, settings); }
+        public static bool NativeAttachmentUpdate(attachablescript attach) { return TldLoaderBridge.NativeAttachmentUpdate(attach); }
+        public static void CountPlaceAttempt(itemPlaceRemoveScript place) { TldLoaderBridge.CountPlaceAttempt(place); }
+        public static void ResetPlaceAttempts(itemPlaceRemoveScript place) { TldLoaderBridge.ResetPlaceAttempts(place); }
+        public static bool NativeTerrainAlignStart(terrainHeightAlignToBuildingScript marker) { return TldLoaderBridge.NativeTerrainAlignStart(marker); }
+        public static poiGenScript.terrainAlignValueClass LegacyTerrainAlign(poiGenScript.terrainAlignValueClass value, Vector3d position)
+        {
+            return TldStableTerrain.AlignHeight(value, position);
+        }
+        public static bool LegacyAllowFarStuff(tosaveitemscript item) { return TldLoaderBridge.LegacyAllowFarStuff(item); }
+        public static void BeforeLegacySave(string name) { TldLegacySave.BeforeSave(name); }
+        public static void BeforeLegacyLoad(string name) { TldLegacySave.BeforeLoad(name); }
+        public static void AfterLegacyLoadPending() { TldLegacySave.AfterLoadPending(); }
+
         internal static StableNode Node{get{return node;}}
         // True while a Roadworthy session object exists, whichever backend is active.
         internal static bool InSession{get{return node!=null;}}
@@ -372,7 +391,7 @@ namespace TldMp
             // finds the result ready instead of freezing the main thread while it waits.
             EnsureFingerprintStart();
             if(Connected)EnsureFingerprint();
-            if(driver==null){var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();MenuProbe.StartIfRequested(g);SpawnProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<MultiplayerMenuSkin>();g.AddComponent<FeedbackHotkey>();g.AddComponent<DrunkCameraSway>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
+            if(driver==null){Debug.Log("[Roadworthy perf] Vector3d comparer: "+Vector3dEquality.Install());var g=new GameObject("TLD Multiplayer Stability v3");UnityEngine.Object.DontDestroyOnLoad(g);driver=g.AddComponent<Driver>();WorldPlacementPolicy.NewBuildingsWanted=delegate{PatchOptions.Load();return PatchOptions.NewBuildings;};MenuProbe.StartIfRequested(g);SpawnProbe.StartIfRequested(g);g.AddComponent<MenuLayout>();g.AddComponent<PatchOptionsMenu>();g.AddComponent<MultiplayerMenuSkin>();g.AddComponent<FeedbackHotkey>();g.AddComponent<DrunkCameraSway>();PromoCamera.SessionCheck=delegate{return InSession;};PromoCamera.CameraTakenHook=delegate(bool on){DrunkCameraSway.Suppressed=on;};g.AddComponent<PromoCamera>();g.AddComponent<RemoteCarDriver>();if(ModDiagnostics.On)g.AddComponent<LateUpdateProbe>();SteamSelfTest.StartIfRequested(g);JoinPopupPreview.StartIfRequested(g);}
             Ensure();Debug.Log("[TLD MP v3] Native synchronization path active; checked world manifest/join. All peers require this exact build.");
         }
         public static void PrewarmContentFingerprint(SteamP2PMenuHandlerScript menu)
@@ -1456,14 +1475,14 @@ namespace TldMp
         public static Vector3d PoiIdentitySnap(Vector3d position,float round,poiGenScript gen)
         {return PoiSlopePlacement.ResolveIdentity(position,round,gen);}
         public static poiGenScript.poiClass AddRandomPoi(poiGenScript gen,Vector3d pos,Vector3 rot,int type,bool aligned)
-        {return PoiSlopePlacement.AddRandomPoi(gen,pos,rot,(itemdatabase.b)type,aligned);}
+        {if(PoiSlopePlacement.CustomChoose==null)PoiSlopePlacement.CustomChoose=CustomPois.Choose;return PoiSlopePlacement.AddRandomPoi(gen,pos,rot,(itemdatabase.b)type,aligned);}
         public static List<roadGenScript.roadClass> DedupeTerrainRoads(List<roadGenScript.roadClass> roads){return TerrainRoadSelection.Dedupe(roads);}
         // ---- world streaming hooks ------------------------------------------------
-        public static bool RoadUpdate(roadGenScript road,bool more){if(road!=null && !road.isActiveAndEnabled){RoadLiveCache.Clear();RoadFarSkip.Clear();}if(!Connected)return true;return EnsureWorldSession() && StableMap.RoadUpdate(road,more);}
+        public static bool RoadUpdate(roadGenScript road,bool more){if(road!=null && !road.isActiveAndEnabled){RoadLiveCache.Clear();RoadFarSkip.Clear();}if(!Connected)return RoadIdleSkip.Run(road,more);return EnsureWorldSession() && StableMap.RoadUpdate(road,more);}
         public static bool RoadChunkKeep(roadGenScript road,List<Vector3d> needed,Vector3d cell){return RoadChunkPolicy.Keep(road,needed,cell);}
         public static void RoadChunkDirty(roadGenScript.roadChunk road){RoadLiveCache.Dirty(road);}
         public static bool RoadChunkMayHaveLive(roadGenScript.dotChunkClass chunk,roadGenScript.roadChunk road){return RoadLiveCache.MayHaveLive(chunk,road);}
-        public static void RoadChunkDestroyed(roadGenScript.roadChunk road){RoadLiveCache.Destroyed(road);}
+        public static void RoadChunkDestroyed(roadGenScript.roadChunk road){RoadLiveCache.Destroyed(road);RoadIdleSkip.PieceDestroyed();}
         public static void RoadDedupeNeeded(List<Vector3d> needed){RoadFarSkip.Dedupe(needed);}
         public static bool RoadChunkSkippable(roadGenScript road,roadGenScript.dotChunkClass chunk){return RoadFarSkip.Skippable(road,chunk);}
         public static void RoadBaked(roadscript road){RoadBake.AfterBake(road);}
@@ -1889,13 +1908,13 @@ namespace TldMp
             if(dead!=null)for(int i=0;i<dead.Count;i++)sync.players.Remove(dead[i]);
         }
         public static bool RoadAt(roadGenScript road,Vector3d pos){if(!Connected)return true;return EnsureWorldSession() && StableMap.RoadAt(road,pos);}
-        public static void RoadGenerated(roadGenScript road){RoadStateEpoch.Bump();RoadLiveCache.Clear();RoadFarSkip.Clear();if(Connected)StableMap.RoadGenerated(road);}
+        public static void RoadGenerated(roadGenScript road){RoadStateEpoch.Bump();RoadIdleSkip.DataChanged();RoadLiveCache.Clear();RoadFarSkip.Clear();if(Connected)StableMap.RoadGenerated(road);}
         // Road-state epoch entry hooks (runtime/RoadStateEpoch.cs). Each hook runs before
         // the native body, so a bump always precedes the write it guards.
         public static void RoadDotChunkAdding(roadGenScript road,Vector3d cell){if(road==null || road.chunks==null || !road.chunks.ContainsKey(cell))RoadStateEpoch.Bump();}
         public static void RoadChunksRemoving(roadGenScript road){if(road==null || road.chunksToRemove==null || road.chunksToRemove.Count>0)RoadStateEpoch.Bump();}
         public static void RoadConnectionsStarting(roadGenScript road){RoadStateEpoch.Bump();}
-        public static void RoadStateReset(roadGenScript road){RoadStateEpoch.Bump();}
+        public static void RoadStateReset(roadGenScript road){RoadStateEpoch.Bump();RoadIdleSkip.DataChanged();}
         public static bool PoiChunk(poiGenScript gen,Vector3d pos){if(!Connected)return true;return EnsureWorldSession() && StableMap.PoiChunk(gen,pos);}
         public static bool PoiAdd(poiGenScript gen){if(!Connected)return true;return EnsureWorldSession() && StableMap.PoiAdd(gen);}
         public static bool CategoryChunks(objGenScript.categoryClass cat){if(!Connected)return true;return EnsureWorldSession() && StableMap.CategoryChunks(cat);}
@@ -2271,6 +2290,7 @@ namespace TldMp
                 Debug.Log("[TLD MP net] slow handler type="+bytes[0]+" ("+(msgType)bytes[0]+") bytes="+bytes.Length+" ms="+NetStats.Ms(ticks));
         }
         static bool worldJumpFailed;
+        static bool engineWearFailed;
         // Native type of the received message being handled, or -1 (diagnostics).
         internal static int DispatchType=-1;
         static float nativePlayerInterval=-1;
@@ -2602,7 +2622,7 @@ namespace TldMp
             return slot==null?false:slot.UnCraft();
         }
         public static void BusGroundPlaced(Vector3d pos,Vector3 rot,int id,bool aligned){if(DiagnosticMode)GroundDiagnostics.Placed(pos,rot,id,aligned);}
-        public static void BusGroundSpawned(poiScript script,int genId,Vector3d posID){GroundDiagnostics.QueueBusPlacement(script);if(DiagnosticMode)GroundDiagnostics.Spawned(script,genId,posID);}
+        public static void BusGroundSpawned(poiScript script,int genId,Vector3d posID){try{CustomPois.Spawned(script,posID);}catch(Exception){}GroundDiagnostics.QueueBusPlacement(script);if(DiagnosticMode)GroundDiagnostics.Spawned(script,genId,posID);}
         // A house's props must never be lost to a failing roadside search, but
         // they must also not be left behind on the road. They wait for the bus
         // stop to reach its roadside spot, or for the deadline.
@@ -2714,7 +2734,7 @@ namespace TldMp
             else if(scene.newgame && gamemodesettingsscript.s!=null && gamemodesettingsscript.s.S!=null)
             {
                 mode=gamemodesettingsscript.s.S.biome;
-                placement=WorldPlacementPolicy.CurrentVersion;
+                placement=WorldPlacementPolicy.NewWorldVersion();
                 if(mode<0 || mode>3)throw new InvalidOperationException("Invalid selected world biome.");
             }
             SetWorldPlacementVersion(placement);
@@ -3800,7 +3820,10 @@ namespace TldMp
             {
                 DiagAggregateFlush();
                 if(!loopbackMode)SteamInterfaceCompat.WarmUp();
-                BeerLiquid.EnsureWord();BeerLiquid.EnsureBottles();PropSpawnDiagnostics.Tick();
+                BeerLiquid.EnsureWord();BeerLiquid.EnsureBottles();
+                GrassMarkerCulling.Tick();SmallShadowCulling.Tick();PropSpawnDiagnostics.Tick();
+                if(!engineWearFailed)try{EngineWear.Tick();}catch(Exception e){{engineWearFailed=true;EngineWear.Clear();Debug.LogWarning("[Roadworthy engine] wear disabled after error: "+e);}}
+                try{CustomPois.Tick();}catch(Exception){}
                 EnsureRabbitRuntime();RabbitFlowDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node!=null&&node.IsHost,savedatascript.s,Now);
                 RabbitAttackDiagnostics.Tick(loopbackMode||ModDiagnostics.On,node,savedatascript.s,mainscript.s==null?null:mainscript.s.player,Now);
                 UpdateCoverage.Flush();
@@ -3816,6 +3839,7 @@ namespace TldMp
                 try{try{GroundDiagnostics.TickLoadingOverlay(!Connected || (node!=null && (node.IsHost || (node.Ready && spawnFinished))));}catch(Exception e){GroundDiagnostics.LoadingOverlayFailed(e);}}
                 finally{UpdateCoverage.End("Bridge.LoadingOverlay",stage);}
                 stage=UpdateCoverage.Begin();try{TickNewsChangelog();}finally{UpdateCoverage.End("Bridge.News",stage);}
+                stage=UpdateCoverage.Begin();try{TldLoaderBridge.Tick();}catch(Exception e){Debug.LogWarning("[TLD MP mods] tick failed: "+e.GetType().Name+" "+e.Message);}finally{UpdateCoverage.End("Bridge.TldLoader",stage);}
                 stage=UpdateCoverage.Begin();try{WildlifeWeather.Tick(Connected);}finally{UpdateCoverage.End("Bridge.Wildlife",stage);}
                 stage=UpdateCoverage.Begin();try{TickPlayerRate();}finally{UpdateCoverage.End("Bridge.PlayerRate",stage);}
                 RabbitMetadataSync.Tick(Connected&&PatchOptions.Rabbits,WorldSceneAvailable(),mainscript.s==null?null:mainscript.s.player,savedatascript.s,node,Now);
@@ -3826,6 +3850,8 @@ namespace TldMp
             {
                 // Driver runs last (order 10000): first measure every other LateUpdate since the probe.
                 LateUpdateProbe.ReportOthers();
+                LensCameraGate.Tick();
+                HeadroomGuard.Tick();
                 // No try/finally: RabbitReplicas.Tick must stay the last call (RabbitNetworkGuardTests).
                 // An escaping exception leaves the stage open; UpdateCoverage.End then drops it.
                 long lateStage=UpdateCoverage.Begin();

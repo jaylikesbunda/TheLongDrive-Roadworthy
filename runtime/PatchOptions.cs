@@ -64,7 +64,11 @@ namespace TldMp
         internal const string HighRateKey = "highrate";
         internal const string MultiplayerKey = "mpmode";
         internal const string RadiatorRepairKey = "radiatorrepair";
+        internal const string EngineWearKey = "enginewear";
+        internal const string NewBuildingsKey = "newbuildings";
         internal const string DrunkEffectsKey = "drunkeffects";
+        internal const string PromoCameraKey = "promocamera";
+        internal const string TldLoaderModsKey = "tldloadermods";
 
         internal static readonly PresetValues[] Presets =
         {
@@ -109,8 +113,17 @@ namespace TldMp
         internal static bool HighRate = true;
         // Opt-in: radiators can be restored with the wire brush and other metal tools, like doors.
         internal static bool RadiatorRepair;
+        // Opt-in: engine condition affects power, starting, oil use, heat and smoke, and
+        // driving slowly wears it; the wire brush repairs it with the engine off.
+        internal static bool EngineWear;
+        // Roadworthy roadside buildings in worlds created while this is on (CustomPois).
+        internal static bool NewBuildings = true;
         // Local camera sway after drinking alcohol. Never changes controls or what other players see.
         internal static bool DrunkEffects = true;
+        // Opt-in free/orbit camera, camera paths and clip recording (PromoCamera).
+        internal static bool PromoCamera;
+        // Run TLDLoader and its mods (TldLoaderBridge). Takes effect at the next launch.
+        internal static bool TldLoaderMods = true;
         // Experimental multiplayer is opt-in and defaults off. Native remains the
         // backend for every existing install until the user explicitly selects it.
         internal static bool ExperimentalMultiplayer;
@@ -169,7 +182,11 @@ namespace TldMp
             Sandstorms = true;
             HighRate = true;
             RadiatorRepair = false;
+            EngineWear = false;
+            NewBuildings = true;
             DrunkEffects = true;
+            PromoCamera = false;
+            TldLoaderMods = true;
             ExperimentalMultiplayer = false;
             loaded = true;
         }
@@ -225,7 +242,11 @@ namespace TldMp
             text.Append(SandstormsKey).Append('=').Append(Sandstorms ? "on" : "off").Append('\n');
             text.Append(HighRateKey).Append('=').Append(HighRate ? "on" : "off").Append('\n');
             text.Append(RadiatorRepairKey).Append('=').Append(RadiatorRepair ? "on" : "off").Append('\n');
+            text.Append(EngineWearKey).Append('=').Append(EngineWear ? "on" : "off").Append('\n');
+            text.Append(NewBuildingsKey).Append('=').Append(NewBuildings ? "on" : "off").Append('\n');
             text.Append(DrunkEffectsKey).Append('=').Append(DrunkEffects ? "on" : "off").Append('\n');
+            text.Append(PromoCameraKey).Append('=').Append(PromoCamera ? "on" : "off").Append('\n');
+            text.Append(TldLoaderModsKey).Append('=').Append(TldLoaderMods ? "on" : "off").Append('\n');
             text.Append(MultiplayerKey).Append('=').Append(ExperimentalMultiplayer ? "experimental" : "native").Append('\n');
             return text.ToString();
         }
@@ -249,7 +270,11 @@ namespace TldMp
             Sandstorms = true;
             HighRate = true;
             RadiatorRepair = false;
+            EngineWear = false;
+            NewBuildings = true;
             DrunkEffects = true;
+            PromoCamera = false;
+            TldLoaderMods = true;
             ExperimentalMultiplayer = false;
             if (String.IsNullOrEmpty(text)) return;
             string[] lines = text.Replace("\r", "").Split('\n');
@@ -296,10 +321,30 @@ namespace TldMp
                     bool on;
                     if (TryOnOff(value, out on)) RadiatorRepair = on;
                 }
+                else if (key == EngineWearKey)
+                {
+                    bool on;
+                    if (TryOnOff(value, out on)) EngineWear = on;
+                }
+                else if (key == NewBuildingsKey)
+                {
+                    bool on;
+                    if (TryOnOff(value, out on)) NewBuildings = on;
+                }
                 else if (key == DrunkEffectsKey)
                 {
                     bool on;
                     if (TryOnOff(value, out on)) DrunkEffects = on;
+                }
+                else if (key == PromoCameraKey)
+                {
+                    bool on;
+                    if (TryOnOff(value, out on)) PromoCamera = on;
+                }
+                else if (key == TldLoaderModsKey)
+                {
+                    bool on;
+                    if (TryOnOff(value, out on)) TldLoaderMods = on;
                 }
                 else if (key == MultiplayerKey)
                 {

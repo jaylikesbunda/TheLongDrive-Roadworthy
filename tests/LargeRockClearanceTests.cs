@@ -70,7 +70,8 @@ public static class LargeRockClearanceTests {
   LargeRockClearance.AddGenerated(objects,p,obj,big);Check(objects.Count==0 && obj.gpos.x==0);mapSettingScript.pois.Clear();
   WorldRelocationLedger.Clear();objects.Clear();obj.gpos=p;big.minDistFromPOI=0;
   var v=new WorldRelocationLedger.Record{position=new Vector3d(2000,0,0),rotation=obj.rot,type=obj.prefabIndex,seed=obj.seed};WorldRelocationLedger.TryRecord(2,0,0,p,v);
-  bool invalid=false;try{LargeRockClearance.AddGenerated(objects,p,obj,big);}catch(System.IO.InvalidDataException){invalid=true;}Check(invalid && objects.Count==0);WorldRelocationLedger.Clear();
+  // A record outside the streaming cell (e.g. after a draw-distance change) no longer aborts generation: native placement is kept.
+  long mismatchBefore=LargeRockClearance.LedgerMismatchFallbackCount;LargeRockClearance.AddGenerated(objects,p,obj,big);Check(objects.Count==1 && obj.gpos.x==p.x && LargeRockClearance.LedgerMismatchFallbackCount==mismatchBefore+1);WorldRelocationLedger.Clear();objects.Clear();obj.gpos=p;
   for(int i=0;i<4096;i++)WorldRelocationLedger.TryRecord(1,0,0,new Vector3d(i+1,0,0),new WorldRelocationLedger.Record());
   long full=LargeRockClearance.LedgerCapacityFallbackCount;obj.gpos=p;LargeRockClearance.AddGenerated(objects,p,obj,big);Check(objects.Count==1 && obj.gpos.x==0 && LargeRockClearance.LedgerCapacityFallbackCount==full+1);WorldRelocationLedger.Clear();
   for(int i=0;i<LargeRockClearance.RelocationAttempts;i++){double x1,z1,x2,z2;LargeRockClearance.RelocationOffset(123,i,100,out x1,out z1);LargeRockClearance.RelocationOffset(123,i,100,out x2,out z2);Check(x1==x2 && z1==z2);}

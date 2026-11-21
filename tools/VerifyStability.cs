@@ -1078,6 +1078,12 @@ public static class VerifyStability
                 foreach(var type in new[]{"pickupable","carscript","breakablescript"})
                     StripGuard(Find(before,type+".OnCollisionEnter/1"),Find(after,type+".OnCollisionEnter/1"),bridge,"HasCollisionContacts",new[]{0});
                 StripSystemTimings(before,after,bridge,runtime.MainModule);
+                var nativeFar=before["savedatascript"].Methods.Single(m=>m.Name=="AddToFarStuff" && m.Parameters.Count==1 && m.Parameters[0].ParameterType.FullName=="tosaveitemscript");
+                var patchedFar=after["savedatascript"].Methods.Single(m=>m.Name=="AddToFarStuff" && m.Parameters.Count==1 && m.Parameters[0].ParameterType.FullName=="tosaveitemscript");
+                StripGuard(nativeFar,patchedFar,bridge,"LegacyAllowFarStuff",new[]{0});
+                StripEntry(Find(before,"newSaveScreenScript.Save/4"),Find(after,"newSaveScreenScript.Save/4"),bridge,"BeforeLegacySave",new[]{2});
+                StripEntry(Find(before,"newSaveScreenScript.ReadSave/1"),Find(after,"newSaveScreenScript.ReadSave/1"),bridge,"BeforeLegacyLoad",new[]{0});
+                StripEntry(Find(before,"savedatascript.FixLoadStuff/0"),Find(after,"savedatascript.FixLoadStuff/0"),bridge,"AfterLegacyLoadPending",new int[0]);
                 var nativeMove=Find(before,"movecreaturescript.Move/0");var patchedMove=Find(after,"movecreaturescript.Move/0");
                 var nativeAxes=nativeMove.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ldfld && i.Operand is FieldReference && ((FieldReference)i.Operand).DeclaringType.FullName=="UnityEngine.Vector3" && ((FieldReference)i.Operand).Name=="y").ToArray();
                 var patchedAxes=patchedMove.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ldfld && i.Operand is FieldReference && ((FieldReference)i.Operand).DeclaringType.FullName=="UnityEngine.Vector3" && ((FieldReference)i.Operand).Name=="z").ToArray();
@@ -1252,10 +1258,17 @@ public static class VerifyStability
                     {"makeinvisible.PostRender/0","E:HideListPrune:-1"},
                     {"partconditionscript.CanRepair/1","E:RadiatorRepairCheck:-1"},
                     {"attachgripscript.FStart/0","RX:TrailerGripStarted:2:-1"},
+                    {"attachablescript.FStart/0","E:CaptureAttachOriginalParent:-1"},
+                    {"attachablescript.Attach/1:UnityEngine.RaycastHit","G:NativeRayAttach:-1,0"},
+                    {"partslotscript.SpawnPart/0","G:NativeSlotSpawn:-1"},
+                    {"tosaveitemscript.RandomSpawned/1","A:ApplySpawnAmmo:-1,0"},
+                    {"terrainHeightAlignToBuildingScript.FStart/0","G:NativeTerrainAlignStart:-1"},
+                    {"poiGenScript.TerrainAlignsValue/2","RV:LegacyTerrainAlign:1:0"},
+                    {"itemPlaceRemoveScript.PlaceOne/2","E:CountPlaceAttempt:-1"},
                     {"attachablescript.FallOFf/0","FP:TrailerGripP:1"},
                     {"attachablescript.Attach/2:UnityEngine.Transform","FP:TrailerGripP:1"},
-                    {"attachablescript.Attach/1:UnityEngine.Transform","FP:TrailerGripP:4"},
-                    {"attachablescript.Detach/0","FP:TrailerGripP:2"},
+                    {"attachablescript.Attach/1:UnityEngine.Transform","FP:TrailerGripP:4:NativeAttachmentMounted"},
+                    {"attachablescript.Detach/0","FP:TrailerGripP:2:NativeAttachmentDetached"},
                     {"attachablescript.SetCollider/2","FP:TrailerGripP:1"},
                     {"randomSlice.Slicc/3","SW:SafeSlice:randomSlice:SSSLiceee:4:System.Void:randomSlice:System.Boolean:System.Boolean:UnityEngine.Vector3:UnityEngine.Vector3"},
                     {"audioBasedOnInteriorsensscript.Update/0","O:NativeBehaviorAudioBegin:NativeBehaviorAudioEnd:2:-:-"},
@@ -1345,6 +1358,8 @@ public static class VerifyStability
                     {
                         var bm=b.Methods.Single(m=>m.FullName==am.FullName);if(VerifyPatch.Fingerprint(am)==VerifyPatch.Fingerprint(bm)){unchanged++;continue;}
                         changed++;kept.Add(bm);string key=a.Name+"."+am.Name+"/"+am.Parameters.Count,rule;if(a.Name=="roadGenScript" && am.Parameters.Count>0)key+=":"+am.Parameters[0].ParameterType.FullName;if(a.Name=="attachablescript" && am.Name=="Attach")key+=":"+am.Parameters[0].ParameterType.FullName;if(!expected.TryGetValue(key,out rule))throw new Exception("Unexpected edit: "+key);expected.Remove(key);
+                        if(key=="attachablescript.Update/0") StripGuard(am,bm,bridge,"NativeAttachmentUpdate",new[]{-1});
+                        if(key=="itemPlaceRemoveScript.Upd/0") StripEntry(am,bm,bridge,"ResetPlaceAttempts",new[]{-1});
                         if(rule=="SP")
                         {
                             StripCallSwap(am,bm,bridge,"RestoreBuildingUsable",1,"save_usablescript","Load",1,"System.Void","save_usablescript","usablescript");
@@ -1567,7 +1582,8 @@ public static class VerifyStability
                         }
                         if(mode=="FP")
                         {
-                            if(bits.Length!=3)throw new Exception("Bad field-swap rule: "+key);
+                            if(bits.Length!=3 && bits.Length!=4)throw new Exception("Bad field-swap rule: "+key);
+                            if(bits.Length==4)StripReturn(am,bm,bridge,bits[3],new[]{-1},false,1);
                             StripFieldSwap(am,bm,bridge,bits[1],Int32.Parse(bits[2]),"tosaveitemscript","P","pickupable","tosaveitemscript");
                             if(VerifyPatch.Fingerprint(am)!=VerifyPatch.Fingerprint(bm))throw new Exception("Field-swap edit changed stock method body: "+key);
                             continue;
@@ -1848,7 +1864,7 @@ public static class VerifyStability
                 // mainscript.VisszaRakas timing observer adds one method and three sites (entry plus two returns).
                 // Road-state epoch entries add four methods and four sites: UpdDotChunk, UpdChunks, ConnectDots, Restart.
                 // Trailer sync adds the ThisOneInCharge return filter and the syncScript.UpdInWorld inbound guard: two methods, two sites.
-                if(bridgeUsers.Count!=147 || hookSites!=292)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
+                if(bridgeUsers.Count!=154 || hookSites!=303)throw new Exception("Hook coverage mismatch: methods="+bridgeUsers.Count+", sites="+hookSites);
                 if(kept.Count!=hookCount || !kept.Contains(Find(after,"terrainGenSettings/Noises.Noise/1")))throw new Exception("Kept-method coverage mismatch: patched="+kept.Count+", expected="+hookCount);
                 Console.WriteLine("PASS: "+hookCount+" kept native hook methods ("+hookSites+" hook call sites); "+unchanged+" baseline methods unchanged; "+removed.Length+" removed-hook methods byte-identical to the pristine input with zero StableGameBridge calls; no field/type/dependency layout changes.");
             }

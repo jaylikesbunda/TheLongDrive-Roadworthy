@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace TldMp
@@ -109,7 +110,16 @@ namespace TldMp
                 try { if (settingsscript.s != null && settingsscript.s.S != null) settingsscript.s.S.BAutoSave = false; } catch { }
                 float started = Time.realtimeSinceStartup;
                 bool houseLogged = false;
-                while (Time.realtimeSinceStartup - started < 25f)
+                if (Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_RENDER") == "1") StartCoroutine(RenderStats());
+                if (Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_GRASS") == "1") StartCoroutine(GrassFacts());
+                float soak;
+                if (float.TryParse(Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_SOAK") ?? "", NumberStyles.Float, CultureInfo.InvariantCulture, out soak) && soak > 0f)
+                {
+                    yield return StartCoroutine(Soak(soak));
+                    Flush();
+                    continue;
+                }
+                while (Time.realtimeSinceStartup - started < (Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_AB") == "1" ? 170f : Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_RENDER") == "1" ? 45f : 25f))
                 {
                     try { Sample(ref houseLogged); } catch (Exception e) { Log("sample error " + e.GetType().Name + " " + e.Message); }
                     yield return new WaitForSecondsRealtime(.5f);
@@ -305,6 +315,521 @@ namespace TldMp
                 player.piss.Tank.F.Copy(bladder);DrunkEffects.Clear(survival);
             }
             Log((label && bottleBeer && houseBeerBottles>0 && houseAlcoholBottles==0 && barrels==1 && capText.Contains("Beer") && drink?"PASS":"FAIL")+" beer integration: name="+label+" randomizedBottle="+bottleBeer+" beerBarrels="+barrels+" drinking="+drink);
+        }
+
+        // Developer render dump: Unity's own draw/batch counters averaged over
+        // 240 frames, the render settings that decide batching, and what the
+        // visible renderers are, grouped by mesh and material.
+        IEnumerator RenderStats()
+        {
+            for (int i = 0; i < 600; i++) yield return null; // let the world settle
+            string[] names = { "Draw Calls Count", "Batches Count", "SetPass Calls Count", "Instanced Batches Count",
+                "Instanced Batched Draw Calls Count", "Static Batches Count", "Static Batched Draw Calls Count",
+                "Dynamic Batches Count", "Dynamic Batched Draw Calls Count", "Shadow Casters Count", "Triangles Count" };
+            var recorders = new ProfilerRecorder[names.Length];
+            for (int i = 0; i < names.Length; i++) recorders[i] = ProfilerRecorder.StartNew(ProfilerCategory.Render, names[i]);
+            var sums = new double[names.Length]; int frames = 0;
+            for (int f = 0; f < 240; f++)
+            {
+                yield return null;
+                for (int i = 0; i < names.Length; i++) if (recorders[i].Valid) sums[i] += recorders[i].LastValue;
+                frames++;
+            }
+            var sb = new System.Text.StringBuilder("render counters avg/frame over " + frames + ":");
+            for (int i = 0; i < names.Length; i++) { sb.Append(" " + names[i].Replace(" Count", "").Replace(" ", "") + "=" + (recorders[i].Valid ? F(sums[i] / frames) : "n/a")); recorders[i].Dispose(); }
+            Log(sb.ToString());
+            try { RenderSettingsDump(); } catch (Exception e) { Log("render dump error " + e); }
+            Flush();
+            if (Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_AB") == "1") yield return StartCoroutine(RenderAb());
+        }
+
+        // Developer A/B: each suspect is measured between two fresh baselines and
+        // repeated, so slow drift in frame time cannot pass for a saving. Every
+        // change is restored right after its window. Nothing is saved or kept.
+        IEnumerator Sample(int frames, double[] into)
+        {
+            var main = ProfilerRecorder.StartNew(ProfilerCategory.Internal, "Main Thread");
+            var draws = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Draw Calls Count");
+            var render = ProfilerRecorder.StartNew(ProfilerCategory.Render, "CPU Render Thread Frame Time");
+            double m = 0, d = 0, dt = 0, rt = 0; int n = 0;
+            for (int f = 0; f < frames; f++)
+            {
+                yield return null;
+                if (main.Valid) m += main.LastValue / 1e6; if (draws.Valid) d += draws.LastValue; if (render.Valid) rt += render.LastValue / 1e6;
+                dt += Time.unscaledDeltaTime * 1000.0; n++;
+            }
+            main.Dispose(); draws.Dispose(); render.Dispose();
+            into[0] = m / n; into[1] = d / n; into[2] = dt / n;
+            if (into.Length > 3) into[3] = rt / n;
+        }
+        IEnumerator Pair(string name, Action off, Action on)
+        {
+            var before = new double[3]; var during = new double[3]; var after = new double[3];
+            yield return StartCoroutine(Sample(150, before));
+            try { off(); } catch (Exception e) { Log("ab " + name + " off failed " + e.Message); yield break; }
+            for (int i = 0; i < 20; i++) yield return null;
+            yield return StartCoroutine(Sample(150, during));
+            try { on(); } catch (Exception e) { Log("ab " + name + " restore failed " + e.Message); }
+            for (int i = 0; i < 20; i++) yield return null;
+            yield return StartCoroutine(Sample(150, after));
+            double baseMain = (before[0] + after[0]) / 2, baseDraws = (before[1] + after[1]) / 2;
+            Log("ab " + name + " mainMs base=" + F(baseMain) + " off=" + F(during[0]) + " delta=" + F(during[0] - baseMain) +
+                " draws base=" + F(baseDraws) + " off=" + F(during[1]));
+        }
+
+        // Developer rendering price list: each suspect is switched off in
+        // alternating windows and restored exactly. Measurement only.
+        IEnumerator RenderPrice()
+        {
+            const int cycles = 6;
+            // Cameras other than the main view.
+            foreach (var cam in Camera.allCameras)
+            {
+                if (cam == null || cam.name == "Camera") continue;
+                var c = cam;
+                yield return StartCoroutine(Interleaved("camera off " + c.name, cycles, delegate { c.enabled = false; }, delegate { c.enabled = true; }));
+                Flush();
+            }
+            var shadows = QualitySettings.shadows; var cascades = QualitySettings.shadowCascades; var shadowDist = QualitySettings.shadowDistance;
+            yield return StartCoroutine(Interleaved("shadows off", cycles, delegate { QualitySettings.shadows = ShadowQuality.Disable; }, delegate { QualitySettings.shadows = shadows; }));
+            yield return StartCoroutine(Interleaved("cascades 4->2", cycles, delegate { QualitySettings.shadowCascades = 2; }, delegate { QualitySettings.shadowCascades = cascades; }));
+            yield return StartCoroutine(Interleaved("shadow distance 100->50", cycles, delegate { QualitySettings.shadowDistance = 50f; }, delegate { QualitySettings.shadowDistance = shadowDist; }));
+            Flush();
+
+            var all = new List<Renderer>();
+            foreach (var r in FindObjectsByType<Renderer>(FindObjectsInactive.Exclude, FindObjectsSortMode.None)) if (r != null && r.enabled && !r.forceRenderingOff) all.Add(r);
+            int displacement = LayerMask.NameToLayer("displacement");
+            var groups = new List<KeyValuePair<string, Func<Renderer, bool>>> {
+                new KeyValuePair<string, Func<Renderer, bool>>("cobwebs", r => MatName(r).StartsWith("cobweb")),
+                new KeyValuePair<string, Func<Renderer, bool>>("impostors", r => r.sharedMaterial != null && r.sharedMaterial.shader != null && r.sharedMaterial.shader.name.Contains("Impostor")),
+                new KeyValuePair<string, Func<Renderer, bool>>("rock spheres", r => { var f = r.GetComponent<MeshFilter>(); return f != null && f.sharedMesh != null && f.sharedMesh.name == "Sphere" && MatName(r).Contains("Rock"); }),
+                new KeyValuePair<string, Func<Renderer, bool>>("ropes", r => MatName(r).StartsWith("AmplifyRope")),
+                new KeyValuePair<string, Func<Renderer, bool>>("not visible now", r => !r.isVisible && r.gameObject.layer != displacement),
+            };
+            var sb = new System.Text.StringBuilder("renderprice renderers=" + all.Count);
+            foreach (var g in groups)
+            {
+                var list = all.FindAll(r => { try { return g.Value(r); } catch { return false; } });
+                int lod = 0; foreach (var r in list) if (r.GetComponentInParent<LODGroup>() != null) lod++;
+                sb.Append(' ').Append(g.Key).Append('=').Append(list.Count).Append("(lod ").Append(lod).Append(')');
+                yield return StartCoroutine(Interleaved("hide " + g.Key + " x" + list.Count, cycles,
+                    delegate { foreach (var r in list) if (r != null) r.forceRenderingOff = true; },
+                    delegate { foreach (var r in list) if (r != null) r.forceRenderingOff = false; }));
+                var casting = list.FindAll(r => r.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off);
+                var modes = new Dictionary<Renderer, UnityEngine.Rendering.ShadowCastingMode>();
+                foreach (var r in casting) modes[r] = r.shadowCastingMode;
+                if (casting.Count > 0)
+                    yield return StartCoroutine(Interleaved("no shadows " + g.Key + " x" + casting.Count, cycles,
+                        delegate { foreach (var r in casting) if (r != null) r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off; },
+                        delegate { foreach (var pair in modes) if (pair.Key != null) pair.Key.shadowCastingMode = pair.Value; }));
+                Flush();
+            }
+            Log(sb.ToString()); Flush();
+        }
+
+        static void SceneCount(System.Text.StringBuilder sb, string name)
+        {
+            var type = typeof(mainscript).Assembly.GetType(name, false);
+            if (type == null) return;
+            int n = 0;
+            foreach (var o in FindObjectsByType(type, FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+            {
+                var b = o as MonoBehaviour;
+                if (b != null && b.gameObject.activeInHierarchy) n++;
+            }
+            sb.Append(' ').Append(name).Append('=').Append(n);
+        }
+
+        // Steadier A/B under background load: alternate short on and off windows
+        // many times, compare each off window with the on windows either side,
+        // and report the median of those differences (robust to load bursts).
+        IEnumerator Interleaved(string name, int cycles, Action off, Action on)
+        {
+            const int frames = 120, settle = 15;
+            var onW = new List<double[]>(); var offW = new List<double[]>();
+            for (int c = 0; c <= cycles; c++)
+            {
+                for (int i = 0; i < settle; i++) yield return null;
+                var a = new double[4]; yield return StartCoroutine(Sample(frames, a)); onW.Add(a);
+                if (c == cycles) break;
+                try { off(); } catch (Exception e) { Log("ab " + name + " off failed " + e.Message); yield break; }
+                for (int i = 0; i < settle; i++) yield return null;
+                var b = new double[4]; yield return StartCoroutine(Sample(frames, b)); offW.Add(b);
+                try { on(); } catch (Exception e) { Log("ab " + name + " restore failed " + e.Message); yield break; }
+            }
+            var sb = new System.Text.StringBuilder("abx " + name + " cycles=" + offW.Count);
+            string[] labels = { "main", "draws", "frame", "render" };
+            foreach (int k in new[] { 0, 2, 3, 1 })
+            {
+                var deltas = new List<double>(); int positive = 0;
+                for (int c = 0; c < offW.Count; c++) { double d = offW[c][k] - (onW[c][k] + onW[c + 1][k]) / 2; deltas.Add(d); if (d > 0) positive++; }
+                deltas.Sort();
+                double median = deltas.Count == 0 ? 0 : (deltas.Count % 2 == 1 ? deltas[deltas.Count / 2] : (deltas[deltas.Count / 2 - 1] + deltas[deltas.Count / 2]) / 2);
+                var base_ = new List<double>(); foreach (var w in onW) base_.Add(w[k]); base_.Sort();
+                sb.Append(' ').Append(labels[k]).Append("{base=").Append(F(base_[base_.Count / 2])).Append(" delta=").Append(F(median)).Append(" up=").Append(positive).Append('/').Append(deltas.Count).Append('}');
+            }
+            Log(sb.ToString());
+        }
+        static List<Renderer> RenderersWhere(Func<Renderer, bool> pick)
+        {
+            var list = new List<Renderer>();
+            foreach (var r in FindObjectsOfType<Renderer>()) if (r != null && pick(r)) list.Add(r);
+            return list;
+        }
+        static string MatName(Renderer r) { return r.sharedMaterial == null ? "" : r.sharedMaterial.name; }
+
+        // Developer soak: stand still for the given seconds. Every 15 s, log the
+        // main thread over the last window and what changed in the scene since
+        // the previous census, by object type, so slow growth has a name.
+        Dictionary<string, int> lastTypes;
+        IEnumerator Soak(float seconds)
+        {
+            float end = Time.realtimeSinceStartup + seconds;
+            int round = 0;
+            while (Time.realtimeSinceStartup < end)
+            {
+                var main = ProfilerRecorder.StartNew(ProfilerCategory.Internal, "Main Thread");
+                var draws = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Draw Calls Count");
+                var samples = new List<double>(); double d = 0; int n = 0;
+                float windowEnd = Time.realtimeSinceStartup + 14f;
+                while (Time.realtimeSinceStartup < windowEnd)
+                {
+                    yield return null;
+                    if (main.Valid) samples.Add(main.LastValue / 1e6); if (draws.Valid) d += draws.LastValue; n++;
+                }
+                main.Dispose(); draws.Dispose();
+                samples.Sort();
+                double p50 = samples.Count == 0 ? 0 : samples[samples.Count / 2], p95 = samples.Count == 0 ? 0 : samples[(int)(samples.Count * .95)];
+                round++;
+                try { SoakCensus(round, p50, p95, n == 0 ? 0 : d / n, n); } catch (Exception e) { Log("soak census error " + e.Message); }
+                Flush();
+            }
+            if (Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_RABBITS") == "1") { yield return StartCoroutine(RabbitAb()); Flush(); }
+            if (Environment.GetEnvironmentVariable("TLD_MP_SPAWN_PROBE_PERFAB") == "1") { yield return StartCoroutine(PerfAb()); Flush(); }
+        }
+
+        // Developer A/B for the performance fixes: pause each between fresh baselines.
+        IEnumerator PerfAb()
+        {
+            Log("perfab grass " + GrassMarkerCulling.Tracked + "/" + GrassMarkerCulling.SwitchedOff); Flush();
+            yield return StartCoroutine(Interleaved("grass marker culling paused", 8,
+                delegate { GrassMarkerCulling.Paused = true; }, delegate { GrassMarkerCulling.Paused = false; }));
+            Flush();
+            Log("perfab " + SmallShadowCulling.Summary()); Flush();
+            yield return StartCoroutine(Interleaved("small shadow culling paused", 10,
+                delegate { SmallShadowCulling.Paused = true; }, delegate { SmallShadowCulling.Paused = false; }));
+            Log("perfab " + SmallShadowCulling.Summary()); Flush();
+            yield return StartCoroutine(Interleaved("all fixes paused", 10,
+                delegate { SmallShadowCulling.Paused = true; GrassMarkerCulling.Paused = true; RoadIdleSkip.Paused = true; LensCameraGate.Paused = true; },
+                delegate { SmallShadowCulling.Paused = false; GrassMarkerCulling.Paused = false; RoadIdleSkip.Paused = false; LensCameraGate.Paused = false; }));
+            Flush();
+            for (int round = 1; round <= 0; round++)
+            {
+                yield return StartCoroutine(Pair("r" + round + " grass marker culling paused",
+                    delegate { GrassMarkerCulling.Paused = true; }, delegate { GrassMarkerCulling.Paused = false; }));
+                yield return StartCoroutine(Pair("r" + round + " road idle skip paused",
+                    delegate { RoadIdleSkip.Paused = true; }, delegate { RoadIdleSkip.Paused = false; }));
+                yield return StartCoroutine(Pair("r" + round + " both paused",
+                    delegate { GrassMarkerCulling.Paused = true; RoadIdleSkip.Paused = true; },
+                    delegate { GrassMarkerCulling.Paused = false; RoadIdleSkip.Paused = false; }));
+                Log("perfab r" + round + " " + RoadIdleSkip.Summary() + " grassTracked=" + GrassMarkerCulling.Tracked + " grassOff=" + GrassMarkerCulling.SwitchedOff);
+                Flush();
+            }
+        }
+
+        // Developer survey: switch off every enabled instance of one script type
+        // that has a per-frame method, between fresh baselines, for the busiest
+        // types. Only instances switched off here are switched back on.
+        static readonly HashSet<string> surveySkip = new HashSet<string> {
+            "mainscript", "fpscontroller", "mapSettingScript", "savedatascript", "menuhandler", "settingsscript",
+            "itemdatabase", "kaposztaleves", "SpawnProbe" };
+        IEnumerator TypeSurvey()
+        {
+            const System.Reflection.BindingFlags any = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly;
+            var byType = new Dictionary<Type, List<MonoBehaviour>>();
+            var perFrame = new Dictionary<Type, bool>();
+            foreach (var b in FindObjectsOfType<MonoBehaviour>())
+            {
+                if (b == null || !b.isActiveAndEnabled) continue;
+                var t = b.GetType();
+                if (t.Namespace == "TldMp" || surveySkip.Contains(t.Name)) continue;
+                bool has;
+                if (!perFrame.TryGetValue(t, out has))
+                {
+                    has = false;
+                    for (var k = t; k != null && k != typeof(MonoBehaviour); k = k.BaseType)
+                        if (k.GetMethod("Update", any, null, Type.EmptyTypes, null) != null || k.GetMethod("LateUpdate", any, null, Type.EmptyTypes, null) != null ||
+                            k.GetMethod("FixedUpdate", any, null, Type.EmptyTypes, null) != null) { has = true; break; }
+                    perFrame[t] = has;
+                }
+                if (!has) continue;
+                List<MonoBehaviour> list;
+                if (!byType.TryGetValue(t, out list)) byType[t] = list = new List<MonoBehaviour>();
+                list.Add(b);
+            }
+            var types = new List<KeyValuePair<Type, List<MonoBehaviour>>>(byType);
+            types.Sort((a, b) => b.Value.Count.CompareTo(a.Value.Count));
+            var sb = new System.Text.StringBuilder("survey types=" + types.Count + " top:");
+            for (int i = 0; i < types.Count && i < 40; i++) sb.Append(' ').Append(types[i].Key.Name).Append('=').Append(types[i].Value.Count);
+            Log(sb.ToString()); Flush();
+            for (int i = 0; i < types.Count && i < 30; i++)
+            {
+                var entry = types[i];
+                var switched = new List<MonoBehaviour>();
+                yield return StartCoroutine(Pair("type " + entry.Key.Name + " x" + entry.Value.Count,
+                    delegate { foreach (var b in entry.Value) if (b != null && b.enabled) { b.enabled = false; switched.Add(b); } },
+                    delegate { foreach (var b in switched) if (b != null) b.enabled = true; }));
+                Flush();
+            }
+        }
+
+        // Developer rabbit A/B: what each part of a live rabbit costs the main thread.
+        IEnumerator RabbitAb()
+        {
+            var rabbits = new List<nyulscript>();
+            foreach (var r in FindObjectsOfType<nyulscript>()) if (r != null && r.gameObject.activeInHierarchy) rabbits.Add(r);
+            var cam = mainscript.s == null || mainscript.s.player == null ? null : mainscript.s.player.Cam;
+            foreach (var r in rabbits)
+            {
+                var anim = r.GetComponentInChildren<Animator>();
+                int bodies = 0, kinematic = 0, sleeping = 0; bool visible = false;
+                foreach (var rb in r.GetComponentsInChildren<Rigidbody>()) { bodies++; if (rb.isKinematic) kinematic++; if (rb.IsSleeping()) sleeping++; }
+                foreach (var rr in r.GetComponentsInChildren<Renderer>()) if (rr.isVisible) visible = true;
+                Log("rabbit " + r.name + " dist=" + (cam == null ? "?" : F(Vector3.Distance(cam.transform.position, r.transform.position))) + " visible=" + visible +
+                    " animator=" + (anim == null ? "none" : anim.cullingMode + "/" + anim.enabled) + " bodies=" + bodies + " kinematic=" + kinematic + " sleeping=" + sleeping +
+                    " behaviours=" + r.GetComponentsInChildren<MonoBehaviour>().Length);
+            }
+            if (rabbits.Count == 0) { Log("rabbit ab: no rabbits"); yield break; }
+            yield return StartCoroutine(Pair("rabbits all inactive (" + rabbits.Count + ")",
+                delegate { foreach (var r in rabbits) if (r != null) r.gameObject.SetActive(false); },
+                delegate { foreach (var r in rabbits) if (r != null) r.gameObject.SetActive(true); }));
+            var anims = new List<Animator>(); var modes = new List<AnimatorCullingMode>();
+            foreach (var r in rabbits) foreach (var a in r.GetComponentsInChildren<Animator>()) { anims.Add(a); modes.Add(a.cullingMode); }
+            yield return StartCoroutine(Pair("rabbit animators cull offscreen (" + anims.Count + ")",
+                delegate { foreach (var a in anims) if (a != null) a.cullingMode = AnimatorCullingMode.CullCompletely; },
+                delegate { for (int i = 0; i < anims.Count; i++) if (anims[i] != null) anims[i].cullingMode = modes[i]; }));
+            var natives = new List<Behaviour>();
+            foreach (var r in rabbits) { foreach (var b in r.GetComponentsInChildren<aiscript>()) natives.Add(b); foreach (var b in r.GetComponentsInChildren<sensoryscript>()) natives.Add(b); }
+            yield return StartCoroutine(Pair("rabbit native ai off (" + natives.Count + ")",
+                delegate { foreach (var b in natives) if (b != null) b.enabled = false; },
+                delegate { foreach (var b in natives) if (b != null) b.enabled = true; }));
+            var ours = new List<Behaviour>();
+            foreach (var r in rabbits) foreach (var b in r.GetComponentsInChildren<MonoBehaviour>()) if (b != null && b.GetType().Namespace == "TldMp") ours.Add(b);
+            yield return StartCoroutine(Pair("rabbit roadworthy scripts off (" + ours.Count + ")",
+                delegate { foreach (var b in ours) if (b != null) b.enabled = false; },
+                delegate { foreach (var b in ours) if (b != null) b.enabled = true; }));
+            var skinned = new List<SkinnedMeshRenderer>();
+            foreach (var r in rabbits) foreach (var m in r.GetComponentsInChildren<SkinnedMeshRenderer>()) if (m.enabled) skinned.Add(m);
+            yield return StartCoroutine(Pair("rabbit skinned meshes off (" + skinned.Count + ")",
+                delegate { foreach (var m in skinned) if (m != null) m.enabled = false; },
+                delegate { foreach (var m in skinned) if (m != null) m.enabled = true; }));
+        }
+
+        void SoakCensus(int round, double p50, double p95, double draws, int frames)
+        {
+            var types = new Dictionary<string, int>();
+            int behaviours = 0;
+            foreach (var b in FindObjectsOfType<MonoBehaviour>())
+            {
+                if (b == null) continue; behaviours++;
+                string t = b.GetType().Name; int c; types.TryGetValue(t, out c); types[t] = c + 1;
+            }
+            foreach (var c in FindObjectsOfType<Component>())
+            {
+                if (c == null || c is MonoBehaviour || c is Transform) continue;
+                string t = "[" + c.GetType().Name + "]"; int k; types.TryGetValue(t, out k); types[t] = k + 1;
+            }
+            int gameObjects = FindObjectsOfType<Transform>().Length;
+            var player = mainscript.s == null || mainscript.s.player == null ? null : mainscript.s.player.transform;
+            var changes = new System.Text.StringBuilder();
+            if (lastTypes != null)
+            {
+                var keys = new List<string>(types.Keys); foreach (var k in lastTypes.Keys) if (!types.ContainsKey(k)) keys.Add(k);
+                var deltas = new List<KeyValuePair<string, int>>();
+                foreach (var k in keys)
+                {
+                    int now, before; types.TryGetValue(k, out now); lastTypes.TryGetValue(k, out before);
+                    if (now != before) deltas.Add(new KeyValuePair<string, int>(k, now - before));
+                }
+                deltas.Sort(delegate(KeyValuePair<string, int> a, KeyValuePair<string, int> b) { return Math.Abs(b.Value).CompareTo(Math.Abs(a.Value)); });
+                for (int i = 0; i < deltas.Count && i < 14; i++) changes.Append(" " + deltas[i].Key + (deltas[i].Value > 0 ? "+" : "") + deltas[i].Value);
+            }
+            lastTypes = types;
+            Log("soak #" + round + " t=" + F(Time.realtimeSinceStartup) + " mainMs p50=" + F(p50) + " p95=" + F(p95) + " frames=" + frames + " draws=" + F(draws) +
+                " gameObjects=" + gameObjects + " behaviours=" + behaviours + " timeOfDay=" + (napszakvaltakozas.s == null ? "?" : F(napszakvaltakozas.s.currentTime)) +
+                " player=" + (player == null ? "?" : player.position.ToString("F1")) + " changes:" + changes);
+        }
+
+        // Developer facts for grass-marker culling: cameras, layers, marker owners
+        // and how long the discovery calls take.
+        IEnumerator GrassFacts()
+        {
+            for (int i = 0; i < 400; i++) yield return null;
+            try
+            {
+                var main = mainscript.s;
+                foreach (var c in Camera.allCameras)
+                    Log("grass camera " + c.name + " ortho=" + c.orthographic + " size=" + F(c.orthographicSize) + " aspect=" + F(c.aspect) + " far=" + F(c.farClipPlane) +
+                        " mask=0x" + c.cullingMask.ToString("X8") + " pos=" + c.transform.position.ToString("F1") + " rt=" + (c.targetTexture == null ? "none" : c.targetTexture.width + "x" + c.targetTexture.height));
+                if (main != null && main.grassCam != null)
+                {
+                    var gc = main.grassCam.GetComponent<Camera>();
+                    Log("grass grassCam object=" + main.grassCam.name + " follow=" + (main.grassCam.follow == null ? "null" : main.grassCam.follow.name) + " height=" + F(main.grassCam.followHeight) +
+                        " camera=" + (gc == null ? "none" : gc.name + " size=" + F(gc.orthographicSize) + " mask=0x" + gc.cullingMask.ToString("X8")));
+                }
+                if (main != null && main.Mirrors != null)
+                    foreach (var m in main.Mirrors) if (m != null && m.C != null) { Log("grass mirror camera mask=0x" + m.C.cullingMask.ToString("X8") + " far=" + F(m.C.farClipPlane)); break; }
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var all = FindObjectsOfType<Renderer>();
+                double findSorted = sw.Elapsed.TotalMilliseconds; sw.Reset(); sw.Start();
+                var fast = FindObjectsByType<Renderer>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+                double findFast = sw.Elapsed.TotalMilliseconds;
+                var layers = new Dictionary<int, int>(); var owners = new Dictionary<string, int>(); var meshes = new Dictionary<string, int>();
+                int markers = 0; var cam = main == null || main.player == null ? null : main.player.Cam;
+                sw.Reset(); sw.Start();
+                Bounds sink = new Bounds();
+                foreach (var r in all)
+                {
+                    if (r == null || r.sharedMaterial == null || r.sharedMaterial.name.IndexOf("GrassDisplacement", StringComparison.Ordinal) < 0) continue;
+                    markers++; sink.Encapsulate(r.bounds.center);
+                    int k; layers.TryGetValue(r.gameObject.layer, out k); layers[r.gameObject.layer] = k + 1;
+                    var t = r.transform; string owner = t.root == null ? t.name : t.root.name; int o; owners.TryGetValue(owner, out o); owners[owner] = o + 1;
+                    var mf = r.GetComponent<MeshFilter>(); string mesh = (r.GetType().Name) + ":" + (mf == null || mf.sharedMesh == null ? "?" : mf.sharedMesh.name) + " parent=" + (t.parent == null ? "-" : t.parent.name) + " self=" + t.name;
+                    int mm; meshes.TryGetValue(mesh, out mm); meshes[mesh] = mm + 1;
+                }
+                double walk = sw.Elapsed.TotalMilliseconds;
+                Log("grass discovery renderers=" + all.Length + " findSortedMs=" + F(findSorted) + " findUnsortedMs=" + F(findFast) + " (" + fast.Length + ") markers=" + markers + " markerWalkMs=" + F(walk));
+                var sb = new System.Text.StringBuilder(); foreach (var kv in layers) sb.Append(" layer" + kv.Key + "(" + LayerMask.LayerToName(kv.Key) + ")=" + kv.Value);
+                Log("grass marker layers:" + sb);
+                var ol = new List<KeyValuePair<string, int>>(owners); ol.Sort(delegate(KeyValuePair<string, int> a, KeyValuePair<string, int> b) { return b.Value.CompareTo(a.Value); });
+                sb = new System.Text.StringBuilder(); for (int i = 0; i < ol.Count && i < 15; i++) sb.Append(" " + ol[i].Value + "x " + ol[i].Key + ";");
+                Log("grass marker roots (" + ol.Count + "):" + sb);
+                var ml = new List<KeyValuePair<string, int>>(meshes); ml.Sort(delegate(KeyValuePair<string, int> a, KeyValuePair<string, int> b) { return b.Value.CompareTo(a.Value); });
+                sb = new System.Text.StringBuilder(); for (int i = 0; i < ml.Count && i < 10; i++) sb.Append(" " + ml[i].Value + "x " + ml[i].Key + ";");
+                Log("grass marker shapes:" + sb);
+                if (cam != null)
+                {
+                    int near = 0; foreach (var r in all) if (r != null && r.sharedMaterial != null && r.sharedMaterial.name.IndexOf("GrassDisplacement", StringComparison.Ordinal) >= 0 && (r.bounds.center - cam.transform.position).sqrMagnitude < 50f * 50f) near++;
+                    Log("grass markers within 50 m of the player: " + near);
+                }
+            }
+            catch (Exception e) { Log("grass facts error " + e); }
+            Flush();
+        }
+
+        void Census(string label)
+        {
+            var cam = mainscript.s == null || mainscript.s.player == null ? null : mainscript.s.player.Cam;
+            int total = 0, active = 0, far = 0, farActive = 0, markers = 0, lod = 0;
+            foreach (var r in FindObjectsOfType<Renderer>())
+            {
+                if (r == null) continue; total++;
+                bool on = r.enabled && r.gameObject.activeInHierarchy; if (on) active++;
+                if (MatName(r).IndexOf("GrassDisplacement", StringComparison.Ordinal) >= 0) markers++;
+                if (cam != null && Mathf.Sqrt(r.bounds.SqrDistance(cam.transform.position)) > cam.farClipPlane) { far++; if (on) farActive++; }
+            }
+            lod = FindObjectsOfType<LODGroup>().Length;
+            Log("census " + label + " t=" + F(Time.realtimeSinceStartup) + " renderers=" + total + " active=" + active + " beyondFarClip=" + far + " beyondFarClipActive=" + farActive +
+                " grassMarkers=" + markers + " lodGroups=" + lod + " rigidbodies=" + FindObjectsOfType<Rigidbody>().Length + " lights=" + FindObjectsOfType<Light>().Length +
+                " behaviours=" + FindObjectsOfType<MonoBehaviour>().Length);
+        }
+
+        IEnumerator RenderAb()
+        {
+            var cam = mainscript.s == null || mainscript.s.player == null ? null : mainscript.s.player.Cam;
+            if (cam == null) yield break;
+            Census("start");
+            var shadowsBefore = QualitySettings.shadows;
+            for (int round = 1; round <= 2; round++)
+            {
+                // Renderers that can never appear in the main view: beyond its far clip plane.
+                List<Renderer> beyond = RenderersWhere(delegate(Renderer r)
+                {
+                    return r.enabled && !r.forceRenderingOff && r.gameObject.activeInHierarchy && !(r is ParticleSystemRenderer) &&
+                        Mathf.Sqrt(r.bounds.SqrDistance(cam.transform.position)) > cam.farClipPlane;
+                });
+                yield return StartCoroutine(Pair("r" + round + " beyond far clip off (" + beyond.Count + ")",
+                    delegate { foreach (var r in beyond) if (r != null) r.forceRenderingOff = true; },
+                    delegate { foreach (var r in beyond) if (r != null) r.forceRenderingOff = false; }));
+                var markers = RenderersWhere(delegate(Renderer r) { return r.enabled && !r.forceRenderingOff && MatName(r).IndexOf("GrassDisplacement", StringComparison.Ordinal) >= 0; });
+                yield return StartCoroutine(Pair("r" + round + " grass markers off (" + markers.Count + ")",
+                    delegate { foreach (var r in markers) if (r != null) r.forceRenderingOff = true; },
+                    delegate { foreach (var r in markers) if (r != null) r.forceRenderingOff = false; }));
+                var mirrors = new List<Renderer>();
+                if (mainscript.s.Mirrors != null) foreach (var mr in mainscript.s.Mirrors) if (mr != null && mr.R != null && mr.R.enabled) mirrors.Add(mr.R);
+                yield return StartCoroutine(Pair("r" + round + " mirrors hidden (" + mirrors.Count + ")",
+                    delegate { foreach (var r in mirrors) if (r != null) r.enabled = false; },
+                    delegate { foreach (var r in mirrors) if (r != null) r.enabled = true; }));
+                yield return StartCoroutine(Pair("r" + round + " shadows off",
+                    delegate { QualitySettings.shadows = ShadowQuality.Disable; },
+                    delegate { QualitySettings.shadows = shadowsBefore; }));
+                Census("after round " + round);
+            }
+            Flush();
+        }
+
+        void RenderSettingsDump()
+        {
+            var cam = mainscript.s == null || mainscript.s.player == null ? null : mainscript.s.player.Cam;
+            if (cam == null) { Log("render: no player camera"); return; }
+            Log("render settings path=" + cam.actualRenderingPath + " hdr=" + cam.allowHDR + " far=" + F(cam.farClipPlane) +
+                " shadows=" + QualitySettings.shadows + " shadowDistance=" + F(QualitySettings.shadowDistance) + " cascades=" + QualitySettings.shadowCascades +
+                " pixelLights=" + QualitySettings.pixelLightCount + " lodBias=" + F(QualitySettings.lodBias) + " msaa=" + QualitySettings.antiAliasing +
+                " cameras=" + Camera.allCamerasCount);
+            int realtimeLights = 0, shadowLights = 0; var lightInfo = new System.Text.StringBuilder();
+            foreach (var l in FindObjectsOfType<Light>())
+            {
+                if (l == null || !l.isActiveAndEnabled) continue;
+                realtimeLights++; if (l.shadows != LightShadows.None) shadowLights++;
+                if (realtimeLights <= 12) lightInfo.Append(" [" + l.name + " " + l.type + " mode=" + l.renderMode + " shadows=" + l.shadows + " range=" + F(l.range) + " dist=" + F(Vector3.Distance(l.transform.position, cam.transform.position)) + "]");
+            }
+            Log("render lights active=" + realtimeLights + " withShadows=" + shadowLights + lightInfo);
+            var planes = GeometryUtility.CalculateFrustumPlanes(cam);
+            var groups = new Dictionary<string, int[]>(); // key -> {count, propBlock, negScale, lightProbe, instancingOn, shadowCasting}
+            int visible = 0;
+            foreach (var r in FindObjectsOfType<Renderer>())
+            {
+                if (r == null || !r.enabled || !r.gameObject.activeInHierarchy || r is ParticleSystemRenderer || r is TrailRenderer || r is LineRenderer) continue;
+                if (!GeometryUtility.TestPlanesAABB(planes, r.bounds)) continue;
+                if (Vector3.Distance(r.bounds.center, cam.transform.position) > cam.farClipPlane) continue;
+                visible++;
+                Mesh mesh = null; var mf = r.GetComponent<MeshFilter>(); if (mf != null) mesh = mf.sharedMesh;
+                var mat = r.sharedMaterial;
+                string key = (mesh == null ? "?" : mesh.name) + " | " + (mat == null ? "?" : mat.name) + " | " + (mat == null || mat.shader == null ? "?" : mat.shader.name);
+                int[] g; if (!groups.TryGetValue(key, out g)) { g = new int[7]; groups[key] = g; }
+                g[0]++;
+                if (r.HasPropertyBlock()) g[1]++;
+                var sc = r.transform.lossyScale; if (sc.x * sc.y * sc.z < 0) g[2]++;
+                if (r.lightProbeUsage != UnityEngine.Rendering.LightProbeUsage.Off) g[3]++;
+                if (mat != null && mat.enableInstancing) g[4]++;
+                if (r.shadowCastingMode != UnityEngine.Rendering.ShadowCastingMode.Off) g[5]++;
+                if (r.sharedMaterials != null && r.sharedMaterials.Length > 1) g[6]++;
+            }
+            var list = new List<KeyValuePair<string, int[]>>(groups);
+            list.Sort(delegate(KeyValuePair<string, int[]> a, KeyValuePair<string, int[]> b) { return b.Value[0].CompareTo(a.Value[0]); });
+            Log("render visible renderers=" + visible + " groups=" + groups.Count);
+            for (int i = 0; i < list.Count && i < 30; i++)
+            {
+                var g = list[i].Value;
+                Log("render group n=" + g[0] + " propBlock=" + g[1] + " negScale=" + g[2] + " lightProbe=" + g[3] + " instancing=" + g[4] + " shadow=" + g[5] + " multiMat=" + g[6] + " :: " + list[i].Key);
+            }
+            // Where the cobweb-material cubes come from.
+            var roots = new Dictionary<string, int>(); var sample = new System.Text.StringBuilder();
+            foreach (var r in FindObjectsOfType<MeshRenderer>())
+            {
+                if (r == null || r.sharedMaterial == null || r.sharedMaterial.name.IndexOf("cobweb", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                string path = r.name; var t = r.transform.parent; int depth = 0;
+                while (t != null && depth < 3) { path = t.name + "/" + path; t = t.parent; depth++; }
+                int n; roots.TryGetValue(path, out n); roots[path] = n + 1;
+                if (sample.Length < 600) sample.Append(" [" + path + " size=" + r.bounds.size.ToString("F2") + " active=" + r.gameObject.activeInHierarchy + " enabled=" + r.enabled + "]");
+            }
+            var rl = new List<KeyValuePair<string, int>>(roots);
+            rl.Sort(delegate(KeyValuePair<string, int> a, KeyValuePair<string, int> b) { return b.Value.CompareTo(a.Value); });
+            var rs = new System.Text.StringBuilder();
+            for (int i = 0; i < rl.Count && i < 12; i++) rs.Append(" " + rl[i].Value + "x " + rl[i].Key + ";");
+            Log("render cobweb paths:" + rs);
+            Log("render cobweb sample:" + sample);
         }
 
         void Quit()

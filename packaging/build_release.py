@@ -18,7 +18,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 NAME = "TheLongDrive-Roadworthy"
-VERSION = "0.2.0"
+VERSION = "0.3.0-pre1"
 RELEASE = ROOT / "release" / NAME
 ARCHIVE = ROOT / "release" / f"{NAME}-v{VERSION}.zip"
 CECIL = ROOT / ".tools" / "cecil.zip"
@@ -29,7 +29,7 @@ APP_ICON = ROOT / "packaging" / "app.ico"
 
 def source_entries() -> dict[str, bytes]:
     """Payload: the repository's patch sources and scripts, at their repo paths."""
-    patterns = ["*.ps1", "README.md", "CHANGELOG.md", "runtime/*.cs", "tools/*.cs", "tools/*.ps1",
+    patterns = ["*.ps1", "README.md", "CHANGELOG.md", "LICENSE", "runtime/*.cs", "runtime/assets/*.bin", "tools/*.cs", "tools/*.ps1",
                 "tests/*.cs", "tests/scripts/*.ps1", "packaging/singleplayer/*.cs"]
     entries = {}
     for pattern in patterns:

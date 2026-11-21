@@ -308,7 +308,7 @@ namespace TldMp
                 " elementMs=" + (elementTicks * perMs).ToString("F3", CultureInfo.InvariantCulture) +
                 " walkedDistance=" + walkedA + " walkedElements=" + walkedB +
                 ((walkedA >= MaxWalk || walkedB >= MaxWalk) ? " capped=1" : " capped=0") +
-                " " + RoadFarSkip.Summary());
+                " " + RoadFarSkip.Summary() + " " + RoadIdleSkip.Summary() + " grassMarkers{tracked=" + GrassMarkerCulling.Tracked + " off=" + GrassMarkerCulling.SwitchedOff + "} " + LensCameraGate.Summary() + " " + SmallShadowCulling.Summary() + " " + HeadroomGuard.Summary() + " " + EngineWear.Summary() + " " + CustomPois.Summary());
         }
     }
 }

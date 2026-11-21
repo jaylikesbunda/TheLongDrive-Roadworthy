@@ -87,6 +87,16 @@ public static class PatchStability
         "pickupable.FStart/1:2",
         "napszakvaltakozas.FixedUpdate/0:1"
     };
+    static void PatchLegacyPersistence()
+    {
+        Entry(Method("newSaveScreenScript","Save",4),"BeforeLegacySave",2);
+        Entry(Method("newSaveScreenScript","ReadSave",1),"BeforeLegacyLoad",0);
+        Entry(Method("savedatascript","FixLoadStuff",0),"AfterLegacyLoadPending");
+    }
+    static void PatchLegacyRemoval()
+    {
+        Guard(Method("savedatascript","AddToFarStuff",1,"tosaveitemscript"),"LegacyAllowFarStuff",0);
+    }
     static void AddSystemTimings()
     {
         var begin = Hook("NativeSystemBegin"); var end = Hook("NativeSystemEnd");
@@ -1280,6 +1290,16 @@ public static class PatchStability
                     OptimizeWornDestroyed();
                     OptimizeRadiatorRepair();
                     FixTrailerHitch();
+                    Entry(Method("attachablescript","FStart",0),"CaptureAttachOriginalParent",-1);
+                    Guard(Method("attachablescript","Attach",1,"UnityEngine.RaycastHit"),"NativeRayAttach",-1,0);
+                    AfterReturn(Method("attachablescript","Attach",1,"UnityEngine.Transform"),"NativeAttachmentMounted",-1);
+                    AfterReturn(Method("attachablescript","Detach",0),"NativeAttachmentDetached",-1);
+                    Guard(Method("partslotscript","SpawnPart",0),"NativeSlotSpawn",-1);
+                    AfterReturn(Method("tosaveitemscript","RandomSpawned",1),"ApplySpawnAmmo",-1,0);
+                    Guard(Method("terrainHeightAlignToBuildingScript","FStart",0),"NativeTerrainAlignStart",-1);
+                    FilterReturns(Method("poiGenScript","TerrainAlignsValue",2),"LegacyTerrainAlign",1,0);
+                    Entry(Method("itemPlaceRemoveScript","Upd",0),"ResetPlaceAttempts",-1);
+                    Entry(Method("itemPlaceRemoveScript","PlaceOne",2),"CountPlaceAttempt",-1);
                     OptimizeSliceGuard();
                     // Item streaming: parented items are measured from their root, and a
                     // frozen item stays frozen while no ground is loaded under it (20 s cap).
@@ -1335,6 +1355,7 @@ public static class PatchStability
                     Observe(Method("vultureAI","Update",0),"NativeBehaviorVultureBegin","NativeBehaviorVultureEnd",1,new int[0],new int[0]);
                     Observe(Method("randomFlyer","Update",0),"NativeBehaviorFlyerBegin","NativeBehaviorFlyerEnd",1,new int[0],new int[0]);
                     Observe(Method("attachablescript","Update",0),"NativeBehaviorAttachablesBegin","NativeBehaviorAttachablesEnd",2,new int[0],new int[0]);
+                    Guard(Method("attachablescript","Update",0),"NativeAttachmentUpdate",-1);
                     Observe(Method("partconditionscript","Update",0),"NativeBehaviorPartConditionsBegin","NativeBehaviorPartConditionsEnd",2,new int[0],new int[0]);
                     Observe(Method("usablescript","Update",0),"NativeBehaviorUsablesBegin","NativeBehaviorUsablesEnd",1,new int[0],new int[0]);
                     Observe(Method("wheelgraphicsscript","Update",0),"NativeBehaviorWheelGraphicsBegin","NativeBehaviorWheelGraphicsEnd",1,new int[0],new int[0]);
@@ -1407,7 +1428,7 @@ public static class PatchStability
                     // Radiator repair adds one entry hook on partconditionscript.CanRepair.
                     // Trailer hitch adds attachgripscript.FStart (2 return sites) and five attachable methods (9 P reads).
                     // Trailer sync adds the ThisOneInCharge return filter and the syncScript.UpdInWorld inbound guard (two methods, two sites).
-                    if(hooked!=141 || sites!=287)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
+                    if(hooked!=148 || sites!=298)throw new Exception("Unexpected hook scope: methods="+hooked+" sites="+sites);
                     var sliceFactory=Method("randomSlice","Slicc",3);
                     var additions=sliceFactory.Body.Instructions.Where(i=>i.Operand is GenericInstanceMethod && ((GenericInstanceMethod)i.Operand).Name=="AddComponent" && ((GenericInstanceMethod)i.Operand).GenericArguments[0].FullName=="randomSlice").ToArray();
                     if(additions.Length!=2)throw new Exception("Expected two native slice component additions.");
@@ -1462,6 +1483,8 @@ public static class PatchStability
                     var npcVelocity=npcCollision.Body.Instructions.Where(i=>i.Operand is MethodReference && ((MethodReference)i.Operand).DeclaringType.FullName=="UnityEngine.Collision" && ((MethodReference)i.Operand).Name=="get_relativeVelocity" && ((MethodReference)i.Operand).Parameters.Count==0).ToArray();
                     if(npcVelocity.Length!=1 || npcVelocity[0].OpCode!=OpCodes.Callvirt)throw new Exception("Expected one native creature relative velocity getter.");
                     npcCollision.Body.GetILProcessor().InsertBefore(npcVelocity[0],Instruction.Create(OpCodes.Ldarg_0));npcVelocity[0].OpCode=OpCodes.Call;npcVelocity[0].Operand=Hook("NpcVehicleVelocity");
+                    PatchLegacyRemoval();
+                    PatchLegacyPersistence();
                     AddSystemTimings();
                     foreach(var type in new[]{"pickupable","carscript","breakablescript"})
                         Guard(Method(type,"OnCollisionEnter",1),"HasCollisionContacts",0);

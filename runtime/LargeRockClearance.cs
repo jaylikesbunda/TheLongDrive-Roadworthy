@@ -158,8 +158,14 @@ namespace TldMp
                 WorldRelocationLedger.Record saved;
                 if(WorldRelocationLedger.TryGet(2,gen,index,key,out saved))
                 {
+                    // A record can stop matching (for example after a draw-distance change
+                    // re-cuts the streaming cells). Never abort the game's generation pass for
+                    // it: keep the native placement for this mountain (counted in LedgerMismatchFallbackCount).
                     if(saved.seed!=obj.seed || saved.type!=obj.prefabIndex || saved.rotation.x!=obj.rot.x || saved.rotation.y!=obj.rot.y || saved.rotation.z!=obj.rot.z || !OwnerContains(objects,category,saved.position))
-                        throw new System.IO.InvalidDataException("Mountain relocation identity or streaming cell does not match.");
+                    {
+                        LedgerMismatchFallbackCount++;
+                        objects.Add(key,obj);return;
+                    }
                     obj.gpos=saved.position;objects.Add(key,obj);return;
                 }
             }
@@ -189,6 +195,7 @@ namespace TldMp
             }
         }
         public static long LedgerIdentityFallbackCount {get;private set;}
+        public static long LedgerMismatchFallbackCount {get;private set;}
         public static long LedgerCapacityFallbackCount {get;private set;}
         public static long RelocatedCount {get;private set;}
         public static long RelocationFailedCount {get;private set;}

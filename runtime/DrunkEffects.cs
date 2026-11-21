@@ -76,6 +76,8 @@ namespace TldMp
     // Drunk effects option is off.
     public sealed class DrunkCameraSway : MonoBehaviour
     {
+        // Set while another tool (PromoCamera) owns the camera.
+        internal static bool Suppressed;
         Camera restoreCamera;
         Quaternion restoreRotation;
         float restoreFov;
@@ -110,7 +112,7 @@ namespace TldMp
             // Mirror and other cameras are left alone entirely.
             if(cam==null || main==null || main.player==null || main.player.Cam!=cam)return;
             Restore();
-            if(!PatchOptions.DrunkEffects || !main.crsrLocked)return;
+            if(!PatchOptions.DrunkEffects || !main.crsrLocked || Suppressed)return;
             float level=DrunkEffects.Level(main.player.survival);
             if(!(level>0f))return;
             float pitch,yaw,roll;

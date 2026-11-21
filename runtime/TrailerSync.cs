@@ -85,7 +85,8 @@ namespace TldMp
         {
             if (trailer == null || registry.Count == 0) return null;
             Wired entry;
-            if (!registry.TryGetValue(trailer.GetInstanceID(), out entry) || entry.Grip == null) return null;
+            if (!registry.TryGetValue(trailer.GetInstanceID(), out entry) || entry.Grip == null ||
+                !TldLoaderBridge.UsesStockTowOwnership(entry.Grip)) return null;
             int frame = Time.frameCount;
             if (entry.Frame != frame)
             {

@@ -12,7 +12,8 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE = ROOT / "release" / "TheLongDrive-Roadworthy"
+_RELEASE_OVERRIDE = os.environ.get("ROADWORTHY_RELEASE_DIR")
+RELEASE = Path(_RELEASE_OVERRIDE) if _RELEASE_OVERRIDE else ROOT / "release" / "TheLongDrive-Roadworthy"
 ORIGINAL_SHA256 = "CF2C2D0EE7941B981FCF2352D39C628EE36B8B6609223C0BD05C9308B245E000"
 
 

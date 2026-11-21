@@ -6,7 +6,11 @@ namespace TldMp
     // Zero means the original placement rules, including for unmarked saves.
     public static class WorldPlacementPolicy
     {
-        public const int CurrentVersion=5;
+        public const int CurrentVersion=6;
+        // Version 6 adds Roadworthy buildings (CustomPois); 5 is the same rules without them.
+        // Set by StableGameBridge from the "New buildings" setting; unset means on.
+        public static Func<bool> NewBuildingsWanted;
+        public static int NewWorldVersion(){var wanted=NewBuildingsWanted;return wanted==null || wanted()?CurrentVersion:CurrentVersion-1;}
         public const double RoadClearance=0.15;
         const string Marker=" [Roadworthy placement: ";
         static volatile int version;
@@ -31,6 +35,7 @@ namespace TldMp
             if(profile=="3")return 3;
             if(profile=="4")return 4;
             if(profile=="5")return 5;
+            if(profile=="6")return 6;
             throw new InvalidDataException("Unsupported or damaged world placement save marker.");
         }
         public static string StampVersion(string value,int selected)

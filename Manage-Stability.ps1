@@ -44,6 +44,20 @@ if ($Action -eq 'Restore') {
     Replace-Checked $backup $assembly $originalHash
     # Remove only our exact, verified helper file, after restoring the original DLL.
     Remove-Item -LiteralPath $runtime
+    # Roadworthy rewrites TLDLoader.dll for the beta (TldLoaderBridge). Put the player's
+    # original back, but only over our own recorded output.
+    $tldLoader=Join-Path $managed 'TLDLoader.dll'
+    $tldBackup=Join-Path $managed 'TLDLoader.roadworthy-original.bin'
+    $tldState=Join-Path $managed 'TLDLoader.roadworthy-state.txt'
+    if ((Test-Path -LiteralPath $tldState) -and (Test-Path -LiteralPath $tldBackup) -and (Test-Path -LiteralPath $tldLoader)) {
+        $translated=(Get-Content -LiteralPath $tldState | Where-Object {$_.StartsWith('translated=')} | Select-Object -First 1)
+        $source=(Get-Content -LiteralPath $tldState | Where-Object {$_.StartsWith('source=')} | Select-Object -First 1)
+        if ($translated -and $source -and (Hash $tldLoader) -eq $translated.Substring(11).Trim() -and (Hash $tldBackup) -eq $source.Substring(7).Trim()) {
+            Replace-Checked $tldBackup $tldLoader $source.Substring(7).Trim()
+            Remove-Item -LiteralPath $tldBackup,$tldState
+            Write-Host 'Original TLDLoader.dll restored.'
+        }
+    }
     Write-Host 'Original game restored and verified. V3 helper removed. Saves unchanged.'
     return
 }

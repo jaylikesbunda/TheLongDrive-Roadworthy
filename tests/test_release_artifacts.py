@@ -1,6 +1,7 @@
 """Checks on the built release: GUI subsystem, icon resources, shipped docs."""
 import base64
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -13,7 +14,7 @@ import support
 ROOT = support.ROOT
 RELEASE = support.RELEASE
 EXE = RELEASE / "TheLongDrive-Roadworthy.exe"
-SPEC = ROOT / ".tools" / "pyinstaller-spec" / "TheLongDrive-Roadworthy.spec"
+TAURI_CONF = ROOT / "installer" / "app" / "tauri.conf.json"
 
 EXPECTED_RELEASE_FILES = sorted([
     "CHANGELOG.txt",
@@ -21,7 +22,6 @@ EXPECTED_RELEASE_FILES = sorted([
     "Restore Original.cmd",
     "SHA256SUMS.txt",
     "TheLongDrive-Roadworthy.exe",
-    "TheLongDrive-Roadworthy.py",
 ])
 SOURCE_REQUIRED = [
     "packaging/singleplayer/PatchV4.cs",
@@ -30,6 +30,8 @@ SOURCE_REQUIRED = [
     "Manage-Stability.ps1",
     "tools/Resolve-GameDirectory.ps1",
     ".tools/cecil.zip",
+    "LICENSE",
+    "runtime/assets/RoadworthyPois.bin",
     "LICENSES/Mono.Cecil-LICENSE.txt",
 ]
 
@@ -48,17 +50,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn(pe_utils.RT_ICON, types)
         self.assertIn(pe_utils.RT_GROUP_ICON, types)
 
-    def test_spec_is_windowed(self):
-        self.assertTrue(SPEC.is_file(), f"missing spec: {SPEC}")
-        text = SPEC.read_text(encoding="utf-8")
-        self.assertNotIn("console=True", text)
-        self.assertIn("console=False", text)
+    def test_tauri_config_is_windowed_and_iconed(self):
+        self.assertTrue(TAURI_CONF.is_file(), f"missing config: {TAURI_CONF}")
+        config = json.loads(TAURI_CONF.read_text(encoding="utf-8"))
+        self.assertEqual(config["$schema"], "https://schema.tauri.app/config/2")
+        self.assertFalse(config["bundle"]["active"], "the installer ships as one embedded-payload EXE")
+        self.assertEqual(config["app"]["windows"][0]["label"], "main")
+        self.assertEqual(config["bundle"]["icon"], ["icons/icon.ico"])
 
-    def test_build_script_uses_windowed_and_icon(self):
-        text = (ROOT / "packaging" / "build_release.py").read_text(encoding="utf-8")
-        self.assertIn('"--windowed"', text)
-        self.assertNotIn('"--console"', text)
-        self.assertIn('"--icon"', text)
+    def test_build_script_uses_the_rust_installer(self):
+        text = (ROOT / "packaging" / "build_release_rust.py").read_text(encoding="utf-8")
+        self.assertIn('"cargo"', text)
+        self.assertIn('"roadworthy-app"', text)
+        self.assertIn('"payload"', text)
+        self.assertIn('"payload.zip"', text)
 
     def test_release_ships_only_readme_and_changelog(self):
         files = sorted(path.name for path in RELEASE.iterdir() if path.is_file())

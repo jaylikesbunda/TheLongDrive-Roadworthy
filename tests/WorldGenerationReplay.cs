@@ -52,16 +52,18 @@ public static class WorldGenerationReplay
         try
         {
             string self=Assembly.GetExecutingAssembly().Location;
-            string output=Path.Combine(Path.GetDirectoryName(self),"WorldGenerationInjected.exe");
+            byte[] replayImage;
             using(var fixture=AssemblyDefinition.ReadAssembly(self))
             using(var runtime=AssemblyDefinition.ReadAssembly(args[2]))
+            using(var output=new MemoryStream())
             {
                 var target=fixture.MainModule.Types.Single(t=>t.Name=="WorldGenerationReplay").Methods.Single(m=>m.Name=="Generate");
                 var source=runtime.MainModule.Types.Single(t=>t.FullName=="TldMp.StableMap").Methods.Single(m=>m.Name=="GenerateRoadData");
                 Copy(source,target,fixture.MainModule);
                 fixture.Write(output);
+                replayImage=output.ToArray();
             }
-            var loaded=Assembly.LoadFile(output);
+            var loaded=Assembly.Load(replayImage);
             return (int)loaded.GetType("WorldGenerationReplay").GetMethod("Run").Invoke(null,null);
         }
         catch(Exception e){Console.Error.WriteLine(e);return 1;}

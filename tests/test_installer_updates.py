@@ -52,7 +52,8 @@ class CheckUpdatesTests(unittest.TestCase):
             return app.check_updates(), calls
 
     def test_numeric_max_wins_including_prerelease(self):
-        result, _ = self.check([release("v0.2.9"), release("v0.2.10"), release("0.1.2")])
+        with mock.patch.object(app, "VERSION", "0.2.0"):
+            result, _ = self.check([release("v0.2.9"), release("v0.2.10"), release("0.1.2")])
         self.assertEqual(result["version"], "0.2.10")
         self.assertTrue(result["newer"])
         self.assertTrue(result["url"].startswith(app.RELEASE_PAGE))

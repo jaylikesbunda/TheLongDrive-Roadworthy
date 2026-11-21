@@ -92,7 +92,7 @@ namespace TldMp
                 {
                     wasSettingsOpen = open;
                     // Reopening the settings shows the native default tab, never Roadworthy.
-                    if (open) SetRoadworthyOpen(false);
+                    if (open) { SetRoadworthyOpen(false); RefreshModRows(); }
                 }
                 if (open && roadContainer != null && nativeButtons != null) SampleLeds();
             }
@@ -362,6 +362,8 @@ namespace TldMp
             experimentalRow = null;
             toggleRows.Clear();
             toggleReads.Clear();
+            modRows.Clear();
+            modRowArgs = null;
         }
 
         // Shadow quality and Performance preset rows, appended under the last row of
@@ -490,9 +492,18 @@ namespace TldMp
             AddMiscToggle(tab, template, root, content, startTop, RadiatorRepairRowName, "Repairable radiators",
                 delegate { return PatchOptions.RadiatorRepair; },
                 delegate(bool on) { PatchOptions.RadiatorRepair = on; });
+            AddMiscToggle(tab, template, root, content, startTop, EngineWearRowName, "Part wear",
+                delegate { return PatchOptions.EngineWear; },
+                delegate(bool on) { PatchOptions.EngineWear = on; });
+            AddMiscToggle(tab, template, root, content, startTop, NewBuildingsRowName, "New buildings (new worlds)",
+                delegate { return PatchOptions.NewBuildings; },
+                delegate(bool on) { PatchOptions.NewBuildings = on; });
             AddMiscToggle(tab, template, root, content, startTop, DrunkEffectsRowName, "Drunk effects",
                 delegate { return PatchOptions.DrunkEffects; },
                 delegate(bool on) { PatchOptions.DrunkEffects = on; });
+            AddMiscToggle(tab, template, root, content, startTop, PromoCameraRowName, "Promo camera (F6/F7/F8)",
+                PromoCamera.SettingOn,
+                delegate(bool on) { PatchOptions.PromoCamera = on; });
             experimentalRow = AddMiscToggle(tab, template, root, content, startTop, ExperimentalRowName,
                 "New Buggy multiplayer", ExperimentalEffective,
                 delegate(bool on)
@@ -504,6 +515,47 @@ namespace TldMp
                         Debug.Log("[TLD MP experimental] Backend preference set to " + (on ? "experimental" : "native") +
                             "; it switches automatically before a peer joins. Experimental enables the external join, item owner gate, player identity gate and breakable authority.");
                 });
+            if (TldLoaderBridge.Installed)
+            {
+                AddMiscToggle(tab, template, root, content, startTop, TldLoaderRowName, "TLDLoader mods (applies after restart)",
+                    delegate { return PatchOptions.TldLoaderMods; },
+                    delegate(bool on) { PatchOptions.TldLoaderMods = on; });
+                modRowArgs = new ModRowArgs { Tab = tab, Template = template, Root = root, Content = content, StartTop = startTop };
+                RefreshModRows();
+            }
+        }
+
+        const string TldLoaderRowName = "TldLoaderModsToggle";
+        sealed class ModRowArgs { public settingsscript.tab Tab; public togglesetting Template; public Transform Root; public RectTransform Content; public float StartTop; }
+        ModRowArgs modRowArgs;
+        readonly Dictionary<string, togglesetting> modRows = new Dictionary<string, togglesetting>();
+
+        // One read-only row per TLDLoader mod: ticked when it is running.
+        void RefreshModRows()
+        {
+            if (modRowArgs == null) return;
+            try
+            {
+                foreach (var mod in TldLoaderBridge.LoadedMods())
+                {
+                    int missing;
+                    lock (TldLoaderBridge.MissingByFile) TldLoaderBridge.MissingByFile.TryGetValue(mod.File, out missing);
+                    string label = "   " + TldLoaderCompatPolicy.ModRowLabel(mod.Name, mod.Version, mod.Disabled, missing);
+                    bool running = !mod.Disabled;
+                    togglesetting row;
+                    if (!modRows.TryGetValue(mod.Id, out row) || row == null)
+                    {
+                        row = AddMiscToggle(modRowArgs.Tab, modRowArgs.Template, modRowArgs.Root, modRowArgs.Content, modRowArgs.StartTop,
+                            "TldLoaderMod_" + mod.Id, label, delegate { return running; }, delegate(bool on) { });
+                        modRows[mod.Id] = row;
+                    }
+                    if (row == null) continue;
+                    LabelToggle(row, label);
+                    row.toggle.SetIsOnWithoutNotify(running);
+                    row.toggle.interactable = false;
+                }
+            }
+            catch (Exception error) { Debug.LogWarning("[TLD MP options] mod rows not refreshed: " + error.GetType().Name + " " + error.Message); }
         }
 
         // The environment override wins for a development launch. Show that
@@ -518,7 +570,10 @@ namespace TldMp
         const string SandstormsRowName = "TldSandstormsToggle";
         const string HighRateRowName = "TldHighRateToggle";
         const string RadiatorRepairRowName = "TldRadiatorRepairToggle";
+        const string EngineWearRowName = "TldEngineWearToggle";
+        const string NewBuildingsRowName = "TldNewBuildingsToggle";
         const string DrunkEffectsRowName = "TldDrunkEffectsToggle";
+        const string PromoCameraRowName = "TldPromoCameraToggle";
 
         // One cloned toggle under the current last row, saved to the options file.
         // `read` gives its value at install and on every re-sync; `apply` stores a change.
